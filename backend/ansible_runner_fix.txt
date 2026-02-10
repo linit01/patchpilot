@@ -1,0 +1,27 @@
+FIND THIS SECTION (around line 180):
+
+            # Parse PLAY RECAP to get host connection status
+            if line.startswith('PLAY RECAP'):
+                recap_started = True
+            elif recap_started and '=' not in line and line.strip():
+                recap_match = re.search(
+
+
+REPLACE WITH:
+
+            # Parse PLAY RECAP to get host connection status
+            if line.startswith('PLAY RECAP'):
+                recap_started = True
+            elif recap_started and line.strip() and not line.startswith('PLAY RECAP'):
+                recap_match = re.search(
+
+
+EXPLANATION:
+The old condition: '=' not in line
+- This EXCLUDED all recap lines because they contain "ok=0", "failed=0", etc.
+- Unreachable hosts were never detected!
+
+The new condition: not line.startswith('PLAY RECAP')
+- This correctly parses all recap lines
+- Skips only the header line and empty lines
+- Unreachable hosts will now be detected properly!

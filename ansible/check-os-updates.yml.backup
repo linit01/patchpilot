@@ -1,0 +1,92 @@
+---
+- hosts: all
+  gather_facts: yes
+  serial: 1
+  vars:
+    ansible_python_interpreter: auto_silent
+  tasks:
+    # Linux update checks
+    - name: Check for updates (Debian/Ubuntu)
+      shell: apt list --upgradable 2>/dev/null | tail -n +2
+      register: apt_updates
+      when: ansible_facts['os_family'] == "Debian"
+    
+    # macOS update checks
+    - name: Check for Homebrew updates (macOS)
+      shell: /opt/homebrew/bin/brew outdated
+      register: brew_updates
+      when: ansible_facts['os_family'] == "Darwin"
+      changed_when: false
+      failed_when: false
+    
+    - name: Check for macOS system updates
+      shell: /usr/sbin/softwareupdate -l
+      register: macos_updates
+      when: ansible_facts['os_family'] == "Darwin"
+      changed_when: false
+      failed_when: false
+    
+    - name: Check for App Store updates (requires mas)
+      shell: /opt/homebrew/bin/mas outdated
+      register: mas_updates
+      when: ansible_facts['os_family'] == "Darwin"
+      changed_when: false
+      failed_when: false
+    
+    # Show status
+    - name: Show update status
+      debug:
+        msg: "{{ inventory_hostname }}: {% if apt_updates.stdout_lines is defined and apt_updates.stdout_lines | length > 0 %}{{ apt_updates.stdout_lines | length }} apt updates available{% elif brew_updates.stdout_lines is defined and brew_updates.stdout_lines | length > 0 %}{{ brew_updates.stdout_lines | length }} brew updates available{% elif macos_updates.stdout is defined and 'No new software available' not in macos_updates.stdout %}macOS system updates available{% elif mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}{{ mas_updates.stdout_lines | length }} App Store updates available{% else %}Up to date{% endif %}"
+      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or mas_updates.stdout_lines is defined
+    
+    # Apply updates
+    - name: Starting updates on host
+      debug:
+        msg: "=== Applying updates to {{ inventory_hostname }} ==="
+      tags: ['never', 'apply-updates']
+    
+    - name: Apply updates (Debian/Ubuntu)
+      apt:
+        upgrade: dist
+        update_cache: yes
+      become: yes
+      when: ansible_facts['os_family'] == "Debian"
+      register: apt_upgrade_result
+      tags: ['never', 'apply-updates']
+    
+    - name: Apply Homebrew updates (macOS)
+      shell: HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 /opt/homebrew/bin/brew upgrade
+      when: ansible_facts['os_family'] == "Darwin"
+      register: brew_upgrade_result
+      failed_when: false
+      tags: ['never', 'apply-updates']
+    
+    - name: Apply macOS system updates
+      shell: /usr/sbin/softwareupdate -i -a
+      when: ansible_facts['os_family'] == "Darwin"
+      register: macos_upgrade_result
+      tags: ['never', 'apply-updates']
+    
+    - name: Apply App Store updates
+      shell: /opt/homebrew/bin/mas upgrade
+      when: ansible_facts['os_family'] == "Darwin"
+      register: mas_upgrade_result
+      failed_when: false
+      tags: ['never', 'apply-updates']
+    
+    # Reboot handling
+    - name: Check if reboot required (Linux)
+      stat:
+        path: /var/run/reboot-required
+      become: yes
+      register: reboot_required
+      when: ansible_facts['os_family'] == "Debian"
+      tags: ['never', 'apply-updates']
+    
+    - name: Reboot if needed (Linux)
+      reboot:
+        msg: "Rebooting for system updates"
+        reboot_timeout: 300
+      become: yes
+      when: ansible_facts['os_family'] == "Debian" and reboot_required.stat.exists
+      tags: ['never', 'apply-updates', 'reboot']

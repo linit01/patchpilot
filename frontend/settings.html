@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - PatchPilot</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f5f5f7;
+            color: #1d1d1f;
+        }
+        
+        .header {
+            background: #fff;
+            border-bottom: 1px solid #d2d2d7;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+        }
+        
+        .header .actions {
+            display: flex;
+            gap: 12px;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: #007aff;
+            color: #fff;
+        }
+        
+        .btn-primary:hover {
+            background: #0051d5;
+        }
+        
+        .btn-secondary {
+            background: #e8e8ed;
+            color: #1d1d1f;
+        }
+        
+        .btn-secondary:hover {
+            background: #d2d2d7;
+        }
+        
+        .btn-danger {
+            background: #ff3b30;
+            color: #fff;
+        }
+        
+        .btn-danger:hover {
+            background: #d70015;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        
+        .tabs {
+            background: #fff;
+            border-radius: 12px;
+            padding: 0;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        
+        .tab-buttons {
+            display: flex;
+            border-bottom: 1px solid #d2d2d7;
+        }
+        
+        .tab-btn {
+            flex: 1;
+            padding: 18px;
+            background: none;
+            border: none;
+            font-size: 15px;
+            font-weight: 500;
+            color: #86868b;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-bottom: 3px solid transparent;
+        }
+        
+        .tab-btn:hover {
+            color: #1d1d1f;
+            background: #f5f5f7;
+        }
+        
+        .tab-btn.active {
+            color: #007aff;
+            border-bottom-color: #007aff;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 30px;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .host-list {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        
+        .host-item {
+            padding: 20px 25px;
+            border-bottom: 1px solid #d2d2d7;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .host-item:last-child {
+            border-bottom: none;
+        }
+        
+        .host-info {
+            flex: 1;
+        }
+        
+        .host-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1d1d1f;
+            margin-bottom: 6px;
+        }
+        
+        .host-details {
+            font-size: 13px;
+            color: #86868b;
+        }
+        
+        .host-status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-right: 15px;
+        }
+        
+        .status-connected {
+            background: #d1f4e0;
+            color: #017a3b;
+        }
+        
+        .status-unreachable {
+            background: #ffd3d0;
+            color: #c20404;
+        }
+        
+        .status-unknown {
+            background: #e8e8ed;
+            color: #86868b;
+        }
+        
+        .host-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .icon-btn {
+            padding: 8px 12px;
+            background: #f5f5f7;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #1d1d1f;
+            transition: all 0.2s;
+        }
+        
+        .icon-btn:hover {
+            background: #e8e8ed;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #fff;
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+        }
+        
+        .modal-title {
+            font-size: 22px;
+            font-weight: 600;
+        }
+        
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 28px;
+            color: #86868b;
+            cursor: pointer;
+            line-height: 1;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #1d1d1f;
+        }
+        
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #d2d2d7;
+            border-radius: 8px;
+            font-size: 15px;
+            font-family: inherit;
+        }
+        
+        .form-group textarea {
+            min-height: 120px;
+            resize: vertical;
+            font-family: 'Monaco', 'Courier New', monospace;
+        }
+        
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #007aff;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        
+        .help-text {
+            font-size: 13px;
+            color: #86868b;
+            margin-top: 6px;
+        }
+        
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 8px;
+            padding: 12px 15px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #856404;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #86868b;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+        
+        .empty-state h3 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #1d1d1f;
+        }
+        
+        .empty-state p {
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        
+        .test-result {
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 14px;
+        }
+        
+        .test-success {
+            background: #d1f4e0;
+            color: #017a3b;
+            border: 1px solid #4cd471;
+        }
+        
+        .test-error {
+            background: #ffd3d0;
+            color: #c20404;
+            border: 1px solid #ff3b30;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚙️ Settings</h1>
+        <div class="actions">
+            <button class="btn btn-secondary" onclick="window.location.href='/'">← Back to Dashboard</button>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="tabs">
+            <div class="tab-buttons">
+                <button class="tab-btn active" onclick="switchTab('hosts')">📋 Hosts</button>
+                <button class="tab-btn" onclick="switchTab('general')">⚙️ General</button>
+                <button class="tab-btn" onclick="switchTab('advanced')">🔧 Advanced</button>
+            </div>
+            
+            <!-- Hosts Tab -->
+            <div id="hosts-tab" class="tab-content active">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="font-size: 20px; font-weight: 600;">Host Management</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn btn-secondary" onclick="openImportModal()">↓ Import</button>
+                        <button class="btn btn-secondary" onclick="exportHosts()">↑ Export</button>
+                        <button class="btn btn-primary" onclick="openAddHostModal()">+ Add Host</button>
+                    </div>
+                </div>
+                
+                <div id="host-list" class="host-list">
+                    <!-- Hosts will be loaded here -->
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📡</div>
+                        <h3>No Hosts Configured</h3>
+                        <p>Add your first host to start managing patches</p>
+                        <button class="btn btn-primary" onclick="openAddHostModal()">+ Add Your First Host</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- General Tab -->
+            <div id="general-tab" class="tab-content">
+                <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 20px;">General Settings</h2>
+                
+                <div class="form-group">
+                    <label>Auto-Refresh Interval</label>
+                    <select id="refresh-interval">
+                        <option value="60">1 minute</option>
+                        <option value="300" selected>5 minutes</option>
+                        <option value="600">10 minutes</option>
+                        <option value="1800">30 minutes</option>
+                        <option value="0">Disabled</option>
+                    </select>
+                    <div class="help-text">How often the dashboard automatically checks for updates</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Default SSH User</label>
+                    <input type="text" id="default-ssh-user" value="root" placeholder="root">
+                    <div class="help-text">Default SSH username for new hosts</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Default SSH Port</label>
+                    <input type="number" id="default-ssh-port" value="22" min="1" max="65535">
+                    <div class="help-text">Default SSH port for new hosts</div>
+                </div>
+                
+                <button class="btn btn-primary" onclick="saveGeneralSettings()">Save Settings</button>
+            </div>
+            
+            <!-- Advanced Tab -->
+            <div id="advanced-tab" class="tab-content">
+                <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 20px;">Advanced Settings</h2>
+                
+                <div class="warning">
+                    <strong>⚠️ Warning:</strong> These settings affect core functionality. Only change if you know what you're doing.
+                </div>
+                
+                <div class="form-group">
+                    <label>Encryption Key Status</label>
+                    <div id="encryption-status" style="padding: 12px; background: #f5f5f7; border-radius: 8px;">
+                        <span style="color: #34c759;">✓</span> Encryption enabled and working
+                    </div>
+                    <div class="help-text">SSH keys and passwords are encrypted using Fernet</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Database Connection</label>
+                    <div style="padding: 12px; background: #f5f5f7; border-radius: 8px;">
+                        PostgreSQL: Connected
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Ansible Version</label>
+                    <div id="ansible-version-display" style="padding: 12px; background: #f5f5f7; border-radius: 8px;">
+                        Detecting...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Add/Edit Host Modal -->
+    <div id="host-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modal-title">Add Host</h2>
+                <button class="close-btn" onclick="closeModal('host-modal')">&times;</button>
+            </div>
+            
+            <form id="host-form" onsubmit="saveHost(event)">
+                <div class="form-group">
+                    <label>Hostname or IP Address *</label>
+                    <input type="text" id="hostname" required placeholder="server.example.com or 192.168.1.100">
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>SSH User</label>
+                        <input type="text" id="ssh-user" value="root" placeholder="root">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>SSH Port</label>
+                        <input type="number" id="ssh-port" value="22" min="1" max="65535">
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>SSH Authentication</label>
+                    <select id="ssh-key-type" onchange="toggleAuthFields()">
+                        <option value="default">Use Default SSH Key (~/.ssh/id_rsa)</option>
+                        <option value="pasted">Paste Private Key</option>
+                        <option value="password">Password (Not Recommended)</option>
+                    </select>
+                </div>
+                
+                <div id="ssh-key-field" class="form-group" style="display: none;">
+                    <label>SSH Private Key</label>
+                    <textarea id="ssh-private-key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+                    <div class="help-text">Paste your private key from password manager or file</div>
+                </div>
+                
+                <div id="ssh-password-field" class="form-group" style="display: none;">
+                    <div class="warning">
+                        <strong>⚠️ Security Warning:</strong> Password authentication is less secure than SSH keys. Use only if necessary.
+                    </div>
+                    <label>SSH Password</label>
+                    <input type="password" id="ssh-password" placeholder="Password">
+                </div>
+                
+                <div class="form-group">
+                    <label>Notes (Optional)</label>
+                    <textarea id="notes" style="min-height: 60px;" placeholder="Optional notes about this host"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label>Tags (Optional)</label>
+                    <input type="text" id="tags" placeholder="production, web, database">
+                    <div class="help-text">Comma-separated tags for organizing hosts</div>
+                </div>
+                
+                <div id="test-result" style="display: none;"></div>
+                
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px;">
+                    <button type="button" class="btn btn-secondary" onclick="testConnection()">Test Connection</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('host-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Host</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <script>
+        // Tab switching
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+        
+        // Modal management
+        function openAddHostModal() {
+            currentEditHostId = null;  // Clear edit mode
+            document.getElementById('modal-title').textContent = 'Add Host';
+            document.getElementById('host-form').reset();
+            document.getElementById('hostname').disabled = false;  // Re-enable hostname field
+            document.getElementById('host-modal').classList.add('active');
+            toggleAuthFields();
+        }
+        
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+            currentEditHostId = null;  // Clear edit mode
+            document.getElementById('hostname').disabled = false;  // Re-enable hostname
+        }
+        
+        // Toggle SSH authentication fields
+        function toggleAuthFields() {
+            const keyType = document.getElementById('ssh-key-type').value;
+            const keyField = document.getElementById('ssh-key-field');
+            const passwordField = document.getElementById('ssh-password-field');
+            
+            keyField.style.display = keyType === 'pasted' ? 'block' : 'none';
+            passwordField.style.display = keyType === 'password' ? 'block' : 'none';
+        }
+        
+        // Test SSH connection
+        async function testConnection() {
+            const resultDiv = document.getElementById('test-result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'test-result';
+            resultDiv.textContent = '⏳ Testing connection...';
+            
+            const data = {
+                hostname: document.getElementById('hostname').value,
+                ssh_user: document.getElementById('ssh-user').value,
+                ssh_port: parseInt(document.getElementById('ssh-port').value),
+                ssh_key_type: document.getElementById('ssh-key-type').value
+            };
+            
+            if (data.ssh_key_type === 'pasted') {
+                data.ssh_private_key = document.getElementById('ssh-private-key').value;
+            } else if (data.ssh_key_type === 'password') {
+                data.ssh_password = document.getElementById('ssh-password').value;
+            }
+            
+            try {
+                const response = await fetch('/api/settings/hosts/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    resultDiv.className = 'test-result test-success';
+                    resultDiv.textContent = '✓ ' + result.message;
+                    if (result.details && result.details.system_info) {
+                        resultDiv.textContent += '\\n\\nSystem: ' + result.details.system_info;
+                    }
+                } else {
+                    resultDiv.className = 'test-result test-error';
+                    resultDiv.textContent = '✗ ' + result.message;
+                }
+            } catch (error) {
+                resultDiv.className = 'test-result test-error';
+                resultDiv.textContent = '✗ Connection test failed: ' + error.message;
+            }
+        }
+        
+        // Save host (create or update)
+        async function saveHost(event) {
+            event.preventDefault();
+            
+            const data = {
+                hostname: document.getElementById('hostname').value,
+                ssh_user: document.getElementById('ssh-user').value,
+                ssh_port: parseInt(document.getElementById('ssh-port').value),
+                ssh_key_type: document.getElementById('ssh-key-type').value,
+                notes: document.getElementById('notes').value,
+                tags: document.getElementById('tags').value
+            };
+            
+            if (data.ssh_key_type === 'pasted') {
+                data.ssh_private_key = document.getElementById('ssh-private-key').value;
+            } else if (data.ssh_key_type === 'password') {
+                data.ssh_password = document.getElementById('ssh-password').value;
+            }
+            
+            try {
+                let response;
+                
+                if (currentEditHostId) {
+                    // Update existing host
+                    response = await fetch(`/api/settings/hosts/${currentEditHostId}`, {
+                        method: 'PUT',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(data)
+                    });
+                } else {
+                    // Create new host
+                    response = await fetch('/api/settings/hosts', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(data)
+                    });
+                }
+                
+                if (response.ok) {
+                    closeModal('host-modal');
+                    loadHosts();
+                    alert(currentEditHostId ? 'Host updated successfully!' : 'Host added successfully!');
+                } else {
+                    const error = await response.json();
+                    alert(`Failed to ${currentEditHostId ? 'update' : 'add'} host: ` + error.detail);
+                }
+            } catch (error) {
+                alert(`Failed to ${currentEditHostId ? 'update' : 'add'} host: ` + error.message);
+            }
+        }
+        
+        // Load hosts list
+        async function loadHosts() {
+            try {
+                const response = await fetch('/api/settings/hosts');
+                const hosts = await response.json();
+                
+                const hostList = document.getElementById('host-list');
+                
+                if (hosts.length === 0) {
+                    hostList.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📡</div>
+                            <h3>No Hosts Configured</h3>
+                            <p>Add your first host to start managing patches</p>
+                            <button class="btn btn-primary" onclick="openAddHostModal()">+ Add Your First Host</button>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                hostList.innerHTML = hosts.map(host => `
+                    <div class="host-item">
+                        <div class="host-info">
+                            <div class="host-name">
+                                ${host.is_control_node ? '🏠 ' : ''}${host.hostname}
+                            </div>
+                            <div class="host-details">
+                                <span class="host-status status-${host.status || 'unknown'}">
+                                    ${host.status || 'Unknown'}
+                                </span>
+                                ${host.ssh_user}@${host.hostname}:${host.ssh_port} • 
+                                Auth: ${host.ssh_key_type}
+                                ${host.tags ? ' • Tags: ' + host.tags : ''}
+                            </div>
+                        </div>
+                        <div class="host-actions">
+                            <button class="icon-btn" onclick="editHost('${host.id}')">✏️ Edit</button>
+                            <button class="icon-btn" onclick="deleteHost('${host.id}', '${host.hostname}')">🗑️ Delete</button>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Failed to load hosts:', error);
+            }
+        }
+        
+        // Edit host
+        let currentEditHostId = null;
+        
+        async function editHost(hostId) {
+            try {
+                // Fetch host details
+                const response = await fetch(`/api/settings/hosts/${hostId}`);
+                const host = await response.json();
+                
+                // Store ID for updating
+                currentEditHostId = hostId;
+                
+                // Update modal title
+                document.getElementById('modal-title').textContent = 'Edit Host';
+                
+                // Populate form fields
+                document.getElementById('hostname').value = host.hostname;
+                document.getElementById('hostname').disabled = true; // Can't change hostname
+                document.getElementById('ssh-user').value = host.ssh_user;
+                document.getElementById('ssh-port').value = host.ssh_port;
+                document.getElementById('ssh-key-type').value = host.ssh_key_type;
+                document.getElementById('notes').value = host.notes || '';
+                document.getElementById('tags').value = host.tags || '';
+                
+                // Clear sensitive fields
+                document.getElementById('ssh-private-key').value = '';
+                document.getElementById('ssh-password').value = '';
+                
+                // Toggle auth fields
+                toggleAuthFields();
+                
+                // Show modal
+                document.getElementById('host-modal').classList.add('active');
+                
+            } catch (error) {
+                alert('Failed to load host details: ' + error.message);
+            }
+        }
+        
+        // Delete host
+        async function deleteHost(hostId, hostname) {
+            if (!confirm(`Are you sure you want to delete host "${hostname}"?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/settings/hosts/${hostId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    loadHosts();
+                    alert('Host deleted successfully!');
+                } else {
+                    alert('Failed to delete host');
+                }
+            } catch (error) {
+                alert('Failed to delete host: ' + error.message);
+            }
+        }
+        
+        // Load hosts on page load
+        loadHosts();
+        loadSystemInfo();
+        
+        // Load system information for Advanced tab
+        async function loadSystemInfo() {
+            try {
+                const response = await fetch('/api/settings/system-info');
+                const info = await response.json();
+                
+                // Update Ansible version
+                const ansibleDiv = document.getElementById('ansible-version-display');
+                if (ansibleDiv) {
+                    ansibleDiv.textContent = info.ansible_version;
+                }
+            } catch (error) {
+                console.error('Failed to load system info:', error);
+                const ansibleDiv = document.getElementById('ansible-version-display');
+                if (ansibleDiv) {
+                    ansibleDiv.textContent = 'Failed to detect';
+                }
+            }
+        }
+    </script>
+</body>
+</html>

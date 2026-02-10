@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PatchPilot - System Update Management</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>🎯 PatchPilot</h1>
+            <div class="header-actions">
+                <button id="settings-btn" class="btn btn-secondary" onclick="window.location.href='settings.html'">
+                    <span class="btn-icon">⚙️</span> Settings
+                <button id="refresh-btn" class="btn btn-primary">
+                    <span class="btn-icon">🔄</span> Refresh Status
+                </button>
+                <button id="patch-selected-btn" class="btn btn-warning" disabled>
+                    <span class="btn-icon">⚡</span> Patch Selected (<span id="selected-count">0</span>)
+                </button>
+            </div>
+        </header>
+
+        <!-- Stats Cards -->
+        <div class="stats-container">
+            <div class="stat-card stat-total">
+                <div class="stat-value" id="total-hosts">-</div>
+                <div class="stat-label">Total Hosts</div>
+            </div>
+            <div class="stat-card stat-success">
+                <div class="stat-value" id="up-to-date">-</div>
+                <div class="stat-label">Up to Date</div>
+            </div>
+            <div class="stat-card stat-warning">
+                <div class="stat-value" id="need-updates">-</div>
+                <div class="stat-label">Need Updates</div>
+            </div>
+            <div class="stat-card stat-danger">
+                <div class="stat-value" id="unreachable">-</div>
+                <div class="stat-label">Unreachable</div>
+            </div>
+            <div class="stat-card stat-info">
+                <div class="stat-value" id="total-updates">-</div>
+                <div class="stat-label">Total Pending Updates</div>
+            </div>
+        </div>
+
+        <!-- Status Message -->
+        <div id="status-message" class="status-message" style="display: none;"></div>
+
+        <!-- Hosts Table -->
+        <div class="table-container">
+            <table class="hosts-table">
+                <thead>
+                    <tr>
+                        <th>
+                            <input type="checkbox" id="select-all" />
+                        </th>
+                        <th>Hostname</th>
+                        <th>IP Address</th>
+                        <th>OS Type</th>
+                        <th>Status</th>
+                        <th>Updates Available</th>
+                        <th>Last Checked</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="hosts-table-body">
+                    <tr>
+                        <td colspan="8" class="loading">Loading hosts...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Host Details Modal -->
+        <div id="host-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modal-hostname">Host Details</h2>
+                    <div style="display: flex; gap: 10px;">
+                       <button id="patch-host-btn" class="btn btn-warning btn-sm" onclick="patchSingleHost()" style="display: none;">
+                          <span class="btn-icon">🔧</span> Patch This Host
+                       </button>
+                       <button class="btn btn-secondary btn-sm" onclick="closeHostModal()">Close</button>
+                       <button class="modal-close" onclick="closeHostModal()">&times;</button>
+                </div>
+            </div>
+                <div class="modal-body">
+                    <div id="host-details-loading">Loading packages...</div>
+                    <div id="host-details-content" style="display: none;">
+                        <div class="host-info">
+                            <div class="info-row">
+                                <strong>IP Address:</strong> <span id="detail-ip"></span>
+                            </div>
+                            <div class="info-row">
+                                <strong>OS:</strong> <span id="detail-os"></span>
+                            </div>
+                            <div class="info-row">
+                                <strong>Status:</strong> <span id="detail-status" class="status-badge"></span>
+                            </div>
+                            <div class="info-row">
+                                <strong>Last Checked:</strong> <span id="detail-last-checked"></span>
+                            </div>
+                            <div class="info-row">
+                                <strong>Reboot Required:</strong> <span id="detail-reboot-status">N/A</span>
+                            </div>
+                            <div class="info-row">
+                                <strong>Allow Auto-Reboot:</strong>
+                                <input type="checkbox" id="detail-auto-reboot" style="margin-left: 10px;">
+                            </div>
+                        </div>
+                        
+                        <h3>Pending Updates</h3>
+                        <div id="packages-list"></div>
+                    </div>
+                </div>
+             </div>
+         </div>
+      </div>
+
+        <!-- Patch Confirmation Modal -->
+        <div id="patch-modal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Confirm Patch Operation</h2>
+                    <button class="modal-close" onclick="closePatchModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p>You are about to patch the following hosts:</p>
+                    <ul id="patch-hosts-list"></ul>
+                    <div class="form-group">
+                        <label for="become-password">Sudo Password (required for Linux hosts):</label>
+                        <input type="password" id="become-password" placeholder="Enter sudo password" />
+                    </div>
+                    <div class="modal-actions">
+                        <button class="btn btn-secondary" onclick="closePatchModal()">Cancel</button>
+                        <button class="btn btn-warning" onclick="confirmPatch()">Confirm Patch</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Patch Progress Modal -->
+    <div id="patch-progress-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⏳ Patching In Progress</h2>
+                <button class="modal-close" onclick="closePatchProgressModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="patch-progress-messages" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 13px; padding: 10px; background: #f5f5f5; border-radius: 4px; line-height: 1.6;">
+                    <!-- Progress messages will appear here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
