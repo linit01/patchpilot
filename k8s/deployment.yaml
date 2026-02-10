@@ -1,0 +1,180 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: patchpilot
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: patchpilot-secrets
+  namespace: patchpilot
+type: Opaque
+stringData:
+  supabase-url: "https://your-project.supabase.co"
+  supabase-key: "your-supabase-anon-key"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ansible-config
+  namespace: patchpilot
+data:
+  check-os-updates.yml: |
+    # Paste your Ansible playbook here
+  hosts: |
+    # Paste your Ansible inventory here
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchpilot-backend
+  namespace: patchpilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: patchpilot-backend
+  template:
+    metadata:
+      labels:
+        app: patchpilot-backend
+    spec:
+      containers:
+      - name: backend
+        image: your-registry/patchpilot:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: supabase-url
+        - name: SUPABASE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: supabase-key
+        - name: ANSIBLE_PLAYBOOK_PATH
+          value: "/ansible/check-os-updates.yml"
+        - name: ANSIBLE_INVENTORY_PATH
+          value: "/ansible/hosts"
+        volumeMounts:
+        - name: ansible-config
+          mountPath: /ansible
+        - name: ssh-keys
+          mountPath: /root/.ssh
+          readOnly: true
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: ansible-config
+        configMap:
+          name: ansible-config
+      - name: ssh-keys
+        secret:
+          secretName: ssh-keys
+          defaultMode: 0600
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patchpilot-backend
+  namespace: patchpilot
+spec:
+  selector:
+    app: patchpilot-backend
+  ports:
+  - port: 8000
+    targetPort: 8000
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchpilot-frontend
+  namespace: patchpilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: patchpilot-frontend
+  template:
+    metadata:
+      labels:
+        app: patchpilot-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: frontend-files
+          mountPath: /usr/share/nginx/html
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: nginx.conf
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: frontend-files
+        configMap:
+          name: frontend-files
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patchpilot-frontend
+  namespace: patchpilot
+spec:
+  selector:
+    app: patchpilot-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: patchpilot
+  namespace: patchpilot
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - patchpilot.yourdomain.com
+    secretName: patchpilot-tls
+  rules:
+  - host: patchpilot.yourdomain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: patchpilot-frontend
+            port:
+              number: 80

@@ -12,29 +12,13 @@
       register: apt_updates
       when: ansible_facts['os_family'] == "Debian"
       changed_when: false
-    
-    - name: Output apt package details
-      debug:
-        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ apt_updates.stdout_lines }}"
-      when: 
-        - ansible_facts['os_family'] == "Debian"
-        - apt_updates.stdout_lines | length > 0
       
     - name: Check for Homebrew updates (macOS)
-      shell: "HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 /opt/homebrew/bin/brew outdated --verbose"
+      shell: "HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 /opt/homebrew/bin/brew outdated"
       register: brew_updates
       when: ansible_facts['os_family'] == "Darwin"
       changed_when: false
       failed_when: false
-    
-    - name: Output brew package details
-      debug:
-        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ brew_updates.stdout_lines }}"
-      when: 
-        - ansible_facts['os_family'] == "Darwin"
-        - brew_updates.stdout_lines | default([]) | length > 0
       
     - name: Check for macOS system updates
       shell: "/usr/sbin/softwareupdate -l"
@@ -55,21 +39,6 @@
         path: /var/run/reboot-required
       register: reboot_required
       when: ansible_facts['os_family'] == "Debian"
-      tags: [apply-updates]
-
-    - name: Reboot if required and allowed
-      reboot:
-        msg: "Rebooting to complete updates"
-        pre_reboot_delay: 5
-        post_reboot_delay: 30
-        reboot_timeout: 300
-      when:
-        - ansible_facts['os_family'] == "Debian"
-        - reboot_required.stat.exists
-        - allow_auto_reboot | default(false)
-        - not is_control_node | default(false)
-      become: yes
-      tags: [apply-updates]
     
     - name: Show update status
       debug:
@@ -85,15 +54,10 @@
   tags: [apply-updates, never]
   tasks:
     - name: Apply updates (Debian/Ubuntu)
-      shell: |
-        export APT_GET_ASSUME_YES=yes
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y
+      apt:
+        upgrade: dist
+        update_cache: yes
       when: ansible_facts['os_family'] == "Debian"
-      become: yes
-      register: apt_upgrade_result
-      changed_when: "'0 upgraded' not in apt_upgrade_result.stdout"
       become: yes
       
     - name: Apply Homebrew updates (macOS)
