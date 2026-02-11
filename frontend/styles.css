@@ -37,6 +37,7 @@ header h1 {
 .header-actions {
     display: flex;
     gap: 10px;
+    align-items: center;
 }
 
 /* Buttons */
@@ -424,6 +425,7 @@ header h1 {
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
+    align-items: center;
 }
 
 .header-actions button {

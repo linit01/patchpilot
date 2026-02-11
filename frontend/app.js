@@ -11,6 +11,11 @@ const WS_BASE_URL = window.location.hostname === 'localhost'
 // WebSocket for real-time patch progress
 let patchProgressWS = null;
 
+// Auto-check countdown (backend checks every 2 minutes)
+const AUTO_CHECK_INTERVAL = 120; // 2 minutes in seconds
+let countdownSeconds = AUTO_CHECK_INTERVAL;
+let countdownInterval = null;
+
 function connectPatchProgressWebSocket() {
     if (patchProgressWS) return; // Already connected
     
@@ -78,13 +83,50 @@ function handlePatchProgress(data) {
 let hostsData = [];
 let selectedHosts = new Set();
 
+// Countdown Timer Functions
+function startCountdown() {
+    countdownSeconds = AUTO_CHECK_INTERVAL;
+    updateCountdownDisplay();
+    
+    if (countdownInterval) {
+        clearInterval(countdownInterval);
+    }
+    
+    countdownInterval = setInterval(() => {
+        countdownSeconds--;
+        updateCountdownDisplay();
+        
+        if (countdownSeconds <= 0) {
+            countdownSeconds = AUTO_CHECK_INTERVAL;
+        }
+    }, 1000);
+}
+
+function updateCountdownDisplay() {
+    const minutes = Math.floor(countdownSeconds / 60);
+    const seconds = countdownSeconds % 60;
+    const display = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    const element = document.getElementById('countdown-timer');
+    if (element) {
+        element.textContent = display;
+    }
+}
+
+function resetCountdown() {
+    countdownSeconds = AUTO_CHECK_INTERVAL;
+    updateCountdownDisplay();
+}
 // Initialize dashboard on load
 document.addEventListener('DOMContentLoaded', () => {
     initializeEventListeners();
     loadDashboard();
+    startCountdown();
     
     // Auto-refresh every 5 minutes
-    setInterval(loadDashboard, 5 * 60 * 1000);
+    setInterval(() => {
+        loadDashboard();
+        resetCountdown();
+    }, AUTO_CHECK_INTERVAL * 1000);
 });
 
 // Event Listeners
@@ -222,6 +264,7 @@ function getStatusClass(status) {
 async function handleRefresh() {
     const btn = document.getElementById('refresh-btn');
     btn.disabled = true;
+    resetCountdown();
     btn.innerHTML = '<span class="btn-icon">⏳</span> Checking...';
     
     try {

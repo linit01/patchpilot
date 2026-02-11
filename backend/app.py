@@ -131,7 +131,13 @@ async def run_ansible_check_task(limit_hosts: list = None):
             print(f"Updated host: {hostname} - Status: {data.get('status')} - Updates: {data.get('total_updates')}")
         except Exception as e:
             print(f"Error updating host {hostname}: {e}")
-    
+
+        except Exception as e:
+           print(f"[ERROR] Ansible check task failed: {type(e).__name__}: {str(e)}")
+           import traceback
+           traceback.print_exc()
+           return
+
     print(f"[{datetime.now()}] Ansible check completed")
 
 # Background task to run ansible patch
