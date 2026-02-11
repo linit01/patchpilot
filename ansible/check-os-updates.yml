@@ -49,6 +49,23 @@
       when: ansible_facts['os_family'] == "Darwin"
       changed_when: false
       failed_when: false
+
+    - name: Output macOS system update details
+      debug:
+        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ macos_updates.stdout_lines }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - macos_updates.stdout_lines | default([]) | length > 0
+        - "'* ' in item or 'Label:' in item"
+
+    - name: Output App Store update details
+      debug:
+        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ mas_updates.stdout_lines }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_updates.stdout_lines | default([]) | length > 0
     
     - name: Check if reboot required (Linux)
       stat:

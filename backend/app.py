@@ -5,6 +5,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 from database import DatabaseClient
 from ansible_runner import AnsibleRunner
@@ -89,9 +92,9 @@ async def run_ansible_check_task(limit_hosts: list = None):
 
     """Background task to run Ansible check and update database"""
     if limit_hosts:
-        print(f"[DEBUG] Running check for specific hosts: {limit_hosts}")
+        logger.debug(f"Running check for specific hosts: {limit_hosts}")
     else:
-        print(f"[DEBUG] Running check for all hosts")
+        logger.debug(f"Running check for all hosts")
     print(f"[{datetime.now()}] Running Ansible check...")
     # Ensure we're connected
     await db.connect()
@@ -125,7 +128,7 @@ async def run_ansible_check_task(limit_hosts: list = None):
                             package_name=package.get("package_name", ""),
                             current_version=package.get("current_version", ""),
                             available_version=package.get("available_version", ""),
-                            update_type=data.get("update_type", "apt")
+                            update_type=package.get("update_type", "apt")
                         )
             
             print(f"Updated host: {hostname} - Status: {data.get('status')} - Updates: {data.get('total_updates')}")
