@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -364,6 +364,7 @@
             <div class="tab-buttons">
                 <button class="tab-btn active" onclick="switchTab('hosts')">📋 Hosts</button>
                 <button class="tab-btn" onclick="switchTab('general')">⚙️ General</button>
+                <button class="tab-btn" onclick="switchTab('ssh-keys')">🔑 SSH Keys</button>
                 <button class="tab-btn" onclick="switchTab('advanced')">🔧 Advanced</button>
             </div>
             
@@ -389,6 +390,34 @@
                 </div>
             </div>
             
+            <!-- SSH Keys Tab -->
+            <div id="ssh-keys-tab" class="tab-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="font-size: 20px; font-weight: 600; margin: 0;">Saved SSH Keys</h2>
+                    <button class="btn btn-primary" onclick="openAddKeyModal()">
+                        <span class="btn-icon">➕</span> Add SSH Key
+                    </button>
+                </div>
+
+                <div class="info-box" style="margin-bottom: 20px;">
+                    <strong>ℹ️ Info:</strong> Save SSH keys here to reuse them across multiple hosts. Keys are encrypted and stored securely.
+                </div>
+
+                <table id="ssh-keys-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Default</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ssh-keys-table-body">
+                        <tr><td colspan="4" style="text-align: center; padding: 40px; color: #888;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
             <!-- General Tab -->
             <div id="general-tab" class="tab-content">
                 <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 20px;">General Settings</h2>
@@ -481,16 +510,22 @@
                 
                 <div class="form-group">
                     <label>SSH Authentication</label>
-                    <select id="ssh-key-type" onchange="toggleAuthFields()">
-                        <option value="default">Use Default SSH Key (~/.ssh/id_rsa)</option>
-                        <option value="pasted">Paste Private Key</option>
-                        <option value="password">Password (Not Recommended)</option>
+                    <select id="ssh-key-type" onchange="handleAuthTypeChange()">
+                        <option value="">-- Select Authentication Method --</option>
                     </select>
+                    <div class="help-text" id="saved-key-help" style="display: none; color: #28a745;">✓ Using saved SSH key</div>
                 </div>
                 
                 <div id="ssh-key-field" class="form-group" style="display: none;">
                     <label>SSH Private Key</label>
                     <textarea id="ssh-private-key" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+                    <div style="margin-top: 8px;">
+                        <input type="file" id="ssh-key-file" accept=".pem,.key,id_rsa,id_ed25519,id_ecdsa" style="display: none;">
+                        <button type="button" class="btn btn-secondary" onclick="document.getElementById('ssh-key-file').click()" style="font-size: 0.9em; padding: 8px 16px;">
+                            📁 Choose Key File
+                        </button>
+                        <span id="key-filename" style="margin-left: 10px; font-size: 0.9em; color: #666;"></span>
+                    </div>
                     <div class="help-text">Paste your private key from password manager or file</div>
                 </div>
                 
@@ -523,6 +558,47 @@
             </form>
         </div>
     </div>
+    <!-- Add/Edit SSH Key Modal -->
+    <div id="ssh-key-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="key-modal-title">Add SSH Key</h2>
+                <button class="close-btn" onclick="closeModal('ssh-key-modal')">×</button>
+            </div>
+            <form id="ssh-key-form" onsubmit="handleSaveKey(event)">
+                <div class="form-group">
+                    <label>Key Name *</label>
+                    <input type="text" id="key-name" required placeholder="e.g., Personal Laptop, Work MacBook">
+                    <div class="help-text">A friendly name to identify this key</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>SSH Private Key *</label>
+                    <textarea id="key-content" required placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+                    <div style="margin-top: 8px;">
+                        <input type="file" id="key-file-upload" accept=".pem,.key,id_rsa,id_ed25519,id_ecdsa" style="display: none;">
+                        <button type="button" class="btn btn-secondary" onclick="document.getElementById('key-file-upload').click()" style="font-size: 0.9em; padding: 8px 16px;">
+                            📁 Choose Key File
+                        </button>
+                        <span id="key-file-name" style="margin-left: 10px; font-size: 0.9em; color: #666;"></span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="key-is-default" style="margin-right: 8px;">
+                        <span>Set as default key</span>
+                    </label>
+                    <div class="help-text">Default key will be pre-selected when adding new hosts</div>
+                </div>
+
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('ssh-key-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Key</button>
+                </div>
+            </form>
+        </div>
+    </div>
     
     <script>
         // Tab switching
@@ -547,6 +623,7 @@
             document.getElementById('host-form').reset();
             document.getElementById('hostname').disabled = false;  // Re-enable hostname field
             document.getElementById('host-modal').classList.add('active');
+            populateAuthDropdown();
             toggleAuthFields();
         }
         
@@ -557,15 +634,98 @@
         }
         
         // Toggle SSH authentication fields
-        function toggleAuthFields() {
+        // Handle SSH key file upload
+        // Populate SSH authentication dropdown with saved keys
+        function populateAuthDropdown() {
+            const select = document.getElementById('ssh-key-type');
+            select.innerHTML = '<option value="">-- Select Authentication Method --</option>';
+            
+            // Add saved keys
+            if (savedSSHKeys.length > 0) {
+                const optgroup = document.createElement('optgroup');
+                optgroup.label = 'Saved SSH Keys';
+                savedSSHKeys.forEach(key => {
+                    const option = document.createElement('option');
+                    option.value = `saved:${key.id}`;
+                    option.textContent = key.name + (key.is_default ? ' (Default)' : '');
+                    if (key.is_default) {
+                        option.selected = true;
+                    }
+                    optgroup.appendChild(option);
+                });
+                select.appendChild(optgroup);
+            }
+            
+            // Add manual options
+            const optgroup2 = document.createElement('optgroup');
+            optgroup2.label = 'Manual Entry';
+            optgroup2.innerHTML = `
+                <option value="pasted">Paste Private Key</option>
+                <option value="password">Password (Not Recommended)</option>
+            `;
+            select.appendChild(optgroup2);
+            
+            // Trigger initial field display
+            handleAuthTypeChange();
+        }
+
+        // Handle authentication type change
+        async function handleAuthTypeChange() {
             const keyType = document.getElementById('ssh-key-type').value;
             const keyField = document.getElementById('ssh-key-field');
             const passwordField = document.getElementById('ssh-password-field');
+            const savedKeyHelp = document.getElementById('saved-key-help');
             
-            keyField.style.display = keyType === 'pasted' ? 'block' : 'none';
-            passwordField.style.display = keyType === 'password' ? 'block' : 'none';
+            // Hide all fields initially
+            keyField.style.display = 'none';
+            passwordField.style.display = 'none';
+            savedKeyHelp.style.display = 'none';
+            
+            if (keyType.startsWith('saved:')) {
+                // Using saved key - fetch and populate
+                const keyId = keyType.replace('saved:', '');
+                try {
+                    const response = await fetch(`/api/settings/ssh-keys/${keyId}/decrypt`);
+                    const data = await response.json();
+                    document.getElementById('ssh-private-key').value = data.ssh_key;
+                    savedKeyHelp.style.display = 'block';
+                } catch (error) {
+                    console.error('Failed to load saved key:', error);
+                    alert('Failed to load saved SSH key');
+                }
+            } else if (keyType === 'pasted') {
+                keyField.style.display = 'block';
+                document.getElementById('ssh-private-key').value = ''; // Clear for manual entry
+            } else if (keyType === 'password') {
+                passwordField.style.display = 'block';
+            }
         }
-        
+
+        // Update toggleAuthFields to use new function
+        function toggleAuthFields() {
+            handleAuthTypeChange();
+        }
+        document.getElementById('ssh-key-file')?.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const content = event.target.result;
+                
+                // Validate it looks like an SSH key
+                if (content.includes('BEGIN') && content.includes('PRIVATE KEY')) {
+                    document.getElementById('ssh-private-key').value = content;
+                    document.getElementById('key-filename').textContent = `✓ ${file.name}`;
+                    document.getElementById('key-filename').style.color = '#28a745';
+                } else {
+                    alert('Invalid SSH key file. Please select a valid private key.');
+                    document.getElementById('key-filename').textContent = '';
+                }
+            };
+            reader.readAsText(file);
+        });
+
         // Test SSH connection
         async function testConnection() {
             const resultDiv = document.getElementById('test-result');
@@ -624,12 +784,17 @@
                 tags: document.getElementById('tags').value
             };
             
-            if (data.ssh_key_type === 'pasted') {
+                       // Handle saved keys vs manual entry
+            const keyType = data.ssh_key_type;
+            if (keyType.startsWith('saved:')) {
+                // Using saved key - get the content that was already loaded
+                data.ssh_key_type = 'pasted';
                 data.ssh_private_key = document.getElementById('ssh-private-key').value;
-            } else if (data.ssh_key_type === 'password') {
+            } else if (keyType === 'pasted') {
+                data.ssh_private_key = document.getElementById('ssh-private-key').value;
+            } else if (keyType === 'password') {
                 data.ssh_password = document.getElementById('ssh-password').value;
-            }
-            
+            } 
             try {
                 let response;
                 
@@ -771,6 +936,7 @@
         
         // Load hosts on page load
         loadHosts();
+        loadSavedKeys();
         loadSystemInfo();
         
         // Load system information for Advanced tab
@@ -792,6 +958,164 @@
                 }
             }
         }
+        // ============================================================================
+        // SSH Keys Management
+        // ============================================================================
+
+        let currentEditKeyId = null;
+        let savedSSHKeys = [];
+
+        // Load saved SSH keys
+        async function loadSavedKeys() {
+            try {
+                const response = await fetch('/api/settings/ssh-keys');
+                savedSSHKeys = await response.json();
+                renderKeysTable();
+            } catch (error) {
+                console.error('Failed to load SSH keys:', error);
+                document.getElementById('ssh-keys-table-body').innerHTML = 
+                    '<tr><td colspan="4" style="text-align: center; color: #d32f2f;">Failed to load SSH keys</td></tr>';
+            }
+        }
+
+        // Render SSH keys table
+        function renderKeysTable() {
+            const tbody = document.getElementById('ssh-keys-table-body');
+            if (savedSSHKeys.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: #888;">No saved SSH keys. Click "Add SSH Key" to create one.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = savedSSHKeys.map(key => `
+                <tr>
+                    <td><strong>${key.name}</strong></td>
+                    <td>${key.is_default ? '<span style="color: #28a745;">✓ Default</span>' : '-'}</td>
+                    <td>${new Date(key.created_at).toLocaleDateString()}</td>
+                    <td>
+                        <button class="btn-action" onclick="editKey('${key.id}')" title="Edit">✏️</button>
+                        <button class="btn-action" onclick="deleteKey('${key.id}', '${key.name}')" title="Delete">🗑️</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // Open modal to add new key
+        function openAddKeyModal() {
+            currentEditKeyId = null;
+            document.getElementById('key-modal-title').textContent = 'Add SSH Key';
+            document.getElementById('ssh-key-form').reset();
+            document.getElementById('key-file-name').textContent = '';
+            document.getElementById('ssh-key-modal').classList.add('active');
+        }
+
+        // Edit existing key
+        async function editKey(keyId) {
+            currentEditKeyId = keyId;
+            const key = savedSSHKeys.find(k => k.id === keyId);
+            if (!key) return;
+
+            document.getElementById('key-modal-title').textContent = 'Edit SSH Key';
+            document.getElementById('key-name').value = key.name;
+            document.getElementById('key-is-default').checked = key.is_default;
+            
+            // Load the decrypted key content
+            try {
+                const response = await fetch(`/api/settings/ssh-keys/${keyId}/decrypt`);
+                const data = await response.json();
+                document.getElementById('key-content').value = data.ssh_key;
+            } catch (error) {
+                console.error('Failed to load key content:', error);
+            }
+
+            document.getElementById('ssh-key-modal').classList.add('active');
+        }
+
+        // Save key (create or update)
+        async function handleSaveKey(event) {
+            event.preventDefault();
+
+            const keyData = {
+                name: document.getElementById('key-name').value,
+                ssh_key: document.getElementById('key-content').value,
+                is_default: document.getElementById('key-is-default').checked
+            };
+
+            try {
+                let response;
+                if (currentEditKeyId) {
+                    // Update existing key
+                    response = await fetch(`/api/settings/ssh-keys/${currentEditKeyId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(keyData)
+                    });
+                } else {
+                    // Create new key
+                    response = await fetch('/api/settings/ssh-keys', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(keyData)
+                    });
+                }
+
+                if (response.ok) {
+                    closeModal('ssh-key-modal');
+                    await loadSavedKeys();
+                    alert(currentEditKeyId ? 'SSH key updated successfully!' : 'SSH key added successfully!');
+                } else {
+                    const error = await response.json();
+                    alert('Failed to save SSH key: ' + error.detail);
+                }
+            } catch (error) {
+                console.error('Error saving SSH key:', error);
+                alert('Failed to save SSH key: ' + error.message);
+            }
+        }
+
+        // Delete key
+        async function deleteKey(keyId, keyName) {
+            if (!confirm(`Are you sure you want to delete the SSH key "${keyName}"?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/settings/ssh-keys/${keyId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    await loadSavedKeys();
+                    alert('SSH key deleted successfully!');
+                } else {
+                    const error = await response.json();
+                    alert('Failed to delete SSH key: ' + error.detail);
+                }
+            } catch (error) {
+                console.error('Error deleting SSH key:', error);
+                alert('Failed to delete SSH key: ' + error.message);
+            }
+        }
+
+        // Handle key file upload in modal
+        document.getElementById('key-file-upload')?.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const content = event.target.result;
+                
+                if (content.includes('BEGIN') && content.includes('PRIVATE KEY')) {
+                    document.getElementById('key-content').value = content;
+                    document.getElementById('key-file-name').textContent = `✓ ${file.name}`;
+                    document.getElementById('key-file-name').style.color = '#28a745';
+                } else {
+                    alert('Invalid SSH key file. Please select a valid private key.');
+                    document.getElementById('key-file-name').textContent = '';
+                }
+            };
+            reader.readAsText(file);
+        });
     </script>
 </body>
 </html>

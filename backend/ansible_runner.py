@@ -4,6 +4,9 @@ import os
 import tempfile
 import json
 from typing import Dict, List, Tuple
+import logging
+
+logger = logging.getLogger(__name__)
 from encryption_utils import decrypt_credential
 
 class AnsibleRunner:
@@ -81,7 +84,7 @@ class AnsibleRunner:
                     try:
                         # Decrypt the SSH key
                         decrypted_key = decrypt_credential(host['ssh_private_key_encrypted'])
-                        print(f"DEBUG: Decrypted key for {hostname}: {decrypted_key[:50]}... (length: {len(decrypted_key)})")
+                        logger.debug(f"Decrypted key for {hostname}: {decrypted_key[:50]}... (length: {len(decrypted_key)})")
 
                         
                         # Write to temporary file
@@ -92,7 +95,7 @@ class AnsibleRunner:
                         
                         # Track for cleanup
                         self.temp_files.append(key_path)
-                        print(f"DEBUG: Created temp key file for {hostname}: {key_path}")
+                        logger.debug(f"Created temp key file for {hostname}: {key_path}")
 
                         
                         # Add to host vars
@@ -159,24 +162,24 @@ class AnsibleRunner:
             )
             
             # Parse the output
-            # DEBUG: Print stderr to see connection errors
+            # Print stderr to see connection errors
             if result.stderr:
-                print(f"DEBUG: Ansible stderr:\n{result.stderr}")
+                logger.debug(f"Ansible stderr:\n{result.stderr}")
             if '192.168.1.50' in result.stdout:
                 # Find lines around 192.168.1.50 failure
                 lines = result.stdout.split('\n')
                 for i, line in enumerate(lines):
                     if '192.168.1.50' in line and ('UNREACHABLE' in line or 'failed' in line):
-                        print(f"DEBUG: 192.168.1.50 failure context:")
+                        logger.debug(f"192.168.1.50 failure context:")
                         print('\n'.join(lines[max(0,i-5):min(len(lines),i+10)]))
                         break
 
             hosts_data = self._parse_ansible_output(result.stdout)
             
-            # DEBUG: Print what we got
-            print(f"DEBUG: Parsed {len(hosts_data)} hosts from Ansible output")
-            print(f"DEBUG: Return code: {result.returncode}")
-            print(f"DEBUG: Hosts: {list(hosts_data.keys())}")
+            # Print what we got
+            logger.debug(f"Parsed {len(hosts_data)} hosts from Ansible output")
+            logger.debug(f"Return code: {result.returncode}")
+            logger.debug(f"Hosts: {list(hosts_data.keys())}")
             
             # Cleanup temp files
             self.cleanup_temp_files()
@@ -409,6 +412,27 @@ class AnsibleRunner:
                             'available_version': brew_match.group(3),
                             'update_type': 'brew'
                         })
+                    else:
+                        # macOS system updates format: "* Label: macOS Sequoia 15.3-24D2068"
+                        # or "   Title: macOS Sequoia 15.3, Version: 15.3, Size: 7331569K"
+                        macos_match = re.search(r'\*\s+Label:\s+(.+?)-[\w\.]+', package_data)
+                        if macos_match:
+                            hosts_data[hostname]['update_details'].append({
+                                'package_name': macos_match.group(1).strip(),
+                                'current_version': 'installed',
+                                'available_version': 'update available',
+                                'update_type': 'macos-system'
+                            })
+                        else:
+                            # App Store (mas) format: "1234567890 AppName (1.0 -> 2.0)"
+                            mas_match = re.search(r'^\d+\s+(.+?)\s+\(([\d\.]+)\s+->\s+([\d\.]+)\)', package_data)
+                            if mas_match:
+                                hosts_data[hostname]['update_details'].append({
+                                    'package_name': mas_match.group(1),
+                                    'current_version': mas_match.group(2),
+                                    'available_version': mas_match.group(3),
+                                    'update_type': 'mas'
+                                })
 
         # Look for reboot required status
             if 'Check if reboot required' in line:

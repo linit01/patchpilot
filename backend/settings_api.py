@@ -90,6 +90,27 @@ class HostResponse(BaseModel):
             uuid.UUID: str
         }
 
+# Saved SSH Keys Models
+class SavedSSHKeyCreate(BaseModel):
+    """Model for creating a saved SSH key"""
+    name: str = Field(..., min_length=1, max_length=100)
+    ssh_key: str = Field(..., min_length=1)
+    is_default: Optional[bool] = False
+
+class SavedSSHKeyUpdate(BaseModel):
+    """Model for updating a saved SSH key"""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    ssh_key: Optional[str] = None
+    is_default: Optional[bool] = None
+
+class SavedSSHKeyResponse(BaseModel):
+    """Model for saved SSH key in API responses (key content excluded)"""
+    id: uuid.UUID
+    name: str
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
 
 class TestConnectionRequest(BaseModel):
     """Model for testing SSH connection"""
@@ -664,3 +685,192 @@ async def get_system_info():
     except Exception as e:
         logger.error(f"Failed to get system info: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get system info: {str(e)}")
+
+# ============================================================================
+# Saved SSH Keys Endpoints
+# ============================================================================
+
+@router.get("/ssh-keys", response_model=List[SavedSSHKeyResponse])
+async def list_saved_ssh_keys(pool: asyncpg.Pool = Depends(get_db_pool)):
+    """List all saved SSH keys (without key content)"""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, name, is_default, created_at, updated_at
+            FROM saved_ssh_keys
+            ORDER BY is_default DESC, name ASC
+        """)
+        return [dict(row) for row in rows]
+
+@router.get("/ssh-keys/{key_id}", response_model=SavedSSHKeyResponse)
+async def get_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Get a specific saved SSH key (without key content)"""
+    try:
+        key_uuid = uuid.UUID(key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key ID format")
+    
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, name, is_default, created_at, updated_at
+            FROM saved_ssh_keys
+            WHERE id = $1
+        """, key_uuid)
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"SSH key with ID {key_id} not found")
+        
+        return dict(row)
+
+@router.post("/ssh-keys", response_model=SavedSSHKeyResponse, status_code=201)
+async def create_saved_ssh_key(key: SavedSSHKeyCreate, pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Create a new saved SSH key"""
+    # Check if name already exists
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval(
+            "SELECT id FROM saved_ssh_keys WHERE name = $1",
+            key.name
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail=f"SSH key '{key.name}' already exists")
+        
+        # Encrypt the SSH key
+        try:
+            ssh_key_encrypted = encrypt_credential(key.ssh_key)
+        except Exception as e:
+            logger.error(f"Failed to encrypt SSH key: {e}")
+            raise HTTPException(status_code=500, detail="Failed to encrypt SSH key")
+        
+        # If this should be default, unset other defaults
+        if key.is_default:
+            await conn.execute("UPDATE saved_ssh_keys SET is_default = FALSE")
+        
+        # Insert the key
+        row = await conn.fetchrow("""
+            INSERT INTO saved_ssh_keys (name, ssh_key_encrypted, is_default)
+            VALUES ($1, $2, $3)
+            RETURNING id, name, is_default, created_at, updated_at
+        """, key.name, ssh_key_encrypted, key.is_default)
+        
+        logger.info(f"Created saved SSH key: {key.name}")
+        return dict(row)
+
+@router.put("/ssh-keys/{key_id}", response_model=SavedSSHKeyResponse)
+async def update_saved_ssh_key(
+    key_id: str,
+    key: SavedSSHKeyUpdate,
+    pool: asyncpg.Pool = Depends(get_db_pool)
+):
+    """Update a saved SSH key"""
+    try:
+        key_uuid = uuid.UUID(key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key ID format")
+    
+    async with pool.acquire() as conn:
+        # Check if key exists
+        existing = await conn.fetchrow("SELECT id, name FROM saved_ssh_keys WHERE id = $1", key_uuid)
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"SSH key with ID {key_id} not found")
+        
+        # Build update query dynamically
+        updates = []
+        values = []
+        param_count = 1
+        
+        if key.name is not None:
+            # Check name uniqueness
+            name_exists = await conn.fetchval(
+                "SELECT id FROM saved_ssh_keys WHERE name = $1 AND id != $2",
+                key.name, key_uuid
+            )
+            if name_exists:
+                raise HTTPException(status_code=409, detail=f"SSH key '{key.name}' already exists")
+            
+            updates.append(f"name = ${param_count}")
+            values.append(key.name)
+            param_count += 1
+        
+        if key.ssh_key is not None:
+            try:
+                ssh_key_encrypted = encrypt_credential(key.ssh_key)
+                updates.append(f"ssh_key_encrypted = ${param_count}")
+                values.append(ssh_key_encrypted)
+                param_count += 1
+            except Exception as e:
+                logger.error(f"Failed to encrypt SSH key: {e}")
+                raise HTTPException(status_code=500, detail="Failed to encrypt SSH key")
+        
+        if key.is_default is not None:
+            if key.is_default:
+                # Unset other defaults
+                await conn.execute("UPDATE saved_ssh_keys SET is_default = FALSE WHERE id != $1", key_uuid)
+            
+            updates.append(f"is_default = ${param_count}")
+            values.append(key.is_default)
+            param_count += 1
+        
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        
+        # Add updated_at
+        updates.append(f"updated_at = CURRENT_TIMESTAMP")
+        
+        # Add WHERE clause parameter
+        values.append(key_uuid)
+        
+        # Execute update
+        row = await conn.fetchrow(f"""
+            UPDATE saved_ssh_keys
+            SET {', '.join(updates)}
+            WHERE id = ${param_count}
+            RETURNING id, name, is_default, created_at, updated_at
+        """, *values)
+        
+        logger.info(f"Updated saved SSH key: {existing['name']}")
+        return dict(row)
+
+@router.delete("/ssh-keys/{key_id}")
+async def delete_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Delete a saved SSH key"""
+    try:
+        key_uuid = uuid.UUID(key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key ID format")
+    
+    async with pool.acquire() as conn:
+        result = await conn.fetchrow("""
+            DELETE FROM saved_ssh_keys
+            WHERE id = $1
+            RETURNING name
+        """, key_uuid)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail=f"SSH key with ID {key_id} not found")
+        
+        logger.info(f"Deleted saved SSH key: {result['name']}")
+        return {"message": f"SSH key '{result['name']}' deleted successfully"}
+
+@router.get("/ssh-keys/{key_id}/decrypt")
+async def get_decrypted_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Get the decrypted SSH key content (for host creation)"""
+    try:
+        key_uuid = uuid.UUID(key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key ID format")
+    
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT ssh_key_encrypted
+            FROM saved_ssh_keys
+            WHERE id = $1
+        """, key_uuid)
+        
+        if not row:
+            raise HTTPException(status_code=404, detail=f"SSH key with ID {key_id} not found")
+        
+        try:
+            decrypted_key = decrypt_credential(row['ssh_key_encrypted'])
+            return {"ssh_key": decrypted_key}
+        except Exception as e:
+            logger.error(f"Failed to decrypt SSH key: {e}")
+            raise HTTPException(status_code=500, detail="Failed to decrypt SSH key")

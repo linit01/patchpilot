@@ -1,3 +1,6 @@
+import logging
+
+logger = logging.getLogger(__name__)
 import asyncpg
 import os
 from typing import Optional, List, Dict
