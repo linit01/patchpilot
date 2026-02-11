@@ -237,9 +237,6 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
             logger.error(f"Failed to sync Ansible inventory: {e}")
             # Don't fail the request, just log the error
         
-        logger.info(f"Created new host: {host.hostname}")
-        return dict(row)
-        # Trigger immediate check for new host
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(f"http://localhost:8000/api/check/{host.hostname}")
@@ -247,6 +244,9 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
         except Exception as e:
             logger.warning(f"Failed to trigger check for {host.hostname}: {e}")
             # Don't fail the request
+
+        logger.info(f"Created new host: {host.hostname}")
+        return dict(row)
 
 
 @router.get("/hosts/{host_id}", response_model=HostResponse)

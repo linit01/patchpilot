@@ -127,7 +127,7 @@ class AnsibleRunner:
             print(f"Error creating dynamic inventory: {e}")
             return self.inventory_path
 
-    async def run_check(self) -> Tuple[bool, Dict]:
+    async def run_check(self, limit_hosts: List[str] = None) -> Tuple[bool, Dict]:
         """
         Run the check playbook and return parsed results
         Returns: (success, results_dict)
@@ -136,7 +136,7 @@ class AnsibleRunner:
             
             # Create dynamic inventory with decrypted keys
             if self.db_client:
-                inventory_path = await self._create_dynamic_inventory()
+                inventory_path = await self._create_dynamic_inventory(limit_hosts)
             else:
                 inventory_path = self.inventory_path
             
@@ -147,6 +147,9 @@ class AnsibleRunner:
                 self.playbook_path,
                 "-v"  # Verbose for better parsing
             ]
+            # Add limit if specified
+            if limit_hosts:
+                cmd.extend(["--limit", ",".join(limit_hosts)])
             
             result = subprocess.run(
                 cmd,
