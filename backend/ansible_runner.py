@@ -1,4 +1,5 @@
 import subprocess
+import sys
 import re
 import os
 import tempfile
@@ -80,11 +81,15 @@ class AnsibleRunner:
                 }
                 
                 # Handle SSH key if encrypted key exists
+                print(f"DEBUG Host {hostname}: ssh_key_type={host.get('ssh_key_type')}, has_encrypted_key={host.get('ssh_private_key_encrypted') is not None}, key_id={host.get('ssh_key_id')}")
                 if host.get('ssh_private_key_encrypted'):
                     try:
+                        print(f"DEBUG: Attempting to decrypt key for {hostname}...")
                         # Decrypt the SSH key
                         decrypted_key = decrypt_credential(host['ssh_private_key_encrypted'])
-                        logger.debug(f"Decrypted key for {hostname}: {decrypted_key[:50]}... (length: {len(decrypted_key)})")
+                        print(f"DEBUG: About to call decrypt_credential for {hostname}")
+                        print(f"Decrypted key for {hostname}: {decrypted_key[:50]}... (length: {len(decrypted_key)})")
+                        print(f"DEBUG: decrypt_credential returned for {hostname}")
 
                         
                         # Write to temporary file
@@ -102,7 +107,7 @@ class AnsibleRunner:
                         host_vars['ansible_ssh_private_key_file'] = key_path
                         
                     except Exception as e:
-                        print(f"Warning: Failed to decrypt key for {hostname}: {e}")
+                        print(f"ERROR: Failed to decrypt key for {hostname}: {e}")
                 
                 # Handle SSH password if exists
                 if host.get('ssh_password_encrypted'):
@@ -119,6 +124,10 @@ class AnsibleRunner:
                 host_vars['is_control_node'] = host.get('is_control_node', False)
             
             # Write inventory to temp file
+            print(f"DEBUG INVENTORY for hosts: {list(inventory_data['all']['hosts'].keys())}")
+            for h, v in inventory_data['all']['hosts'].items():
+                if 'macmini' in h or 'mbp' in h:
+                    print(f"  {h}: {v}")
             inv_fd, inv_path = tempfile.mkstemp(prefix='ansible_inventory_', suffix='.json')
             os.write(inv_fd, json.dumps(inventory_data, indent=2).encode())
             os.close(inv_fd)
@@ -163,8 +172,9 @@ class AnsibleRunner:
             
             # Parse the output
             # Print stderr to see connection errors
+            with open('/tmp/ansible_last_run.txt', 'w') as f: f.write(result.stdout)
             if result.stderr:
-                logger.debug(f"Ansible stderr:\n{result.stderr}")
+                print(f"ANSIBLE STDERR:\n{result.stderr}")
             if '192.168.1.50' in result.stdout:
                 # Find lines around 192.168.1.50 failure
                 lines = result.stdout.split('\n')
@@ -233,27 +243,35 @@ class AnsibleRunner:
                 cmd.extend(["--extra-vars", f"ansible_become_password={become_password}"])
             
             # Use Popen for streaming output
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'
+            env['ANSIBLE_FORCE_COLOR'] = '0'
+
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env=env
             )
-            
+
             output_lines = []
-            
+            line_count = 0
+
             # Read output line by line
             for line in iter(process.stdout.readline, ''):
                 if not line:
                     break
                 output_lines.append(line)
-                
-            # Send only important lines to callback
+                print(f"DEBUG LINE: {line.strip()}")
+                sys.stdout.flush()
+                line_count += 1
+ 
                 if progress_callback and line.strip():
                     # Filter for meaningful messages only
                     line_clean = line.strip()
-                    
+                
                     # Show TASK headers
                     if line_clean.startswith('TASK ['):
                         await progress_callback(line_clean)
@@ -267,6 +285,7 @@ class AnsibleRunner:
                     elif 'Rebooting' in line_clean or 'PLAY RECAP' in line_clean:
                         await progress_callback(line_clean)
             # Wait for process to complete
+            print(f"TOTAL LINES READ: {line_count}")
             process.wait(timeout=1800)
             
             # Cleanup temp files

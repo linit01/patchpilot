@@ -43,30 +43,14 @@
       changed_when: false
       failed_when: false
       
-    - name: Check for App Store updates (requires mas)
-      shell: "/opt/homebrew/bin/mas outdated"
-      register: mas_updates
-      when: ansible_facts['os_family'] == "Darwin"
-      changed_when: false
-      failed_when: false
-
     - name: Output macOS system update details
       debug:
         msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ macos_updates.stdout_lines }}"
+      loop: "{{ macos_updates.stdout_lines | default([]) | select('match', '^\\*') | list }}"
       when:
         - ansible_facts['os_family'] == "Darwin"
-        - macos_updates.stdout_lines | default([]) | length > 0
-        - "'* ' in item or 'Label:' in item"
+        - macos_updates.stdout_lines | default([]) | select('match', '^\\*') | list | length > 0
 
-    - name: Output App Store update details
-      debug:
-        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ mas_updates.stdout_lines }}"
-      when:
-        - ansible_facts['os_family'] == "Darwin"
-        - mas_updates.stdout_lines | default([]) | length > 0
-    
     - name: Check if reboot required (Linux)
       stat:
         path: /var/run/reboot-required
@@ -94,7 +78,7 @@
           {% if ansible_facts['os_family'] == "Debian" %}
           {{ inventory_hostname }}: {% if apt_updates.stdout_lines | length > 0 %}{{ apt_updates.stdout_lines | length }} apt updates available{% else %}Up to date{% endif %}
           {% elif ansible_facts['os_family'] == "Darwin" %}
-          {{ inventory_hostname }}: {% if brew_updates.stdout_lines | default([]) | length > 0 %}{{ brew_updates.stdout_lines | length }} brew updates available{% else %}Up to date{% endif %}
+          {{ inventory_hostname }}: {% set brew_count = brew_updates.stdout_lines | default([]) | length %}{% set macos_count = macos_updates.stdout_lines | default([]) | select('match', '^\\*') | list | length %}{% set total = brew_count + macos_count %}{% if total > 0 %}{{ total }} updates available ({{ brew_count }} brew{% if macos_count > 0 %}, {{ macos_count }} system{% endif %}){% else %}Up to date{% endif %}
           {% endif %}
 
 - hosts: all
@@ -106,15 +90,43 @@
         export APT_GET_ASSUME_YES=yes
         export DEBIAN_FRONTEND=noninteractive
         apt-get update
-        apt-get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y
+        apt-get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y </dev/null
       when: ansible_facts['os_family'] == "Debian"
       become: yes
       register: apt_upgrade_result
       changed_when: "'0 upgraded' not in apt_upgrade_result.stdout"
-      become: yes
       
     - name: Apply Homebrew updates (macOS)
       shell: "/opt/homebrew/bin/brew upgrade"
       when: ansible_facts['os_family'] == "Darwin"
       register: brew_upgrade_result
       changed_when: "'Already up-to-date' not in brew_upgrade_result.stdout"
+
+    - name: Apply macOS system updates (non-control nodes with auto-reboot)
+      shell: "/usr/sbin/softwareupdate -iaR --agree-to-license"
+      become: yes
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - allow_auto_reboot | default(false) | bool
+        - not is_control_node | default(false) | bool
+      register: macos_upgrade_result
+      tags: [apply-updates]
+
+    - name: Download macOS system updates (control nodes only)
+      shell: "/usr/sbin/softwareupdate -d -a"
+      become: yes
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - is_control_node | default(false) | bool
+      register: macos_download_result
+      async: 3600
+      poll: 30
+      tags: [apply-updates]
+
+    - name: Notify control node user about pending macOS updates
+      debug:
+        msg: "⚠️ macOS updates downloaded to control node {{ inventory_hostname }}. Please restart manually to complete installation."
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - is_control_node | default(false) | bool
+        - macos_download_result.changed
