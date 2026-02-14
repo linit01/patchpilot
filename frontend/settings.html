@@ -547,6 +547,22 @@
                     <input type="text" id="tags" placeholder="production, web, database">
                     <div class="help-text">Comma-separated tags for organizing hosts</div>
                 </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="allow_auto_reboot" style="width: auto; margin: 0;">
+                        <span>Allow Auto-Reboot</span>
+                    </label>
+                    <div class="help-text">Automatically reboot this host after patching if required (never applies to control nodes)</div>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="is_control_node" style="width: auto; margin: 0;">
+                        <span>Control Node</span>
+                    </label>
+                    <div class="help-text">This host runs PatchPilot - macOS updates will be downloaded only (never auto-reboot)</div>
+                </div>
                 
                 <div id="test-result" style="display: none;"></div>
                 
@@ -781,7 +797,9 @@
                 ssh_port: parseInt(document.getElementById('ssh-port').value),
                 ssh_key_type: document.getElementById('ssh-key-type').value,
                 notes: document.getElementById('notes').value,
-                tags: document.getElementById('tags').value
+                tags: document.getElementById('tags').value,
+                is_control_node: document.getElementById('is_control_node').checked,
+                allow_auto_reboot: document.getElementById('allow_auto_reboot').checked
             };
             
                        // Handle saved keys vs manual entry
@@ -895,6 +913,8 @@
                 document.getElementById('ssh-port').value = host.ssh_port;
                 document.getElementById('ssh-key-type').value = host.ssh_key_type;
                 document.getElementById('notes').value = host.notes || '';
+                document.getElementById('is_control_node').checked = host.is_control_node || false;
+                document.getElementById('allow_auto_reboot').checked = host.allow_auto_reboot || false;
                 document.getElementById('tags').value = host.tags || '';
                 
                 // Clear sensitive fields
