@@ -3,7 +3,7 @@
 192.168.1.50
 10.0.1.226 ansible_user=admin
 10.0.1.88 ansible_port=2299
-johns-macmini.lan
+johns-macmini.lan ansible_connection=local
 johns-mbp.lan ansible_user=johnsanborn
 printerd.lan
 
