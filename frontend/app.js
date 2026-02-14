@@ -98,6 +98,7 @@ function startCountdown() {
         
         if (countdownSeconds <= 0) {
             countdownSeconds = AUTO_CHECK_INTERVAL;
+            loadDashboard(); // Actually refresh the data
         }
     }, 1000);
 }
