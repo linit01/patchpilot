@@ -3,71 +3,233 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PatchPilot - System Update Management</title>
+    <title>PatchPilot — System Update Management</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header>
-            <h1><img src="patchpilot-icon.jpeg" alt="PatchPilot" style="height: 40px; vertical-align: middle; margin-right: 10px;">PatchPilot</h1>
-            <div class="header-actions">
-                <button id="settings-btn" class="btn btn-secondary" onclick="window.location.href='settings.html'">
-                    <span class="btn-icon">⚙️</span> Settings</button>
-                                <div style="position: relative; display: inline-block;">
-                    <button id="refresh-btn" class="btn btn-primary">
-                        <span class="btn-icon">🔄</span> Refresh Status
-                    </button>
-                    <div id="auto-check-countdown" style="font-size: 0.75em; color: #888; position: absolute; left: 50%; transform: translateX(-50%); top: 100%; margin-top: 4px; white-space: nowrap;">
-                        Next auto-check in: <span id="countdown-timer">--:--</span>
-                    </div>
+
+    <!-- ═══════ LEFT SIDEBAR ═══════ -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <div class="brand-icon"><img src="patchpilot-icon.jpeg" alt="PatchPilot"></div>
+            <div class="sidebar-brand-text">Patch<span>Pilot</span></div>
+        </div>
+
+        <div class="sidebar-status" id="sidebar-status">
+            <div class="status-row">
+                <div class="status-dot green"></div>
+                <span>Backend Connected</span>
+            </div>
+            <div class="status-row">
+                <div class="status-dot green" id="sidebar-host-dot"></div>
+                <span id="sidebar-host-count">— hosts monitored</span>
+            </div>
+            <div class="status-row">
+                <div class="status-dot amber" id="sidebar-load-dot"></div>
+                <span id="sidebar-load">Load: — / — / —</span>
+            </div>
+            <div class="status-row-sub" id="sidebar-uptime-row">
+                <span id="sidebar-uptime">Uptime: —</span>
+            </div>
+        </div>
+
+        <nav class="sidebar-nav">
+            <a class="nav-item active" href="index.html">
+                <span>📊</span> Dashboard
+            </a>
+            <a class="nav-item" href="#" onclick="showPatchHistoryModal(); return false;">
+                <span>📋</span> Patch History
+                <span class="nav-badge blue" id="sidebar-history-badge" style="display:none">0</span>
+            </a>
+            <a class="nav-item" href="#" onclick="scrollToSection('hosts-table-section'); return false;">
+                <span>🖥️</span> Hosts
+                <span class="nav-badge blue" id="sidebar-hosts-badge" style="display:none">0</span>
+            </a>
+            <a class="nav-item" href="#" onclick="showPackagesModal(); return false;">
+                <span>📦</span> Packages
+                <span class="nav-badge amber" id="sidebar-packages-badge" style="display:none">0</span>
+            </a>
+            <a class="nav-item" href="#" id="nav-alerts" onclick="showAlertsModal(); return false;">
+                <span>🔔</span> Alerts
+                <span class="nav-badge red" id="sidebar-alerts-badge" style="display:none">0</span>
+            </a>
+
+            <div class="nav-section-label" id="mgmt-section-label" style="display:none">Management</div>
+            <a class="nav-item" href="settings.html#hosts" id="nav-hosts-mgmt" style="display:none;">
+                <span>🖥️</span> Manage Hosts
+            </a>
+            <a class="nav-item" href="settings.html#general" id="nav-general" style="display:none;">
+                <span>⚙️</span> General
+            </a>
+            <a class="nav-item" href="settings.html#ssh-keys" id="nav-ssh-keys" style="display:none;">
+                <span>🔑</span> SSH Keys
+                <span class="nav-badge blue" id="sidebar-sshkeys-badge" style="display:none">0</span>
+            </a>
+            <a class="nav-item" href="settings.html#users" id="nav-users" style="display:none;">
+                <span>👥</span> Users
+                <span class="nav-badge blue" id="sidebar-users-badge" style="display:none">0</span>
+            </a>
+            <a class="nav-item" href="settings.html#schedules" id="nav-schedules" style="display:none;">
+                <span>🕐</span> Schedules
+                <span class="nav-badge blue" id="sidebar-schedules-badge" style="display:none">0</span>
+            </a>
+            <a class="nav-item" href="settings.html#advanced" id="nav-advanced" style="display:none;">
+                <span>🔧</span> Advanced
+            </a>
+        </nav>
+
+        <!-- App version tag -->
+        <div class="sidebar-version" id="sidebar-version-block">
+            <span class="version-label">PatchPilot</span>
+            <span class="version-tag" id="sidebar-app-version">v0.9.1</span>
+            <span class="version-alpha">alpha</span>
+        </div>
+
+        <!-- User footer (shown when authenticated) -->
+        <div class="sidebar-footer" id="sidebar-user" style="display: none;">
+            <div class="user-avatar" id="user-avatar-initials" onclick="openUserProfileModal()" style="cursor:pointer;" title="User profile">?</div>
+            <div class="user-info" onclick="openUserProfileModal()" style="cursor:pointer;" title="User profile">
+                <div class="user-name" id="sidebar-username"></div>
+                <div class="user-role" id="sidebar-role"></div>
+            </div>
+            <button class="logout-btn" title="Sign out" onclick="handleLogout()">🚪</button>
+        </div>
+
+        <!-- Login prompt (shown when not authenticated) -->
+        <div class="sidebar-footer" id="sidebar-login" style="display: none;">
+            <a href="login.html" style="color: var(--cyan); text-decoration: none; font-size: 13px; font-weight: 600;">
+                🔒 Sign In
+            </a>
+        </div>
+    </aside>
+
+    <!-- ═══════ MAIN CONTENT ═══════ -->
+    <div class="main">
+
+        <!-- Top bar -->
+        <div class="top-row">
+            <div class="page-title">
+                <div class="title-icon"><img src="patchpilot-icon.jpeg" alt=""></div>
+                Dashboard
+            </div>
+            <!-- Activity Status Bar -->
+            <div class="activity-bar" id="activity-bar">
+                <div class="activity-pills" id="activity-pills">
+                    <!-- Pills injected by JS -->
                 </div>
-                <button id="patch-selected-btn" class="btn btn-warning" disabled>
+            </div>
+            <div class="top-actions">
+                <div class="countdown-display">
+                    Next check: <span id="countdown-timer">--:--</span>
+                </div>
+                <button id="refresh-btn" class="btn btn-refresh" style="display:none;">
+                    <span class="btn-icon">🔄</span> Refresh
+                </button>
+                <button id="patch-selected-btn" class="btn btn-patch" disabled style="display:none;">
                     <span class="btn-icon">⚡</span> Patch Selected (<span id="selected-count">0</span>)
                 </button>
-            </div>
-        </header>
-
-        <!-- Stats Cards -->
-        <div class="stats-container">
-            <div class="stat-card stat-total">
-                <div class="stat-value" id="total-hosts">-</div>
-                <div class="stat-label">Total Hosts</div>
-            </div>
-            <div class="stat-card stat-success">
-                <div class="stat-value" id="up-to-date">-</div>
-                <div class="stat-label">Up to Date</div>
-            </div>
-            <div class="stat-card stat-warning">
-                <div class="stat-value" id="need-updates">-</div>
-                <div class="stat-label">Need Updates</div>
-            </div>
-            <div class="stat-card stat-danger">
-                <div class="stat-value" id="unreachable">-</div>
-                <div class="stat-label">Unreachable</div>
-            </div>
-            <div class="stat-card stat-info">
-                <div class="stat-value" id="total-updates">-</div>
-                <div class="stat-label">Total Pending Updates</div>
             </div>
         </div>
 
         <!-- Status Message -->
         <div id="status-message" class="status-message" style="display: none;"></div>
 
+        <!-- Stat Cards -->
+        <div class="stats-container">
+            <div class="stat-card stat-total">
+                <div class="stat-value" id="total-hosts">-</div>
+                <div class="stat-label">Total Hosts</div>
+                <div class="stat-icon">🖥️</div>
+            </div>
+            <div class="stat-card stat-success">
+                <div class="stat-value" id="up-to-date">-</div>
+                <div class="stat-label">Up to Date</div>
+                <div class="stat-icon">✅</div>
+            </div>
+            <div class="stat-card stat-warning">
+                <div class="stat-value" id="need-updates">-</div>
+                <div class="stat-label">Need Updates</div>
+                <div class="stat-icon">⚠️</div>
+            </div>
+            <div class="stat-card stat-danger">
+                <div class="stat-value" id="unreachable">-</div>
+                <div class="stat-label">Unreachable</div>
+                <div class="stat-icon">❌</div>
+            </div>
+            <div class="stat-card stat-info">
+                <div class="stat-value" id="total-updates">-</div>
+                <div class="stat-label">Pending Updates</div>
+                <div class="stat-icon">📦</div>
+            </div>
+        </div>
+
+        <!-- Charts Row -->
+        <div class="charts-row" id="charts-row">
+            <!-- Patch Activity -->
+            <div class="panel chart-panel-wide" id="panel-patch-activity">
+                <div class="panel-header" id="patch-activity-section">
+                    Patch Activity (Last 7 Days)
+                    <div style="display:flex; align-items:center; gap:12px;">
+                        <div class="chart-legend">
+                            <span class="legend-item"><span class="legend-dot" style="background:var(--blue)"></span> Patched</span>
+                            <span class="legend-item"><span class="legend-dot" style="background:var(--red)"></span> Failed</span>
+                        </div>
+                        <button class="panel-toggle" onclick="togglePanel('panel-patch-activity')" title="Collapse">▾</button>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="chart-bars-container" id="patch-activity-chart">
+                        <div class="chart-empty">No patch activity yet</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="charts-row-2col" id="charts-row-2col">
+            <!-- OS Distribution -->
+            <div class="panel" id="panel-os-dist">
+                <div class="panel-header">
+                    OS Distribution
+                    <button class="panel-toggle" onclick="togglePanel('panel-os-dist')" title="Collapse">▾</button>
+                </div>
+                <div class="panel-body">
+                    <div class="donut-wrapper" id="os-distribution-chart">
+                        <div class="chart-empty">Loading...</div>
+                    </div>
+                </div>
+            </div>
+            <!-- Update Types -->
+            <div class="panel" id="panel-update-types">
+                <div class="panel-header">
+                    Update Types
+                    <button class="panel-toggle" onclick="togglePanel('panel-update-types')" title="Collapse">▾</button>
+                </div>
+                <div class="panel-body">
+                    <div class="donut-wrapper" id="update-types-chart">
+                        <div class="chart-empty">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Hosts Table -->
-        <div class="table-container">
+        <div class="table-container" id="hosts-table-section">
+            <div class="panel-header">
+                All Hosts
+                <span id="table-subtitle" style="font-size:11px; font-weight:400; color:var(--text-muted); text-transform:none; letter-spacing:0;"></span>
+            </div>
+            <div class="table-scroll">
             <table class="hosts-table">
                 <thead>
                     <tr>
-                        <th>
+                        <th style="width:36px">
                             <input type="checkbox" id="select-all" />
                         </th>
-                        <th>Hostname</th>
+                        <th>Host</th>
                         <th>IP Address</th>
-                        <th>OS Type</th>
+                        <th>OS</th>
                         <th>Status</th>
-                        <th>Updates Available</th>
+                        <th>Updates</th>
                         <th>Last Checked</th>
                         <th>Actions</th>
                     </tr>
@@ -78,6 +240,7 @@
                     </tr>
                 </tbody>
             </table>
+            </div>
         </div>
 
         <!-- Host Details Modal -->
@@ -85,14 +248,13 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h2 id="modal-hostname">Host Details</h2>
-                    <div style="display: flex; gap: 10px;">
+                    <div style="display: flex; gap: 10px; align-items: center;">
                        <button id="patch-host-btn" class="btn btn-warning btn-sm" onclick="patchSingleHost()" style="display: none;">
                           <span class="btn-icon">🔧</span> Patch This Host
                        </button>
-                       <button class="btn btn-secondary btn-sm" onclick="closeHostModal()">Close</button>
                        <button class="modal-close" onclick="closeHostModal()">&times;</button>
+                    </div>
                 </div>
-            </div>
                 <div class="modal-body">
                     <div id="host-details-loading">Loading packages...</div>
                     <div id="host-details-content" style="display: none;">
@@ -117,14 +279,12 @@
                                 <input type="checkbox" id="detail-auto-reboot" style="margin-left: 10px;">
                             </div>
                         </div>
-                        
-                        <h3>Pending Updates</h3>
+                        <h3 style="color:var(--text-primary); margin-bottom: 12px; font-size: 15px;">Pending Updates</h3>
                         <div id="packages-list"></div>
                     </div>
                 </div>
-             </div>
-         </div>
-      </div>
+            </div>
+        </div>
 
         <!-- Patch Confirmation Modal -->
         <div id="patch-modal" class="modal" style="display: none;">
@@ -134,10 +294,10 @@
                     <button class="modal-close" onclick="closePatchModal()">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <p>You are about to patch the following hosts:</p>
-                    <ul id="patch-hosts-list"></ul>
+                    <p style="color:var(--text-secondary); margin-bottom: 16px;">You are about to patch the following hosts:</p>
+                    <ul id="patch-hosts-list" style="list-style:none; padding:0; margin-bottom: 16px;"></ul>
                     <div class="form-group">
-                        <label for="become-password">Sudo Password (required for Linux hosts):</label>
+                        <label for="become-password">Sudo Password (required for Linux hosts)</label>
                         <input type="password" id="become-password" placeholder="Enter sudo password" />
                     </div>
                     <div class="modal-actions">
@@ -147,22 +307,167 @@
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Patch Progress Modal -->
-    <div id="patch-progress-modal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>⏳ Patching In Progress</h2>
-                <button class="modal-close" onclick="closePatchProgressModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div id="patch-progress-messages" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 13px; padding: 10px; background: #f5f5f5; border-radius: 4px; line-height: 1.6;">
-                    <!-- Progress messages will appear here -->
+        <!-- Patch Progress Modal -->
+        <div id="patch-progress-modal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 720px;">
+                <div class="modal-header">
+                    <h2>⏳ Patching In Progress</h2>
+                    <button class="modal-close" onclick="closePatchProgressModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="patch-progress-hosts" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;"></div>
+                    <div id="patch-progress-messages" style="max-height: 480px; overflow-y: auto; padding: 14px; background: var(--bg-black); border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary);">
+                    </div>
                 </div>
             </div>
         </div>
+
+        <!-- User Profile Modal -->
+        <div id="user-profile-modal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width:440px;">
+                <div class="modal-header">
+                    <h2>👤 User Profile</h2>
+                    <button class="modal-close" onclick="closeUserProfileModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="host-info" style="margin-bottom:20px;">
+                        <div class="info-row">
+                            <strong>Username:</strong> <span id="profile-username"></span>
+                        </div>
+                        <div class="info-row">
+                            <strong>Role:</strong> <span id="profile-role"></span>
+                        </div>
+                    </div>
+                    <h3 style="color:var(--text-primary); margin-bottom:14px; font-size:15px;">Change Password</h3>
+                    <div id="profile-error" class="status-message error" style="display:none;"></div>
+                    <div id="profile-success" class="status-message success" style="display:none;"></div>
+                    <div class="form-group">
+                        <label for="current-password">Current Password</label>
+                        <input type="password" id="current-password" placeholder="Enter current password">
+                    </div>
+                    <div class="form-group">
+                        <label for="new-password">New Password</label>
+                        <input type="password" id="new-password" placeholder="Enter new password (min 8 chars)">
+                    </div>
+                    <div class="form-group">
+                        <label for="confirm-new-password">Confirm New Password</label>
+                        <input type="password" id="confirm-new-password" placeholder="Confirm new password">
+                    </div>
+                    <div class="modal-actions">
+                        <button class="btn btn-secondary" onclick="closeUserProfileModal()">Cancel</button>
+                        <button class="btn btn-primary" onclick="changePassword()">Update Password</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Patch History Modal -->
+        <div id="patch-history-modal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 860px;">
+                <div class="modal-header">
+                    <h2>📋 Patch History</h2>
+                    <button class="modal-close" onclick="document.getElementById('patch-history-modal').style.display='none'">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="patch-history-loading" style="color:var(--text-muted);text-align:center;padding:24px;">Loading...</div>
+                    <div id="patch-history-content" style="display:none;">
+                        <div class="table-scroll">
+                        <table class="hosts-table" style="font-size:13px;">
+                            <thead>
+                                <tr>
+                                    <th>Host</th>
+                                    <th>Status</th>
+                                    <th>Packages</th>
+                                    <th>Duration</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="patch-history-tbody"></tbody>
+                        </table>
+                        </div>
+                    </div>
+                    <div id="patch-history-empty" style="display:none;color:var(--text-muted);text-align:center;padding:32px;">
+                        No patch history yet. Run your first patch to see data here.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Packages Modal -->
+        <div id="packages-modal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 860px;">
+                <div class="modal-header">
+                    <h2>📦 Pending Packages</h2>
+                    <button class="modal-close" onclick="document.getElementById('packages-modal').style.display='none'">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="packages-modal-loading" style="color:var(--text-muted);text-align:center;padding:24px;">Loading...</div>
+                    <div id="packages-modal-content" style="display:none;">
+                        <div class="table-scroll">
+                        <table class="hosts-table" style="font-size:13px;">
+                            <thead>
+                                <tr>
+                                    <th>Host</th>
+                                    <th>Package</th>
+                                    <th>Current</th>
+                                    <th>Available</th>
+                                    <th>Type</th>
+                                </tr>
+                            </thead>
+                            <tbody id="packages-modal-tbody"></tbody>
+                        </table>
+                        </div>
+                    </div>
+                    <div id="packages-modal-empty" style="display:none;color:var(--text-muted);text-align:center;padding:32px;">
+                        No pending package updates.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Alerts Modal -->
+        <div id="alerts-modal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 680px;">
+                <div class="modal-header">
+                    <h2>🔔 Alerts</h2>
+                    <button class="modal-close" onclick="document.getElementById('alerts-modal').style.display='none'">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="alerts-modal-loading" style="color:var(--text-muted);text-align:center;padding:24px;">Loading...</div>
+                    <div id="alerts-modal-list" style="display:none;"></div>
+                    <div id="alerts-modal-empty" style="display:none;color:var(--text-muted);text-align:center;padding:32px;">
+                        ✅ No active alerts — all systems nominal.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    <!-- ============================================================
+         CONSOLE STATUS BAR  (inside .main, sticky to bottom)
+         ============================================================ -->
+    <div id="console-bar" class="console-bar console-bar--collapsed">
+        <div class="console-bar__header" onclick="toggleConsoleBar()">
+            <div class="console-bar__title">
+                <span class="console-bar__icon">⬛</span>
+                <span class="console-bar__label">CONSOLE</span>
+                <span class="console-bar__counts">
+                    <span id="console-err-count" class="console-count console-count--err" style="display:none">0 ERR</span>
+                    <span id="console-warn-count" class="console-count console-count--warn" style="display:none">0 WARN</span>
+                </span>
+            </div>
+            <div class="console-bar__controls">
+                <button class="console-ctrl-btn" title="Frontend logs" onclick="event.stopPropagation(); setConsoleTab('frontend')" id="console-tab-frontend">Frontend</button>
+                <button class="console-ctrl-btn" title="Backend logs" onclick="event.stopPropagation(); setConsoleTab('backend')" id="console-tab-backend">Backend</button>
+                <button class="console-ctrl-btn" onclick="event.stopPropagation(); clearConsole()" title="Clear">🗑</button>
+                <button class="console-ctrl-btn" onclick="event.stopPropagation(); toggleConsoleBar()" title="Toggle" id="console-toggle-btn">▲</button>
+            </div>
+        </div>
+        <div class="console-bar__body" id="console-body">
+            <div class="console-output" id="console-output"></div>
+        </div>
     </div>
+    </div><!-- end .main -->
 
     <script src="app.js"></script>
 </body>

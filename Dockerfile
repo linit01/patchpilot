@@ -1,27 +1,31 @@
 FROM python:3.11-slim
 
-# Install Ansible and dependencies
+# ── System packages ──────────────────────────────────────────────────────────
+# ansible removed from apt — installed via pip (ansible-runner/ansible-core)
+# which avoids pulling gcc-14 + full compiler toolchain (~500MB on ARM).
+# postgresql-client provides pg_dump, pg_restore, psql, dropdb, createdb.
 RUN apt-get update && apt-get install -y \
-    ansible \
     openssh-client \
     sshpass \
+    postgresql-client \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# ── Working directory ────────────────────────────────────────────────────────
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
+# ── Python dependencies ──────────────────────────────────────────────────────
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# ── Application code ─────────────────────────────────────────────────────────
 COPY backend/ .
 
-# Create ansible directory
-RUN mkdir -p /ansible
+# ── Runtime directories ──────────────────────────────────────────────────────
+RUN mkdir -p /ansible /backups
 
-# Expose port
+# ── Port ─────────────────────────────────────────────────────────────────────
 EXPOSE 8000
 
-# Run the application
+# ── Entrypoint ───────────────────────────────────────────────────────────────
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

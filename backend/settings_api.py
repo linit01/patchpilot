@@ -19,9 +19,10 @@ import os
 from encryption_utils import encrypt_credential, decrypt_credential, validate_ssh_key
 from dependencies import get_db_pool
 from sync_ansible_inventory import sync_ansible_inventory
+from auth import require_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_auth)])
 
 
 # ============================================================================
@@ -38,10 +39,15 @@ class HostCreate(BaseModel):
     ssh_password: Optional[str] = Field(None, description="SSH password (not recommended)")
     notes: Optional[str] = Field(None, max_length=1000, description="Optional notes")
     tags: Optional[str] = Field(None, max_length=255, description="Comma-separated tags")
+    is_control_node: Optional[bool] = False
+    allow_auto_reboot: Optional[bool] = True
     
     @validator('ssh_key_type')
     def validate_key_type(cls, v):
         valid_types = ['default', 'pasted', 'file', 'password']
+        # Allow saved: prefix (frontend converts to pasted, but be tolerant)
+        if v and v.startswith('saved:'):
+            return 'pasted'
         if v not in valid_types:
             raise ValueError(f"ssh_key_type must be one of: {', '.join(valid_types)}")
         return v
@@ -65,6 +71,7 @@ class HostUpdate(BaseModel):
     ssh_password: Optional[str] = None
     notes: Optional[str] = Field(None, max_length=1000)
     tags: Optional[str] = Field(None, max_length=255)
+    is_control_node: Optional[bool] = None
     allow_auto_reboot: Optional[bool] = None
 
 
@@ -81,6 +88,7 @@ class HostResponse(BaseModel):
     tags: Optional[str]
     status: Optional[str]
     is_control_node: bool
+    allow_auto_reboot: bool = True
     last_checked: Optional[datetime]
     created_at: datetime
     updated_at: datetime
@@ -120,6 +128,7 @@ class TestConnectionRequest(BaseModel):
     ssh_key_type: str = "default"
     ssh_private_key: Optional[str] = None
     ssh_password: Optional[str] = None
+    host_id: Optional[str] = None  # Existing host ID - use stored key if no key provided
 
 
 class TestConnectionResponse(BaseModel):
@@ -176,7 +185,7 @@ async def list_hosts(pool: asyncpg.Pool = Depends(get_db_pool)):
                 id, hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
                 ssh_password_encrypted IS NOT NULL AS has_password,
-                notes, tags, status, is_control_node,
+                notes, tags, status, is_control_node, allow_auto_reboot,
                 last_checked, created_at, updated_at
             FROM hosts
             ORDER BY hostname
@@ -208,20 +217,21 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
         if existing:
             raise HTTPException(status_code=409, detail=f"Host '{host.hostname}' already exists")
         
-        # Encrypt credentials if provided
+        # Encrypt credentials if provided.
+        # encrypt_credential() returns a base64 str; encode to UTF-8 bytes for BYTEA column.
         ssh_key_encrypted = None
         ssh_password_encrypted = None
         
         if host.ssh_private_key and host.ssh_key_type in ['pasted', 'file']:
             try:
-                ssh_key_encrypted = encrypt_credential(host.ssh_private_key)
+                ssh_key_encrypted = encrypt_credential(host.ssh_private_key).encode('utf-8')
             except Exception as e:
                 logger.error(f"Failed to encrypt SSH key: {e}")
                 raise HTTPException(status_code=500, detail="Failed to encrypt SSH key")
         
         if host.ssh_password and host.ssh_key_type == 'password':
             try:
-                ssh_password_encrypted = encrypt_credential(host.ssh_password)
+                ssh_password_encrypted = encrypt_credential(host.ssh_password).encode('utf-8')
             except Exception as e:
                 logger.error(f"Failed to encrypt password: {e}")
                 raise HTTPException(status_code=500, detail="Failed to encrypt password")
@@ -231,23 +241,27 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
             INSERT INTO hosts (
                 hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted, ssh_password_encrypted,
-                notes, tags
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                notes, tags, is_control_node, allow_auto_reboot
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING 
                 id, hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
                 ssh_password_encrypted IS NOT NULL AS has_password,
-                notes, tags, status, is_control_node,
+                notes, tags, status, is_control_node, allow_auto_reboot,
                 last_checked, created_at, updated_at
         """, host.hostname, host.ssh_user, host.ssh_port, host.ssh_key_type,
-            ssh_key_encrypted, ssh_password_encrypted, host.notes, host.tags)
+            ssh_key_encrypted, ssh_password_encrypted, host.notes, host.tags,
+            host.is_control_node, host.allow_auto_reboot)
         
-        # Log audit trail
-        await log_audit_action(pool, "CREATE", "host", host.hostname, {
-            "ssh_user": host.ssh_user,
-            "ssh_port": host.ssh_port,
-            "ssh_key_type": host.ssh_key_type
-        })
+        # Log audit trail (wrapped — must never block the response)
+        try:
+            await log_audit_action(pool, "CREATE", "host", host.hostname, {
+                "ssh_user": host.ssh_user,
+                "ssh_port": host.ssh_port,
+                "ssh_key_type": host.ssh_key_type
+            })
+        except Exception as _audit_err:
+            logger.warning(f"Audit log failed (non-fatal): {_audit_err}")
         
         # Sync to Ansible inventory
         try:
@@ -259,9 +273,11 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
             # Don't fail the request, just log the error
         
         try:
-            async with httpx.AsyncClient() as client:
-                await client.post(f"http://localhost:8000/api/check/{host.hostname}")
-                logger.info(f"Triggered check for new host: {host.hostname}")
+            # Trigger check directly (not via HTTP, which would need auth cookies)
+            import asyncio
+            from app import run_ansible_check_task
+            asyncio.create_task(run_ansible_check_task([host.hostname]))
+            logger.info(f"Triggered check for new host: {host.hostname}")
         except Exception as e:
             logger.warning(f"Failed to trigger check for {host.hostname}: {e}")
             # Don't fail the request
@@ -295,7 +311,7 @@ async def get_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
                 id, hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
                 ssh_password_encrypted IS NOT NULL AS has_password,
-                notes, tags, status, is_control_node,
+                notes, tags, status, is_control_node, allow_auto_reboot,
                 last_checked, created_at, updated_at
             FROM hosts
             WHERE id = $1
@@ -358,14 +374,55 @@ async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depen
             values.append(host.ssh_key_type)
             param_idx += 1
         
+        # Resolve saved:UUID key references coming from the edit form.
+        # We bypass encrypt_credential entirely and write the raw Fernet bytes straight
+        # into hosts.ssh_private_key_encrypted (BYTEA) — same key, no conversion loss.
+        if host.ssh_key_type and host.ssh_key_type.startswith('saved:'):
+            saved_key_id = host.ssh_key_type.replace('saved:', '')
+            try:
+                import base64 as _b64
+                saved_key_uuid = uuid.UUID(saved_key_id)
+                key_row = await conn.fetchrow(
+                    "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE id = $1", saved_key_uuid
+                )
+                if key_row:
+                    raw_val = key_row['ssh_key_encrypted']
+                    # Normalise to bytes regardless of TEXT (base64 str) or BYTEA source
+                    if isinstance(raw_val, str):
+                        raw_key_bytes = _b64.b64decode(raw_val.encode('utf-8'))
+                    elif isinstance(raw_val, memoryview):
+                        raw_key_bytes = bytes(raw_val)
+                    else:
+                        raw_key_bytes = raw_val
+
+                    # Write directly — add to updates list bypassing the normal key-encrypt path
+                    updates.append(f"ssh_private_key_encrypted = ${param_idx}")
+                    values.append(raw_key_bytes)
+                    param_idx += 1
+                    updates.append(f"ssh_key_type = ${param_idx}")
+                    values.append('pasted')
+                    param_idx += 1
+                    host = host.copy(update={'ssh_key_type': None, 'ssh_private_key': None})
+                    logger.info(f"Resolved saved key {saved_key_id} for host update")
+                else:
+                    logger.warning(f"Saved key {saved_key_id} not found; skipping key update")
+                    host = host.copy(update={'ssh_key_type': None, 'ssh_private_key': None})
+            except Exception as _e:
+                logger.error(f"Failed to resolve saved key for update: {_e}")
+                host = host.copy(update={'ssh_key_type': None, 'ssh_private_key': None})
+
         if host.ssh_private_key is not None and host.ssh_private_key.strip():
-            ssh_key_encrypted = encrypt_credential(host.ssh_private_key)
+            try:
+                ssh_key_encrypted = encrypt_credential(host.ssh_private_key).encode('utf-8')
+            except Exception as _enc_e:
+                logger.error(f"Failed to encrypt SSH key for host update: {_enc_e}")
+                raise HTTPException(status_code=400, detail=f"Invalid SSH key: {_enc_e}")
             updates.append(f"ssh_private_key_encrypted = ${param_idx}")
             values.append(ssh_key_encrypted)
             param_idx += 1
         
         if host.ssh_password is not None and host.ssh_password.strip():
-            ssh_password_encrypted = encrypt_credential(host.ssh_password)
+            ssh_password_encrypted = encrypt_credential(host.ssh_password).encode('utf-8')
             updates.append(f"ssh_password_encrypted = ${param_idx}")
             values.append(ssh_password_encrypted)
             param_idx += 1
@@ -383,6 +440,11 @@ async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depen
         if host.allow_auto_reboot is not None:
             updates.append(f"allow_auto_reboot = ${param_idx}")
             values.append(host.allow_auto_reboot)
+            param_idx += 1
+
+        if host.is_control_node is not None:
+            updates.append(f"is_control_node = ${param_idx}")
+            values.append(host.is_control_node)
             param_idx += 1
         
         if not updates:
@@ -406,8 +468,13 @@ async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depen
         
         row = await conn.fetchrow(query, *values)
         
-        # Log audit trail
-        await log_audit_action(pool, "UPDATE", "host", existing['hostname'], dict(host))
+        # Log audit trail (wrapped in try/except — must never block the response)
+        try:
+            safe_details = {k: str(v) if v is not None else None for k, v in host.__dict__.items()
+                            if not k.startswith('__') and k not in ('ssh_private_key', 'ssh_password')}
+            await log_audit_action(pool, "UPDATE", "host", existing['hostname'], safe_details)
+        except Exception as _audit_err:
+            logger.warning(f"Audit log failed (non-fatal): {_audit_err}")
         
         # Sync to Ansible inventory
         try:
@@ -465,56 +532,169 @@ async def delete_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
 # ============================================================================
 
 @router.post("/hosts/test", response_model=TestConnectionResponse)
-async def test_connection(request: TestConnectionRequest):
+async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = Depends(get_db_pool)):
     """
-    Test SSH connection to a host.
+    Test SSH connection to a host using the ssh command directly.
+    This matches how Ansible connects, avoiding paramiko key format issues.
+    """
+    import subprocess
+    import tempfile
     
-    Args:
-        request: Connection details to test
-        
-    Returns:
-        Test result with success status and message
-    """
+    # v4.8 — unmistakable debug output
+    print(f"=== TEST CONNECTION v4.8 ===")
+    print(f"  hostname={request.hostname}, user={request.ssh_user}, port={request.ssh_port}")
+    print(f"  key_type='{request.ssh_key_type}'")
+    print(f"  has_private_key={bool(request.ssh_private_key)}, key_len={len(request.ssh_private_key) if request.ssh_private_key else 0}")
+    
+    tmp_key_file = None
+    ssh_key_content = request.ssh_private_key
+    effective_key_type = request.ssh_key_type
+    
+    # Handle saved: key types - fetch from database directly
+    if request.ssh_key_type and request.ssh_key_type.startswith('saved:'):
+        key_id = request.ssh_key_type.replace('saved:', '')
+        print(f"  Resolving saved key: {key_id}")
+        try:
+            key_uuid = uuid.UUID(key_id)
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE id = $1", key_uuid
+                )
+                if row:
+                    ssh_key_content = decrypt_credential(row['ssh_key_encrypted'])
+                    effective_key_type = 'pasted'
+                    print(f"  Resolved saved key, length={len(ssh_key_content)}")
+                else:
+                    print(f"  Saved key NOT FOUND in database")
+                    return TestConnectionResponse(success=False, message="Saved SSH key not found")
+        except Exception as e:
+            print(f"  Failed to resolve saved key: {e}")
+            return TestConnectionResponse(success=False, message=f"Failed to load saved SSH key: {str(e)}")
+    
+    # If key_type is 'pasted' but no key content, try to load from existing host
+    if effective_key_type in ['pasted', 'file'] and not ssh_key_content and request.host_id:
+        print(f"  No key content but have host_id={request.host_id}, fetching stored key...")
+        try:
+            host_uuid = uuid.UUID(request.host_id)
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT ssh_private_key_encrypted FROM hosts WHERE id = $1", host_uuid
+                )
+                if row and row['ssh_private_key_encrypted']:
+                    ssh_key_content = decrypt_credential(row['ssh_private_key_encrypted'])
+                    effective_key_type = 'pasted'
+                    print(f"  Loaded stored key for host, length={len(ssh_key_content)}")
+                else:
+                    print(f"  No stored key found for host")
+        except Exception as e:
+            print(f"  Failed to load host key: {e}")
+    
+    # If key_type is 'pasted' but no key content, it means the frontend didn't send it
+    if effective_key_type in ['pasted', 'file'] and not ssh_key_content:
+        print(f"  ERROR: key_type={effective_key_type} but no key content!")
+        return TestConnectionResponse(
+            success=False,
+            message="No SSH key content received. Please select or paste a key."
+        )
+    
     try:
-        # Create SSH client
+        # Build ssh command
+        ssh_cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=yes",
+            "-p", str(request.ssh_port),
+        ]
+        
+        # Handle authentication
+        if effective_key_type in ["pasted", "file"] and ssh_key_content:
+            # Write key to temp file
+            tmp_key_file = tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False)
+            tmp_key_file.write(ssh_key_content)
+            tmp_key_file.close()
+            os.chmod(tmp_key_file.name, 0o600)
+            ssh_cmd.extend(["-i", tmp_key_file.name])
+            print(f"  Using key file: {tmp_key_file.name}")
+        elif effective_key_type == "password" and request.ssh_password:
+            return await _test_connection_password(request)
+        else:
+            print(f"  WARNING: No auth method resolved! effective_key_type={effective_key_type}")
+        
+        # Add user@host and command
+        ssh_cmd.append(f"{request.ssh_user}@{request.hostname}")
+        ssh_cmd.append("uname -a")
+        
+        print(f"  Running: ssh -p {request.ssh_port} -i <keyfile> {request.ssh_user}@{request.hostname} uname -a")
+        
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+        
+        print(f"  SSH returncode={result.returncode}")
+        print(f"  SSH stdout={result.stdout.strip()[:200]}")
+        print(f"  SSH stderr={result.stderr.strip()[:200]}")
+        
+        if result.returncode == 0:
+            uname_output = result.stdout.strip()
+            return TestConnectionResponse(
+                success=True,
+                message=f"Successfully connected to {request.hostname}",
+                details={
+                    "hostname": request.hostname,
+                    "port": request.ssh_port,
+                    "user": request.ssh_user,
+                    "system_info": uname_output
+                }
+            )
+        else:
+            error_msg = result.stderr.strip()
+            if "Permission denied" in error_msg:
+                msg = "Authentication failed - check username or SSH key"
+            elif "Connection refused" in error_msg:
+                msg = f"Connection refused on port {request.ssh_port}"
+            elif "Connection timed out" in error_msg or "timed out" in error_msg:
+                msg = f"Connection timeout - host may be unreachable on port {request.ssh_port}"
+            elif "No route to host" in error_msg:
+                msg = "No route to host - check network connectivity"
+            else:
+                msg = f"SSH failed: {error_msg[:200]}"
+            
+            return TestConnectionResponse(success=False, message=msg)
+            
+    except subprocess.TimeoutExpired:
+        return TestConnectionResponse(success=False, message="Connection timeout after 15s")
+    except Exception as e:
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
+        return TestConnectionResponse(success=False, message=f"Connection test failed: {str(e)}")
+    finally:
+        if tmp_key_file:
+            try:
+                os.unlink(tmp_key_file.name)
+            except:
+                pass
+
+
+async def _test_connection_password(request: TestConnectionRequest) -> TestConnectionResponse:
+    """Fallback for password auth using paramiko (ssh requires sshpass)"""
+    try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        # Prepare authentication
-        connect_kwargs = {
-            "hostname": request.hostname,
-            "port": request.ssh_port,
-            "username": request.ssh_user,
-            "timeout": 10,
-        }
-        
-        if request.ssh_key_type == "password" and request.ssh_password:
-            connect_kwargs["password"] = request.ssh_password
-        elif request.ssh_key_type in ["pasted", "file"] and request.ssh_private_key:
-            # Load private key from string
-            key_file = io.StringIO(request.ssh_private_key)
-            try:
-                pkey = paramiko.RSAKey.from_private_key(key_file)
-            except:
-                try:
-                    key_file.seek(0)
-                    pkey = paramiko.Ed25519Key.from_private_key(key_file)
-                except:
-                    key_file.seek(0)
-                    pkey = paramiko.ECDSAKey.from_private_key(key_file)
-            connect_kwargs["pkey"] = pkey
-        # else: use default SSH keys from ~/.ssh/
-        
-        # Attempt connection
-        client.connect(**connect_kwargs)
-        
-        # Test command execution
+        client.connect(
+            hostname=request.hostname,
+            port=request.ssh_port,
+            username=request.ssh_user,
+            password=request.ssh_password,
+            timeout=10,
+        )
         stdin, stdout, stderr = client.exec_command("uname -a")
         uname_output = stdout.read().decode().strip()
-        
         client.close()
         
-        logger.info(f"SSH connection test successful: {request.hostname}")
         return TestConnectionResponse(
             success=True,
             message=f"Successfully connected to {request.hostname}",
@@ -525,30 +705,10 @@ async def test_connection(request: TestConnectionRequest):
                 "system_info": uname_output
             }
         )
-        
-    except paramiko.AuthenticationException:
-        logger.warning(f"SSH authentication failed: {request.hostname}")
-        return TestConnectionResponse(
-            success=False,
-            message="Authentication failed - check username, password, or SSH key"
-        )
-    except paramiko.SSHException as e:
-        logger.warning(f"SSH connection failed: {request.hostname} - {e}")
-        return TestConnectionResponse(
-            success=False,
-            message=f"SSH connection failed: {str(e)}"
-        )
-    except socket.timeout:
-        logger.warning(f"Connection timeout: {request.hostname}")
-        return TestConnectionResponse(
-            success=False,
-            message=f"Connection timeout - host may be unreachable on port {request.ssh_port}"
-        )
     except Exception as e:
-        logger.error(f"Connection test error: {e}")
         return TestConnectionResponse(
             success=False,
-            message=f"Connection test failed: {str(e)}"
+            message=f"Connection failed: {str(e)}"
         )
 
 
@@ -562,35 +722,260 @@ async def import_hosts(request: BulkImportRequest, pool: asyncpg.Pool = Depends(
     Bulk import hosts from various formats.
     
     Supported formats:
-    - ansible: Ansible inventory file format
-    - csv: CSV with columns: hostname,ssh_user,ssh_port,notes
+    - csv: CSV with columns: hostname,ssh_user,ssh_port,tags,notes
     - json: JSON array of host objects
-    
-    Args:
-        request: Import request with format and data
-        
-    Returns:
-        Import summary with counts of added/updated/failed hosts
     """
-    # Implementation would parse the data format and bulk insert
-    # This is a placeholder for the implementation
-    raise HTTPException(status_code=501, detail="Bulk import not yet implemented")
+    import json as json_lib
+    import csv
+    import io
+    
+    added = 0
+    updated = 0
+    failed = 0
+    errors = []
+    
+    hosts_to_import = []
+    
+    if request.format == "json":
+        try:
+            hosts_to_import = json_lib.loads(request.data)
+            if not isinstance(hosts_to_import, list):
+                raise HTTPException(status_code=400, detail="JSON must be an array of host objects")
+        except json_lib.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
+    
+    elif request.format == "csv":
+        try:
+            import re as _re
+            raw = request.data.strip()
+            lines = [l for l in raw.splitlines() if l.strip()]
+            if not lines:
+                raise HTTPException(status_code=400, detail="CSV data is empty")
+
+            # Auto-detect header: first row has text keywords that are column names
+            first_fields = [f.strip().lower() for f in lines[0].split(",")]
+            has_header = any(f in ("hostname", "ip", "ip_address", "host", "ssh_user", "user") for f in first_fields)
+
+            if has_header:
+                reader = csv.DictReader(io.StringIO(raw))
+                for row in reader:
+                    hn = (row.get("hostname") or row.get("host") or "").strip()
+                    ip = (row.get("ip_address") or row.get("ip") or "").strip()
+                    if not hn:
+                        hn = ip  # fallback: use IP as hostname
+                    hosts_to_import.append({
+                        "hostname": hn,
+                        "ip_address": ip or None,
+                        "ssh_user": (row.get("ssh_user") or row.get("user") or "root").strip() or "root",
+                        "ssh_port": int(row.get("ssh_port") or row.get("port") or 22),
+                        "tags": row.get("tags", "").strip(),
+                        "notes": row.get("notes", "").strip(),
+                        "is_control_node": str(row.get("is_control_node", "false")).lower() == "true",
+                        "allow_auto_reboot": str(row.get("allow_auto_reboot", "true")).lower() != "false",
+                    })
+            else:
+                # Headerless format: HOSTNAME, SSH_USER, SSH_PORT, TAGS, NOTES
+                # The hostname can be a DNS name OR an IP address — column 1 is ALWAYS the hostname.
+                # If the hostname looks like an IP, also populate ip_address with that same value.
+                for line in lines:
+                    parts = [p.strip() for p in line.split(",")]
+                    if not parts or not parts[0]:
+                        continue
+                    hn = parts[0]
+                    user_val = parts[1] if len(parts) > 1 and parts[1] else "root"
+                    port_str = parts[2] if len(parts) > 2 and parts[2] else "22"
+                    tags_val = parts[3] if len(parts) > 3 else ""
+                    notes_val = parts[4] if len(parts) > 4 else ""
+                    # If hostname looks like an IP, store it as ip_address too
+                    ip_val = hn if _re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', hn) else ""
+                    hosts_to_import.append({
+                        "hostname": hn,
+                        "ip_address": ip_val or None,
+                        "ssh_user": user_val or "root",
+                        "ssh_port": int(port_str) if port_str.isdigit() else 22,
+                        "tags": tags_val,
+                        "notes": notes_val,
+                        "is_control_node": False,
+                        "allow_auto_reboot": True,
+                    })
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid CSV: {str(e)}")
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {request.format}. Use 'json' or 'csv'.")
+    
+    # Deduplicate within this batch - last entry for a hostname wins
+    seen_in_batch = {}
+    for host_data in hosts_to_import:
+        hn = host_data.get("hostname", "").strip()
+        if hn:
+            seen_in_batch[hn] = host_data
+    hosts_to_import = list(seen_in_batch.values())
+
+    async with pool.acquire() as conn:
+        for host_data in hosts_to_import:
+            hostname = host_data.get("hostname", "").strip()
+            if not hostname:
+                failed += 1
+                errors.append("Empty hostname")
+                continue
+            
+            try:
+                existing = await conn.fetchval("SELECT id FROM hosts WHERE hostname = $1", hostname)
+                
+                if existing and not request.overwrite:
+                    failed += 1
+                    errors.append(f"{hostname}: already exists (overwrite=false)")
+                    continue
+                
+                ssh_user = host_data.get("ssh_user", "root")
+                ssh_port = int(host_data.get("ssh_port", 22))
+                tags = host_data.get("tags", "")
+                notes = host_data.get("notes", "")
+                is_control = host_data.get("is_control_node", False)
+                allow_reboot = host_data.get("allow_auto_reboot", True)
+                ip_address = host_data.get("ip_address", "") or None
+                
+                if existing:
+                    await conn.execute("""
+                        UPDATE hosts SET ssh_user=$2, ssh_port=$3, tags=$4, notes=$5,
+                               is_control_node=$6, allow_auto_reboot=$7,
+                               ip_address=COALESCE($8, ip_address), updated_at=NOW()
+                        WHERE hostname=$1
+                    """, hostname, ssh_user, ssh_port, tags, notes, is_control, allow_reboot, ip_address)
+                    updated += 1
+                else:
+                    await conn.execute("""
+                        INSERT INTO hosts (hostname, ip_address, ssh_user, ssh_port, tags, notes, 
+                                          is_control_node, allow_auto_reboot, ssh_key_type)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'default')
+                    """, hostname, ip_address, ssh_user, ssh_port, tags, notes, is_control, allow_reboot)
+                    added += 1
+                    
+            except Exception as e:
+                failed += 1
+                errors.append(f"{hostname}: {str(e)}")
+    
+    # Auto-apply default SSH key to newly added hosts.
+    # saved_ssh_keys.ssh_key_encrypted may be TEXT (base64 str) or BYTEA (raw bytes)
+    # depending on the live DB column type.  hosts.ssh_private_key_encrypted is BYTEA,
+    # so we normalise to bytes before the UPDATE regardless of source type.
+    import base64 as _b64
+    keys_applied = 0
+    if added > 0:
+        try:
+            async with pool.acquire() as conn:
+                default_key_row = await conn.fetchrow(
+                    "SELECT id, ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE LIMIT 1"
+                )
+                if default_key_row:
+                    raw_val = default_key_row['ssh_key_encrypted']
+                    if isinstance(raw_val, str):
+                        # TEXT column stores base64 — decode to raw Fernet bytes for BYTEA target
+                        raw_key_bytes = _b64.b64decode(raw_val.encode('utf-8'))
+                    elif isinstance(raw_val, memoryview):
+                        raw_key_bytes = bytes(raw_val)
+                    else:
+                        raw_key_bytes = raw_val  # already bytes
+
+                    imported_hostnames = [h.get("hostname", "").strip() for h in hosts_to_import]
+                    for hn in imported_hostnames:
+                        if not hn:
+                            continue
+                        row = await conn.fetchrow(
+                            "SELECT id, ssh_key_type FROM hosts WHERE hostname = $1", hn
+                        )
+                        if row and row['ssh_key_type'] == 'default':
+                            await conn.execute("""
+                                UPDATE hosts
+                                SET ssh_key_type = 'pasted',
+                                    ssh_private_key_encrypted = $1,
+                                    updated_at = NOW()
+                                WHERE id = $2
+                            """, raw_key_bytes, row['id'])
+                            keys_applied += 1
+        except Exception as _e:
+            logger.warning(f"Auto-apply default SSH key during import failed (non-fatal): {_e}")
+
+    # Sync inventory after import
+    try:
+        inventory_path = os.getenv("ANSIBLE_INVENTORY_PATH", "/ansible/hosts")
+        await sync_ansible_inventory(pool, inventory_path)
+    except Exception:
+        pass
+
+    # Trigger Ansible check for newly added hosts
+    if added > 0:
+        try:
+            new_hostnames = [h.get("hostname", "").strip() for h in hosts_to_import if h.get("hostname")]
+            if new_hostnames:
+                import asyncio
+                from app import run_ansible_check_task
+                asyncio.create_task(run_ansible_check_task(new_hostnames))
+        except Exception:
+            pass
+
+    return {
+        "added": added,
+        "updated": updated,
+        "failed": failed,
+        "total": len(hosts_to_import),
+        "errors": errors[:20],  # Limit error messages
+        "ssh_keys_applied": keys_applied
+    }
 
 
-@router.get("/hosts/export", response_model=BulkExportResponse)
+@router.get("/hosts/export")
 async def export_hosts(format: str = "json", pool: asyncpg.Pool = Depends(get_db_pool)):
     """
     Export all hosts to specified format.
     
     Args:
-        format: Export format (json, csv, ansible)
-        
-    Returns:
-        Exported data in requested format
+        format: Export format (json or csv)
     """
-    # Implementation would format hosts data for export
-    # This is a placeholder for the implementation
-    raise HTTPException(status_code=501, detail="Export not yet implemented")
+    import json as json_lib
+    import csv
+    import io
+    
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT hostname, ssh_user, ssh_port, tags, notes, 
+                   is_control_node, allow_auto_reboot, status, os_family, ip_address
+            FROM hosts ORDER BY hostname
+        """)
+        
+        hosts = [dict(r) for r in rows]
+    
+    if format == "json":
+        # Convert to JSON-safe format
+        for h in hosts:
+            h['is_control_node'] = bool(h.get('is_control_node', False))
+            h['allow_auto_reboot'] = bool(h.get('allow_auto_reboot', True))
+        
+        return {
+            "format": "json",
+            "data": json_lib.dumps(hosts, indent=2, default=str),
+            "count": len(hosts)
+        }
+    
+    elif format == "csv":
+        output = io.StringIO()
+        fieldnames = ["hostname", "ssh_user", "ssh_port", "tags", "notes", 
+                      "is_control_node", "allow_auto_reboot", "status", "os_family", "ip_address"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        for h in hosts:
+            writer.writerow({k: h.get(k, '') for k in fieldnames})
+        
+        return {
+            "format": "csv",
+            "data": output.getvalue(),
+            "count": len(hosts)
+        }
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}. Use 'json' or 'csv'.")
 
 
 # ============================================================================
@@ -605,19 +990,23 @@ async def get_app_settings(pool: asyncpg.Pool = Depends(get_db_pool)):
         return {row['key']: {"value": row['value'], "description": row['description']} for row in rows}
 
 
+class SettingUpdate(BaseModel):
+    value: str
+
+
 @router.put("/app/{key}")
-async def update_app_setting(key: str, value: str, pool: asyncpg.Pool = Depends(get_db_pool)):
+async def update_app_setting(key: str, body: SettingUpdate, pool: asyncpg.Pool = Depends(get_db_pool)):
     """Update an application setting"""
     async with pool.acquire() as conn:
         await conn.execute("""
-            UPDATE settings 
-            SET value = $1, updated_at = CURRENT_TIMESTAMP
-            WHERE key = $2
-        """, value, key)
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
+        """, key, body.value)
         
-        await log_audit_action(pool, "UPDATE", "setting", key, {"value": value})
+        await log_audit_action(pool, "UPDATE", "setting", key, {"value": body.value})
         
-        return {"key": key, "value": value}
+        return {"key": key, "value": body.value}
 
 
 # ============================================================================
@@ -733,9 +1122,9 @@ async def create_saved_ssh_key(key: SavedSSHKeyCreate, pool: asyncpg.Pool = Depe
         if existing:
             raise HTTPException(status_code=409, detail=f"SSH key '{key.name}' already exists")
         
-        # Encrypt the SSH key
+        # Encrypt the SSH key — encode to UTF-8 bytes for BYTEA column
         try:
-            ssh_key_encrypted = encrypt_credential(key.ssh_key)
+            ssh_key_encrypted = encrypt_credential(key.ssh_key).encode('utf-8')
         except Exception as e:
             logger.error(f"Failed to encrypt SSH key: {e}")
             raise HTTPException(status_code=500, detail="Failed to encrypt SSH key")
@@ -792,7 +1181,7 @@ async def update_saved_ssh_key(
         
         if key.ssh_key is not None:
             try:
-                ssh_key_encrypted = encrypt_credential(key.ssh_key)
+                ssh_key_encrypted = encrypt_credential(key.ssh_key).encode('utf-8')
                 updates.append(f"ssh_key_encrypted = ${param_count}")
                 values.append(ssh_key_encrypted)
                 param_count += 1

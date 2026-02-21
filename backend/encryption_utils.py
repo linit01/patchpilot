@@ -207,14 +207,37 @@ encryption_manager = EncryptionManager()
 
 
 # Convenience functions for use throughout the app
-def encrypt_credential(data: str) -> bytes:
-    """Encrypt a credential (SSH key or password)"""
-    return encryption_manager.encrypt(data)
+def encrypt_credential(data: str) -> str:
+    """Encrypt a credential and return as base64 string for DB storage"""
+    raw = encryption_manager.encrypt(data)
+    return base64.b64encode(raw).decode('utf-8')
 
 
-def decrypt_credential(encrypted_data: bytes) -> str:
-    """Decrypt a credential"""
-    return encryption_manager.decrypt(encrypted_data)
+def decrypt_credential(encrypted_data) -> str:
+    """Decrypt a credential.
+
+    Handles three storage patterns that exist in the wild:
+    1. Python str  → base64-encoded Fernet token (e.g. from old TEXT columns)
+    2. BYTEA/bytes containing the UTF-8 bytes of a base64 string (current pattern:
+       encrypt_credential() returns base64 str → .encode('utf-8') → stored as BYTEA)
+    3. BYTEA/bytes containing raw Fernet ciphertext bytes (older direct-bytes pattern
+       used by import_hosts before the .encode() fix)
+    """
+    if isinstance(encrypted_data, str):
+        # Pattern 1: base64 string
+        raw = base64.b64decode(encrypted_data.encode('utf-8'))
+    else:
+        # BYTEA → memoryview or bytes from asyncpg
+        raw_bytes = bytes(encrypted_data) if isinstance(encrypted_data, memoryview) else bytes(encrypted_data)
+        # Try pattern 2: bytes are the UTF-8 representation of a base64 string
+        try:
+            as_str = raw_bytes.decode('utf-8')
+            # Verify it looks like a valid base64/Fernet token before decoding
+            raw = base64.b64decode(as_str)
+        except Exception:
+            # Pattern 3: raw Fernet bytes stored directly
+            raw = raw_bytes
+    return encryption_manager.decrypt(raw)
 
 
 def validate_ssh_key(key_content: str) -> tuple[bool, str]:
