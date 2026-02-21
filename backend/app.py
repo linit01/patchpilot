@@ -129,11 +129,22 @@ _ansible_patch_running = False
 # Create FastAPI app
 app = FastAPI(title="PatchPilot API", version="0.9.1")
 
-# Add CORS middleware
+# ── CORS configuration ────────────────────────────────────────────────────────
+# ALLOWED_ORIGINS env var: comma-separated list of allowed origins.
+# Examples:
+#   ALLOWED_ORIGINS=*                                          (open — dev/default)
+#   ALLOWED_ORIGINS=https://patchpilot.example.com,https://patchpilot.lan
+#
+# When "*" is used, allow_credentials must be False per the CORS spec.
+# When specific origins are listed, credentials (session cookies) work correctly.
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "*").strip()
+_origins_list = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+_allow_creds = "*" not in _origins_list  # credentials require explicit origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_origins_list,
+    allow_credentials=_allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -242,28 +253,31 @@ async def ensure_settings_table(pool):
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 )
             """)
-            # Seed defaults if empty
+            # Seed defaults — runs for both new and existing installs (ON CONFLICT DO NOTHING)
             count = await conn.fetchval("SELECT COUNT(*) FROM settings")
-            if count == 0:
-                await conn.executemany("""
-                    INSERT INTO settings (key, value, description) VALUES ($1, $2, $3)
-                    ON CONFLICT (key) DO NOTHING
-                """, [
-                    ('refresh_interval', '300', 'Dashboard auto-refresh interval in seconds'),
-                    ('default_ssh_user', 'root', 'Default SSH username for new hosts'),
-                    ('default_ssh_port', '22', 'Default SSH port for new hosts'),
-                    ('schedule_timezone', 'UTC', 'Timezone for auto-patch schedule windows (e.g. America/Chicago, America/New_York, America/Los_Angeles)'),
-                ])
-                print("Settings table created with defaults")
-            else:
-                # Ensure new settings exist in existing installations
-                await conn.executemany("""
-                    INSERT INTO settings (key, value, description) VALUES ($1, $2, $3)
-                    ON CONFLICT (key) DO NOTHING
-                """, [
-                    ('schedule_timezone', 'UTC', 'Timezone for auto-patch schedule windows (e.g. America/Chicago, America/New_York, America/Los_Angeles)'),
-                ])
-                print("Settings table already exists")
+            _default_settings = [
+                ('refresh_interval',  '300',  'Dashboard auto-refresh interval in seconds'),
+                ('default_ssh_user',  'root', 'Default SSH username for new hosts'),
+                ('default_ssh_port',  '22',   'Default SSH port for new hosts'),
+                ('schedule_timezone', 'UTC',  'Timezone for auto-patch schedule windows '
+                                              '(e.g. America/Chicago, America/New_York, America/Los_Angeles)'),
+                # ── Network / HTTPS settings ───────────────────────────────────
+                ('app_base_url',     os.getenv('APP_BASE_URL', ''),
+                 'Public base URL of this PatchPilot instance '
+                 '(e.g. https://patchpilot.example.com). '
+                 'Used for CORS and self-referencing links.'),
+                ('allowed_origins',  os.getenv('ALLOWED_ORIGINS', '*'),
+                 'Comma-separated CORS origins. Use * for dev/open access or list '
+                 'explicit URLs for production '
+                 '(e.g. https://patchpilot.example.com,https://patchpilot.lan). '
+                 'Changes require a container restart to take effect.'),
+            ]
+            await conn.executemany("""
+                INSERT INTO settings (key, value, description) VALUES ($1, $2, $3)
+                ON CONFLICT (key) DO NOTHING
+            """, _default_settings)
+            _status = "created" if count == 0 else "existing"
+            print(f"Settings table ready ({_status}, new keys merged)")
     except Exception as e:
         print(f"Settings table init failed: {e}")
 

@@ -1,9 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Kubernetes manifests (K3s + Traefik + cert-manager)
+#
+# Prerequisites in your cluster:
+#   • Traefik ingress controller  (ships with K3s by default)
+#   • cert-manager                (kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml)
+#   • A ClusterIssuer named       letsencrypt-prod  (see bottom of this file)
+#
+# Deployment order:
+#   1. kubectl apply -f deployment.yaml          (namespace + RBAC + workloads)
+#   2. Edit the Secret below with real values    (or use ESO / Vault)
+#   3. kubectl rollout status -n patchpilot deploy/patchpilot-backend
+#
+# DNS requirements (your setup):
+#   • External (Cloudflare → example.com):
+#       patchpilot.example.com  →  your cluster LB / node IP
+#   • Internal (.lan via PiHole):
+#       patchpilot.lan              →  your cluster LB / node IP
+#     Add both hosts in the Ingress rules section below.
+# ─────────────────────────────────────────────────────────────────────────────
+
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: patchpilot
+  labels:
+    app.kubernetes.io/managed-by: kubectl
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets  (replace placeholder values before applying)
+# TIP: use `kubectl create secret generic patchpilot-secrets -n patchpilot \
+#        --from-env-file=.env --dry-run=client -o yaml > secrets.yaml`
+# ─────────────────────────────────────────────────────────────────────────────
 ---
 apiVersion: v1
 kind: Secret
@@ -12,27 +40,151 @@ metadata:
   namespace: patchpilot
 type: Opaque
 stringData:
-  supabase-url: "https://your-project.supabase.co"
-  supabase-key: "your-supabase-anon-key"
+  # PostgreSQL credentials
+  POSTGRES_USER:     "patchpilot"
+  POSTGRES_PASSWORD: "CHANGE_ME_STRONG_PASSWORD"
+  POSTGRES_DB:       "patchpilot"
+
+  # Fernet key — generate with:
+  #   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  PATCHPILOT_ENCRYPTION_KEY: "CHANGE_ME_FERNET_KEY"
+
+  # ── Network / HTTPS settings ──────────────────────────────────────────────
+  # The public URL users will reach (used for CORS + cookie SameSite)
+  APP_BASE_URL: "https://patchpilot.example.com"
+  # Comma-separated extra origins allowed for CORS (add .lan URL if needed)
+  # Example: "https://patchpilot.example.com,https://patchpilot.lan"
+  ALLOWED_ORIGINS: "https://patchpilot.example.com,https://patchpilot.lan"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PersistentVolumeClaims
+# ─────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: patchpilot
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName: longhorn   # uncomment if using Longhorn / specify your SC
 
 ---
 apiVersion: v1
-kind: ConfigMap
+kind: PersistentVolumeClaim
 metadata:
-  name: ansible-config
+  name: patchpilot-backups
   namespace: patchpilot
-data:
-  check-os-updates.yml: |
-    # Paste your Ansible playbook here
-  hosts: |
-    # Paste your Ansible inventory here
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
 
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ansible-data
+  namespace: patchpilot
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PostgreSQL
+# ─────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchpilot-postgres
+  namespace: patchpilot
+  labels:
+    app: patchpilot-postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # required for RWO volumes
+  selector:
+    matchLabels:
+      app: patchpilot-postgres
+  template:
+    metadata:
+      labels:
+        app: patchpilot-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: POSTGRES_DB
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "patchpilot"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgres-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: patchpilot
+spec:
+  selector:
+    app: patchpilot-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  clusterIP: None          # headless — backend resolves by name inside namespace
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backend (FastAPI)
+# ─────────────────────────────────────────────────────────────────────────────
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: patchpilot-backend
   namespace: patchpilot
+  labels:
+    app: patchpilot-backend
 spec:
   replicas: 1
   selector:
@@ -43,32 +195,84 @@ spec:
       labels:
         app: patchpilot-backend
     spec:
+      initContainers:
+      # Wait for postgres to be ready before starting
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command: ['sh', '-c',
+          'until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done']
       containers:
       - name: backend
-        image: your-registry/patchpilot:latest
+        image: your-registry/patchpilot-backend:latest   # ← change to your image
         ports:
         - containerPort: 8000
         env:
-        - name: SUPABASE_URL
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
               name: patchpilot-secrets
-              key: supabase-url
-        - name: SUPABASE_KEY
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
               name: patchpilot-secrets
-              key: supabase-key
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: POSTGRES_DB
+        - name: DATABASE_URL
+          value: "postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)"
+        - name: PATCHPILOT_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: PATCHPILOT_ENCRYPTION_KEY
+        # ── HTTPS / CORS ──────────────────────────────────────────────────────
+        - name: APP_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: APP_BASE_URL
+        - name: ALLOWED_ORIGINS
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: ALLOWED_ORIGINS
+        # ─────────────────────────────────────────────────────────────────────
+        - name: BACKUP_DIR
+          value: "/backups"
+        - name: ANSIBLE_DIR
+          value: "/ansible"
         - name: ANSIBLE_PLAYBOOK_PATH
           value: "/ansible/check-os-updates.yml"
         - name: ANSIBLE_INVENTORY_PATH
           value: "/ansible/hosts"
         volumeMounts:
-        - name: ansible-config
+        - name: ansible-data
           mountPath: /ansible
+        - name: backups
+          mountPath: /backups
         - name: ssh-keys
           mountPath: /root/.ssh
           readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
         resources:
           requests:
             memory: "256Mi"
@@ -77,13 +281,17 @@ spec:
             memory: "512Mi"
             cpu: "500m"
       volumes:
-      - name: ansible-config
-        configMap:
-          name: ansible-config
+      - name: ansible-data
+        persistentVolumeClaim:
+          claimName: ansible-data
+      - name: backups
+        persistentVolumeClaim:
+          claimName: patchpilot-backups
       - name: ssh-keys
         secret:
-          secretName: ssh-keys
-          defaultMode: 0600
+          secretName: patchpilot-ssh-keys     # create separately — see README
+          defaultMode: 0o600
+          optional: true
 
 ---
 apiVersion: v1
@@ -98,12 +306,17 @@ spec:
   - port: 8000
     targetPort: 8000
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Frontend (Nginx)
+# ─────────────────────────────────────────────────────────────────────────────
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: patchpilot-frontend
   namespace: patchpilot
+  labels:
+    app: patchpilot-frontend
 spec:
   replicas: 1
   selector:
@@ -128,17 +341,17 @@ spec:
         resources:
           requests:
             memory: "64Mi"
-            cpu: "50m"
+            cpu: "25m"
           limits:
             memory: "128Mi"
-            cpu: "200m"
+            cpu: "100m"
       volumes:
       - name: frontend-files
         configMap:
-          name: frontend-files
+          name: patchpilot-frontend-files   # populate via kustomize or CI/CD
       - name: nginx-config
         configMap:
-          name: nginx-config
+          name: patchpilot-nginx-config
 
 ---
 apiVersion: v1
@@ -153,6 +366,34 @@ spec:
   - port: 80
     targetPort: 80
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TLS Certificate (cert-manager)
+# Covers both your external domain and your .lan domain.
+# cert-manager will use the ClusterIssuer defined at the bottom to obtain a
+# Let's Encrypt certificate via the Cloudflare DNS-01 challenge.
+# ─────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: patchpilot-tls
+  namespace: patchpilot
+spec:
+  secretName: patchpilot-tls-secret   # Traefik reads this Secret
+  issuerRef:
+    name: letsencrypt-prod            # ClusterIssuer name (see below)
+    kind: ClusterIssuer
+  dnsNames:
+    - patchpilot.example.com      # ← external domain (Cloudflare)
+    - patchpilot.lan                  # ← internal .lan domain (PiHole)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress  (Traefik reads standard networking.k8s.io/v1 Ingress with
+#           ingressClassName: traefik — no IngressRoute CRD required)
+#
+# HSTS is added by the Traefik middleware below so the browser enforces
+# HTTPS for all future requests.
+# ─────────────────────────────────────────────────────────────────────────────
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -160,15 +401,22 @@ metadata:
   name: patchpilot
   namespace: patchpilot
   annotations:
+    # cert-manager issues the cert (references the Certificate above)
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Traefik — redirect HTTP → HTTPS automatically
+    traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+    traefik.ingress.kubernetes.io/router.middlewares: "patchpilot-https-redirect@kubernetescrd,patchpilot-security-headers@kubernetescrd"
+    # WebSocket support (needed for /ws/ patch progress)
+    nginx.org/websocket-services: "patchpilot-frontend"    # harmless on Traefik
 spec:
-  ingressClassName: nginx
+  ingressClassName: traefik           # ← K3s default ingress class
   tls:
   - hosts:
-    - patchpilot.yourdomain.com
-    secretName: patchpilot-tls
+    - patchpilot.example.com
+    - patchpilot.lan
+    secretName: patchpilot-tls-secret
   rules:
-  - host: patchpilot.yourdomain.com
+  - host: patchpilot.example.com
     http:
       paths:
       - path: /
@@ -178,3 +426,83 @@ spec:
             name: patchpilot-frontend
             port:
               number: 80
+  - host: patchpilot.lan
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: patchpilot-frontend
+            port:
+              number: 80
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Traefik Middlewares (CRDs — ship with K3s)
+# ─────────────────────────────────────────────────────────────────────────────
+---
+# Force HTTP → HTTPS redirect
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: patchpilot
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+
+---
+# Security headers including HSTS (applied at Traefik, not Nginx)
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: patchpilot
+spec:
+  headers:
+    sslRedirect: true
+    forceSTSHeader: true
+    stsSeconds: 63072000        # 2 years
+    stsIncludeSubdomains: true
+    stsPreload: true
+    frameDeny: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+    referrerPolicy: "strict-origin-when-cross-origin"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ClusterIssuer — Let's Encrypt via Cloudflare DNS-01
+#
+# DNS-01 is required for:
+#   a) Wildcard certs
+#   b) Internal-only hostnames like patchpilot.lan that can't do HTTP-01
+#
+# Steps:
+#   1. Create a Cloudflare API token with Zone:DNS:Edit permission
+#      (scoped to example.com only for least-privilege)
+#   2. kubectl create secret generic cloudflare-api-token-secret \
+#        --from-literal=api-token=YOUR_CF_TOKEN -n cert-manager
+#   3. kubectl apply -f deployment.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: your-email@example.com           # ← change this
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+    - dns01:
+        cloudflare:
+          email: your-cloudflare-email@example.com  # ← change this
+          apiTokenSecretRef:
+            name: cloudflare-api-token-secret
+            key: api-token
+      # Apply this solver to ALL domains including .lan
+      # (cert-manager uses Cloudflare to prove ownership, no public HTTP needed)
+      selector: {}
