@@ -564,6 +564,53 @@
                 </div>
                 
                 <button class="btn btn-primary" onclick="saveGeneralSettings()">Save Settings</button>
+
+                <!-- ── Network & Security ───────────────────────────────── -->
+                <h2 style="font-size: 20px; font-weight: 600; margin: 32px 0 20px;">Network &amp; Security</h2>
+
+                <div class="form-group">
+                    <label>Application Base URL</label>
+                    <input type="url" id="app-base-url" placeholder="https://patchpilot.example.com"
+                           style="font-family: monospace;">
+                    <div class="help-text">
+                        The public URL where PatchPilot is reachable (include protocol and domain, no trailing slash).
+                        Used for CORS validation and self-referencing links.
+                        <br>Examples: <code>https://patchpilot.example.com</code> &nbsp;|&nbsp;
+                        <code>https://patchpilot.lan</code> &nbsp;|&nbsp; <code>http://192.168.1.50:8080</code>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Allowed Origins <span style="color:var(--text-muted);font-weight:400;font-size:12px;">(CORS)</span></label>
+                    <input type="text" id="allowed-origins" placeholder="https://patchpilot.example.com,https://patchpilot.lan"
+                           style="font-family: monospace;">
+                    <div id="origins-warning" style="display:none;margin-top:8px;padding:10px 14px;border-radius:6px;
+                         background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);
+                         color:#f87171;font-size:13px;">
+                        ⚠️ <strong>Wildcard (*) is set.</strong>  Any website can make authenticated requests
+                        to this PatchPilot instance.  Only use <code>*</code> on a trusted local network
+                        or during development.  For production set explicit URLs.
+                    </div>
+                    <div class="help-text">
+                        Comma-separated list of origins browsers are allowed to send requests from.
+                        Use <code>*</code> for open / local access.  For multi-user or internet-facing
+                        deployments list each URL explicitly
+                        (e.g. <code>https://patchpilot.example.com,https://patchpilot.lan</code>).
+                        <strong>Requires a container restart to take effect.</strong>
+                    </div>
+                </div>
+
+                <div id="network-restart-notice" style="display:none;margin-bottom:16px;padding:12px 16px;
+                     border-radius:8px;background:rgba(0,192,239,0.08);border:1px solid rgba(0,192,239,0.3);
+                     color:var(--cyan);font-size:13px;">
+                    ℹ️ CORS origin changes are saved to the database and will be applied on the next
+                    container restart.  Current active origins are set via the
+                    <code>ALLOWED_ORIGINS</code> environment variable.
+                </div>
+
+                <button class="btn btn-primary" onclick="saveNetworkSettings()" style="margin-top:4px;">
+                    Save Network Settings
+                </button>
             </div>
             
             <!-- Advanced Tab -->
@@ -1275,7 +1322,8 @@
             const container = document.getElementById('sched-hosts-list');
             try {
                 const response = await fetch('/api/settings/hosts');
-                allHostsForSchedule = await response.json();
+                const _sched = await response.json();
+                allHostsForSchedule = Array.isArray(_sched) ? _sched : [];
                 
                 container.innerHTML = allHostsForSchedule.map(h => `
                     <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;font-size:13px;color:var(--text-secondary);border-bottom:1px solid var(--border-light,#1e1e1e);">
@@ -1699,7 +1747,8 @@
         async function loadHosts() {
             try {
                 const response = await fetch('/api/settings/hosts');
-                const hosts = await response.json();
+                const _parsed = await response.json();
+                const hosts = Array.isArray(_parsed) ? _parsed : [];
                 
                 const hostList = document.getElementById('host-list');
                 
@@ -2047,9 +2096,55 @@
                 if (settings.schedule_timezone) {
                     document.getElementById('schedule-timezone').value = settings.schedule_timezone.value;
                 }
+                // Network settings
+                if (settings.app_base_url) {
+                    document.getElementById('app-base-url').value = settings.app_base_url.value;
+                }
+                if (settings.allowed_origins) {
+                    document.getElementById('allowed-origins').value = settings.allowed_origins.value;
+                    updateOriginsWarning();
+                }
                 updateTimezoneWarning();
             } catch (e) {
                 console.error('Failed to load settings:', e);
+            }
+        }
+
+        function updateOriginsWarning() {
+            const el = document.getElementById('allowed-origins');
+            const warn = document.getElementById('origins-warning');
+            if (!el || !warn) return;
+            warn.style.display = (el.value.trim() === '*') ? 'block' : 'none';
+        }
+
+        async function saveNetworkSettings() {
+            const baseUrl = document.getElementById('app-base-url').value.trim().replace(/\/+$/, '');
+            const origins = document.getElementById('allowed-origins').value.trim();
+
+            if (baseUrl && !baseUrl.match(/^https?:\/\//)) {
+                alert('Application Base URL must start with http:// or https://');
+                return;
+            }
+
+            try {
+                const pairs = [
+                    ['app_base_url',    baseUrl],
+                    ['allowed_origins', origins || '*'],
+                ];
+                for (const [key, value] of pairs) {
+                    const res = await fetch(`/api/settings/app/${key}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ value })
+                    });
+                    if (!res.ok) throw new Error(`Failed to save ${key}`);
+                }
+                document.getElementById('network-restart-notice').style.display = 'block';
+                updateOriginsWarning();
+                alert('Network settings saved!\n\nNote: ALLOWED_ORIGINS changes require a container restart to take effect.');
+            } catch (e) {
+                alert('Failed to save network settings: ' + e.message);
             }
         }
 

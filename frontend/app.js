@@ -464,7 +464,8 @@ async function loadHosts() {
                 'Pragma': 'no-cache'
             }
         });
-        hostsData = await response.json();
+        const parsed = await response.json();
+        hostsData = Array.isArray(parsed) ? parsed : [];
         
         renderHostsTable();
     } catch (error) {
@@ -1269,7 +1270,8 @@ async function showPackagesModal() {
     try {
         // Aggregate packages from all hosts we already have
         const res = await fetch(`${API_BASE_URL}/hosts`);
-        const hosts = await res.json();
+        const _hosts = await res.json();
+        const hosts = Array.isArray(_hosts) ? _hosts : [];
         
         const allPackages = [];
         for (const host of hosts) {
