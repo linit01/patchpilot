@@ -1,353 +1,437 @@
-!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings - PatchPilot</title>
+    <link rel="stylesheet" href="styles.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
+        /* Settings page overrides for dark theme */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #f5f5f7;
-            color: #1d1d1f;
+            display: block;
+            background: #000;
         }
-        
+
         .header {
-            background: #fff;
-            border-bottom: 1px solid #d2d2d7;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
             padding: 20px 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
-        
+
         .header h1 {
-            font-size: 28px;
-            font-weight: 600;
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-primary);
         }
-        
+
         .header .actions {
             display: flex;
             gap: 12px;
         }
-        
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        
-        .btn-primary {
-            background: #007aff;
-            color: #fff;
-        }
-        
-        .btn-primary:hover {
-            background: #0051d5;
-        }
-        
-        .btn-secondary {
-            background: #e8e8ed;
-            color: #1d1d1f;
-        }
-        
-        .btn-secondary:hover {
-            background: #d2d2d7;
-        }
-        
+
         .btn-danger {
-            background: #ff3b30;
+            background: var(--red);
             color: #fff;
+            border: none;
+            padding: 9px 18px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
         }
-        
-        .btn-danger:hover {
-            background: #d70015;
-        }
-        
+        .btn-danger:hover { box-shadow: 0 0 12px rgba(231,76,60,0.4); }
+
         .container {
             max-width: 1400px;
             margin: 0 auto;
             padding: 30px;
         }
-        
+
         .tabs {
-            background: #fff;
-            border-radius: 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
             padding: 0;
             margin-bottom: 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
-        
+
         .tab-buttons {
             display: flex;
-            border-bottom: 1px solid #d2d2d7;
+            border-bottom: 1px solid var(--border);
         }
-        
+
         .tab-btn {
             flex: 1;
-            padding: 18px;
-            background: none;
+            padding: 14px 20px;
             border: none;
-            font-size: 15px;
-            font-weight: 500;
-            color: #86868b;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
-            border-bottom: 3px solid transparent;
+            border-bottom: 2px solid transparent;
+            font-family: 'Outfit', sans-serif;
         }
-        
-        .tab-btn:hover {
-            color: #1d1d1f;
-            background: #f5f5f7;
-        }
-        
+
+        .tab-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.02); }
         .tab-btn.active {
-            color: #007aff;
-            border-bottom-color: #007aff;
+            color: var(--cyan);
+            border-bottom-color: var(--cyan);
+            background: rgba(0,192,239,0.05);
         }
-        
-        .tab-content {
-            display: none;
-            padding: 30px;
-        }
-        
-        .tab-content.active {
-            display: block;
-        }
-        
-        .host-list {
-            background: #fff;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        }
-        
-        .host-item {
-            padding: 20px 25px;
-            border-bottom: 1px solid #d2d2d7;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        
-        .host-item:last-child {
-            border-bottom: none;
-        }
-        
-        .host-info {
-            flex: 1;
-        }
-        
-        .host-name {
-            font-size: 16px;
-            font-weight: 600;
-            color: #1d1d1f;
-            margin-bottom: 6px;
-        }
-        
-        .host-details {
-            font-size: 13px;
-            color: #86868b;
-        }
-        
-        .host-status {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
-            margin-right: 15px;
-        }
-        
-        .status-connected {
-            background: #d1f4e0;
-            color: #017a3b;
-        }
-        
-        .status-unreachable {
-            background: #ffd3d0;
-            color: #c20404;
-        }
-        
-        .status-unknown {
-            background: #e8e8ed;
-            color: #86868b;
-        }
-        
-        .host-actions {
-            display: flex;
-            gap: 8px;
-        }
-        
-        .icon-btn {
-            padding: 8px 12px;
-            background: #f5f5f7;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
-            color: #1d1d1f;
-            transition: all 0.2s;
-        }
-        
-        .icon-btn:hover {
-            background: #e8e8ed;
-        }
-        
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .modal.active {
-            display: flex;
-        }
-        
-        .modal-content {
-            background: #fff;
-            border-radius: 16px;
-            padding: 30px;
-            max-width: 600px;
-            width: 90%;
-            max-height: 90vh;
-            overflow-y: auto;
-        }
-        
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 25px;
-        }
-        
-        .modal-title {
-            font-size: 22px;
-            font-weight: 600;
-        }
-        
-        .close-btn {
-            background: none;
-            border: none;
-            font-size: 28px;
-            color: #86868b;
-            cursor: pointer;
-            line-height: 1;
-        }
-        
-        .form-group {
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
             margin-bottom: 20px;
+            overflow: hidden;
         }
-        
+
+        .card-header {
+            background: var(--bg-panel);
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-header h2 {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .card-body { padding: 24px; }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
         .form-group label {
             display: block;
-            margin-bottom: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            color: #1d1d1f;
+            margin-bottom: 6px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
-        
+
         .form-group input,
         .form-group select,
         .form-group textarea {
             width: 100%;
-            padding: 12px;
-            border: 1px solid #d2d2d7;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
             border-radius: 8px;
-            font-size: 15px;
-            font-family: inherit;
+            font-size: 14px;
+            background: var(--bg-black);
+            color: var(--text-primary);
+            font-family: 'Outfit', sans-serif;
+            outline: none;
+            transition: border-color 0.2s;
         }
-        
-        .form-group textarea {
-            min-height: 120px;
-            resize: vertical;
-            font-family: 'Monaco', 'Courier New', monospace;
-        }
-        
+
         .form-group input:focus,
         .form-group select:focus,
         .form-group textarea:focus {
-            outline: none;
-            border-color: #007aff;
+            border-color: var(--cyan);
+            box-shadow: 0 0 0 2px rgba(0,192,239,0.1);
         }
-        
-        .form-row {
+
+        .form-group input:disabled,
+        .form-group input[readonly],
+        .form-group select:disabled,
+        .form-group textarea:disabled {
+            background: var(--bg-panel);
+            color: var(--text-muted);
+            border-color: var(--border);
+            cursor: not-allowed;
+        }
+
+        .form-group textarea {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+
+        .form-group select {
+            appearance: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        table thead th {
+            text-align: left;
+            padding: 11px 16px;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+        }
+
+        table tbody td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-light, #1e1e1e);
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        table tbody tr:hover { background: rgba(255,255,255,0.02); }
+        table tbody tr:last-child td { border-bottom: none; }
+
+        .badge-success { background: var(--green-dim); color: var(--green-bright); padding: 3px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .badge-warning { background: var(--amber-dim); color: var(--amber); padding: 3px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .badge-danger { background: var(--red-dim); color: var(--red); padding: 3px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .badge-info { background: var(--blue-dim); color: var(--blue); padding: 3px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+
+        .btn-sm {
+            padding: 5px 14px;
+            font-size: 11px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,0.04);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-family: 'Outfit', sans-serif;
+            margin: 0 2px;
+            transition: all 0.15s;
+        }
+        .btn-sm:hover { color: var(--text-primary); border-color: var(--cyan); }
+        .btn-sm.btn-danger { background: var(--red-dim); color: var(--red); border-color: rgba(231,76,60,0.3); }
+        .btn-sm.btn-danger:hover { background: var(--red); color: #fff; }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+        }
+
+        .status-indicator::before {
+            content: '';
+            width: 8px; height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-indicator.connected::before { background: var(--green-bright); box-shadow: 0 0 6px var(--green-bright); }
+        .status-indicator.disconnected::before { background: var(--red); box-shadow: 0 0 6px var(--red); }
+        .status-indicator.unknown::before { background: var(--text-muted); }
+
+        .modal {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 85vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            padding: 18px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 { color: var(--text-primary); font-size: 18px; }
+        .modal-close, .close-btn { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted); }
+        .modal-close:hover, .close-btn:hover { color: var(--text-primary); }
+        .modal-body { padding: 24px; }
+
+        .info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 15px;
+            gap: 12px;
         }
-        
-        .help-text {
-            font-size: 13px;
-            color: #86868b;
-            margin-top: 6px;
-        }
-        
-        .warning {
-            background: #fff3cd;
-            border: 1px solid #ffc107;
+
+        .info-item {
+            padding: 12px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
             border-radius: 8px;
-            padding: 12px 15px;
-            margin-bottom: 20px;
-            font-size: 13px;
-            color: #856404;
         }
-        
+
+        .info-item label {
+            display: block;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
+        .info-item span {
+            font-size: 14px;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .radio-group {
+            display: flex;
+            gap: 16px;
+            margin-top: 8px;
+        }
+
+        .radio-group label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            text-transform: none;
+            letter-spacing: 0;
+            font-weight: 400;
+            cursor: pointer;
+        }
+
+        .radio-group input[type="radio"] {
+            accent-color: var(--cyan);
+            width: auto;
+        }
+
         .empty-state {
             text-align: center;
-            padding: 60px 20px;
-            color: #86868b;
+            padding: 40px;
+            color: var(--text-muted);
         }
-        
-        .empty-state-icon {
-            font-size: 48px;
-            margin-bottom: 15px;
-            opacity: 0.5;
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
         }
-        
-        .empty-state h3 {
-            font-size: 18px;
-            margin-bottom: 10px;
-            color: #1d1d1f;
-        }
-        
-        .empty-state p {
-            font-size: 14px;
-            margin-bottom: 20px;
-        }
-        
-        .test-result {
-            padding: 15px;
+
+        .warning {
+            background: var(--amber-dim, rgba(243,156,18,0.12));
+            border: 1px solid rgba(243,156,18,0.3);
+            color: var(--amber, #f39c12);
+            padding: 12px 16px;
             border-radius: 8px;
-            margin-top: 15px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+
+        .info-box {
+            background: var(--blue-dim, rgba(52,152,219,0.12));
+            border: 1px solid rgba(52,152,219,0.3);
+            color: var(--text-secondary);
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+
+        .host-list { display: flex; flex-direction: column; gap: 8px; }
+
+        .host-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 18px;
+            background: var(--bg-panel, #111);
+            border: 1px solid var(--border, #2a2a2a);
+            border-left: 3px solid var(--green-bright, #2ecc71);
+            border-radius: 8px;
+            transition: all 0.15s;
+        }
+
+        .host-item:hover { background: rgba(255,255,255,0.03); transform: translateX(2px); }
+        .host-item:has(.status-unreachable) { border-left-color: var(--red, #e74c3c); }
+        .host-item:has(.status-updates-available) { border-left-color: var(--amber, #f39c12); }
+        .host-item:has(.status-unknown) { border-left-color: var(--text-muted, #555); }
+
+        .host-info .host-name {
+            font-weight: 600;
             font-size: 14px;
+            color: var(--text-primary, #e8e8e8);
+            margin-bottom: 3px;
         }
-        
-        .test-success {
-            background: #d1f4e0;
-            color: #017a3b;
-            border: 1px solid #4cd471;
+
+        .host-info .host-details {
+            font-size: 12px;
+            color: var(--text-muted, #555);
         }
-        
-        .test-error {
-            background: #ffd3d0;
-            color: #c20404;
-            border: 1px solid #ff3b30;
+
+        .host-status {
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .host-status.status-up-to-date { color: var(--green-bright, #2ecc71); }
+        .host-status.status-updates-available { color: var(--amber, #f39c12); }
+        .host-status.status-unreachable { color: var(--red, #e74c3c); }
+        .host-status.status-unknown { color: var(--text-muted, #555); }
+
+        .host-actions { display: flex; gap: 8px; }
+
+        .icon-btn {
+            padding: 5px 14px;
+            font-size: 12px;
+            border-radius: 20px;
+            border: 1px solid var(--border, #2a2a2a);
+            background: rgba(255,255,255,0.04);
+            color: var(--text-secondary, #999);
+            cursor: pointer;
+            transition: all 0.15s;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 500;
+        }
+
+        .icon-btn:hover { color: var(--cyan, #00c0ef); border-color: var(--cyan, #00c0ef); background: rgba(0,192,239,0.08); }
+        .icon-btn.btn-delete:hover { color: var(--red, #e74c3c); border-color: var(--red); background: rgba(231,76,60,0.08); }
+        .icon-btn.btn-logs { color: var(--lcars-blue, #00bcd4); border-color: rgba(0,188,212,0.3); }
+        .icon-btn.btn-logs:hover { color: var(--lcars-blue, #00bcd4); border-color: var(--lcars-blue); background: rgba(0,188,212,0.08); }
+
+        @media (max-width: 768px) {
+            .form-row { grid-template-columns: 1fr; }
+            .info-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -355,7 +439,7 @@
     <div class="header">
         <h1>⚙️ Settings</h1>
         <div class="actions">
-            <button class="btn btn-secondary" onclick="window.location.href='/'">← Back to Dashboard</button>
+            <button class="btn btn-secondary" onclick="window.location.href='index.html'">← Back to Dashboard</button>
         </div>
     </div>
     
@@ -365,7 +449,10 @@
                 <button class="tab-btn active" onclick="switchTab('hosts')">📋 Hosts</button>
                 <button class="tab-btn" onclick="switchTab('general')">⚙️ General</button>
                 <button class="tab-btn" onclick="switchTab('ssh-keys')">🔑 SSH Keys</button>
+                <button class="tab-btn" onclick="switchTab('users')">👥 Users</button>
+                <button class="tab-btn" onclick="switchTab('schedules')">🕐 Schedules</button>
                 <button class="tab-btn" onclick="switchTab('advanced')">🔧 Advanced</button>
+                <button class="tab-btn" onclick="switchTab('backup')">💾 Backup &amp; Restore</button>
             </div>
             
             <!-- Hosts Tab -->
@@ -413,7 +500,7 @@
                         </tr>
                     </thead>
                     <tbody id="ssh-keys-table-body">
-                        <tr><td colspan="4" style="text-align: center; padding: 40px; color: #888;">Loading...</td></tr>
+                        <tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--text-muted);">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -445,11 +532,113 @@
                     <input type="number" id="default-ssh-port" value="22" min="1" max="65535">
                     <div class="help-text">Default SSH port for new hosts</div>
                 </div>
+
+                <div class="form-group">
+                    <label>Schedule Timezone</label>
+                    <select id="schedule-timezone" onchange="updateTimezoneWarning()">
+                        <option value="UTC">UTC</option>
+                        <option value="America/New_York">America/New_York (Eastern)</option>
+                        <option value="America/Chicago">America/Chicago (Central)</option>
+                        <option value="America/Denver">America/Denver (Mountain)</option>
+                        <option value="America/Los_Angeles">America/Los_Angeles (Pacific)</option>
+                        <option value="America/Anchorage">America/Anchorage (Alaska)</option>
+                        <option value="Pacific/Honolulu">Pacific/Honolulu (Hawaii)</option>
+                        <option value="Europe/London">Europe/London</option>
+                        <option value="Europe/Paris">Europe/Paris (CET)</option>
+                        <option value="Europe/Berlin">Europe/Berlin</option>
+                        <option value="Europe/Helsinki">Europe/Helsinki (EET)</option>
+                        <option value="Asia/Dubai">Asia/Dubai</option>
+                        <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                        <option value="Asia/Singapore">Asia/Singapore</option>
+                        <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                        <option value="Australia/Sydney">Australia/Sydney (AEDT)</option>
+                        <option value="Pacific/Auckland">Pacific/Auckland (NZST)</option>
+                    </select>
+                    <div id="tz-utc-warning" style="display:none;margin-top:8px;padding:10px 14px;border-radius:6px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);color:#f87171;font-size:13px;">
+                        ⚠️ <strong>UTC is selected.</strong> Your container clock is UTC, so schedule times will be treated as UTC.
+                        If your schedule is set for 01:50 local time (CST = UTC−6), you must either select
+                        <strong>America/Chicago</strong> here <em>or</em> set the schedule time to <strong>07:50 UTC</strong>.
+                        Mismatched timezone is the most common reason schedules never fire.
+                    </div>
+                    <div class="help-text">Timezone used for auto-patch schedule windows. Schedule times entered in the Schedules page are interpreted in <em>this</em> timezone. The Docker container defaults to UTC — this must be set to your local timezone for schedules to fire at the expected wall-clock time.</div>
+                </div>
                 
                 <button class="btn btn-primary" onclick="saveGeneralSettings()">Save Settings</button>
             </div>
             
             <!-- Advanced Tab -->
+            <!-- Users Tab -->
+            <div id="users-tab" class="tab-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="font-size: 20px; font-weight: 600;">User Management</h2>
+                    <button class="btn btn-primary" onclick="openAddUserModal()">+ Add User</button>
+                </div>
+
+                <div id="users-list">
+                    <table class="settings-table" style="width:100%; border-collapse:collapse;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid var(--border);">
+                                <th style="text-align:left; padding:10px; font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Username</th>
+                                <th style="text-align:left; padding:10px; font-size:11px; color:var(--text-muted); text-transform:uppercase;">Role</th>
+                                <th style="text-align:left; padding:10px; font-size:11px; color:var(--text-muted); text-transform:uppercase;">Created</th>
+                                <th style="text-align:left; padding:10px; font-size:11px; color:var(--text-muted); text-transform:uppercase;">Last Login</th>
+                                <th style="text-align:right; padding:10px; font-size:11px; color:var(--text-muted); text-transform:uppercase;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-table-body">
+                            <tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Add User inline modal -->
+                <div id="add-user-form" style="display:none; margin-top:20px; padding:20px; background:var(--bg-panel); border:1px solid var(--border); border-radius:10px;">
+                    <h3 style="color:var(--text-primary); margin-bottom:14px; font-size:15px;">Create New User</h3>
+                    <div id="user-form-error" style="display:none; padding:10px; background:var(--red-dim); color:var(--red); border-radius:6px; margin-bottom:12px; font-size:13px;"></div>
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="new-username" placeholder="Enter username" />
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="new-user-password" placeholder="Min 8 characters" />
+                    </div>
+                    <div class="form-group">
+                        <label>Role</label>
+                        <select id="new-user-role">
+                            <option value="viewer">Viewer (read-only)</option>
+                            <option value="operator">Operator (can patch)</option>
+                            <option value="admin">Admin (full access)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex; gap:10px; justify-content:flex-end;">
+                        <button class="btn btn-secondary" onclick="closeAddUserForm()">Cancel</button>
+                        <button class="btn btn-success" onclick="createUser()">Create User</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Schedules Tab -->
+            <div id="schedules-tab" class="tab-content">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="font-size: 20px; font-weight: 600;">Auto-Patch Schedules</h2>
+                    <button class="btn btn-primary" onclick="openAddScheduleModal()">+ New Schedule</button>
+                </div>
+
+                <div class="info-box" style="margin-bottom: 20px;">
+                    <strong>ℹ️ Info:</strong> Schedules automatically patch hosts within a time window. All hosts in a schedule must share the same SUDO password. Schedules run once per day during the configured window.
+                </div>
+
+                <div id="schedules-list">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🕐</div>
+                        <h3>No Schedules Configured</h3>
+                        <p>Create a schedule to automate patching</p>
+                    </div>
+                </div>
+            </div>
+
+
             <div id="advanced-tab" class="tab-content">
                 <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 20px;">Advanced Settings</h2>
                 
@@ -459,26 +648,123 @@
                 
                 <div class="form-group">
                     <label>Encryption Key Status</label>
-                    <div id="encryption-status" style="padding: 12px; background: #f5f5f7; border-radius: 8px;">
-                        <span style="color: #34c759;">✓</span> Encryption enabled and working
+                    <div id="encryption-status" style="padding: 12px; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border); color: var(--text-secondary);">
+                        <span style="color: var(--green-bright);">✓</span> Encryption enabled and working
                     </div>
                     <div class="help-text">SSH keys and passwords are encrypted using Fernet</div>
                 </div>
                 
                 <div class="form-group">
                     <label>Database Connection</label>
-                    <div style="padding: 12px; background: #f5f5f7; border-radius: 8px;">
+                    <div style="padding: 12px; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border); color: var(--text-secondary);">
                         PostgreSQL: Connected
                     </div>
                 </div>
                 
                 <div class="form-group">
                     <label>Ansible Version</label>
-                    <div id="ansible-version-display" style="padding: 12px; background: #f5f5f7; border-radius: 8px;">
+                    <div id="ansible-version-display" style="padding: 12px; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border); color: var(--text-secondary);">
                         Detecting...
                     </div>
                 </div>
             </div>
+
+            <!-- ══════════════════════════════════════════════════════════
+                 BACKUP & RESTORE TAB
+                 ══════════════════════════════════════════════════════════ -->
+            <div id="backup-tab" class="tab-content" style="padding: 24px;">
+
+                <!-- Maintenance Mode Banner -->
+                <div id="backup-maintenance-banner" style="display:none; background:rgba(243,156,18,0.15); border:1px solid rgba(243,156,18,0.4); border-radius:8px; padding:14px 18px; margin-bottom:20px; display:none; align-items:center; gap:12px;">
+                    <span style="font-size:18px;">🔒</span>
+                    <div style="flex:1;">
+                        <div style="font-weight:600; color:var(--amber); margin-bottom:4px;" id="backup-op-label">Backup in progress…</div>
+                        <div style="background:rgba(0,0,0,0.3); border-radius:4px; height:6px; overflow:hidden;">
+                            <div id="backup-progress-bar" style="height:100%; background:var(--amber); width:0%; transition:width 0.4s;"></div>
+                        </div>
+                        <div id="backup-progress-msg" style="font-size:12px; color:var(--text-muted); margin-top:4px;"></div>
+                    </div>
+                </div>
+
+                <div style="display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap;">
+
+                    <!-- LEFT COLUMN: Create / Upload -->
+                    <div style="flex:1; min-width:280px;">
+
+                        <!-- Create Backup -->
+                        <div class="card" style="margin-bottom:16px;">
+                            <div class="card-header"><h2>📦 Create Backup</h2></div>
+                            <div class="card-body">
+                                <div class="form-group">
+                                    <label>Description (optional)</label>
+                                    <input type="text" id="backup-description" placeholder="e.g. Pre-upgrade snapshot">
+                                </div>
+                                <div class="form-group">
+                                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; text-transform:none; letter-spacing:0; font-weight:400; font-size:13px; color:var(--text-secondary);">
+                                        <input type="checkbox" id="backup-include-key" style="width:auto; margin:0;">
+                                        Include encryption key in backup
+                                    </label>
+                                    <div class="help-text">⚠️ Key allows decrypting SSH credentials — store backup securely if enabled</div>
+                                </div>
+                                <button class="btn btn-primary" onclick="createBackup()" id="backup-create-btn">
+                                    <span class="btn-icon">💾</span> Create Backup
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Upload / Restore -->
+                        <div class="card">
+                            <div class="card-header"><h2>⬆️ Upload Backup</h2></div>
+                            <div class="card-body">
+                                <div id="backup-drop-zone" onclick="document.getElementById('backup-file-input').click()"
+                                     style="border:2px dashed var(--border); border-radius:8px; padding:28px; text-align:center; cursor:pointer; color:var(--text-muted); transition:border-color 0.2s;"
+                                     ondragover="event.preventDefault(); this.style.borderColor='var(--cyan)'"
+                                     ondragleave="this.style.borderColor='var(--border)'"
+                                     ondrop="handleBackupDrop(event)">
+                                    <div style="font-size:28px; margin-bottom:8px;">📂</div>
+                                    <div style="font-size:13px;">Drag &amp; drop backup archive here<br>or click to browse</div>
+                                    <div style="font-size:11px; margin-top:6px; color:var(--text-muted);">.tar.gz files only</div>
+                                </div>
+                                <input type="file" id="backup-file-input" accept=".tar.gz,.tgz" style="display:none;" onchange="uploadBackup(this.files[0])">
+                                <div id="backup-upload-status" style="margin-top:10px; font-size:13px;"></div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- RIGHT COLUMN: Backup List -->
+                    <div style="flex:2; min-width:340px;">
+                        <div class="card">
+                            <div class="card-header" style="justify-content:space-between;">
+                                <h2>🗄️ Available Backups</h2>
+                                <button class="btn-sm" onclick="loadBackupList()">🔄 Refresh</button>
+                            </div>
+                            <div id="backup-list-container">
+                                <div style="padding:40px; text-align:center; color:var(--text-muted);">Loading…</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Restore Confirmation Panel -->
+                <div id="backup-restore-panel" style="display:none; margin-top:20px; padding:20px; background:rgba(231,76,60,0.08); border:1px solid rgba(231,76,60,0.35); border-radius:10px;">
+                    <h3 style="color:var(--red); margin-bottom:12px; font-size:15px;">⚠️ Confirm Restore</h3>
+                    <p style="color:var(--text-secondary); font-size:13px; margin-bottom:12px;">
+                        You are about to restore from: <strong id="restore-filename-label" style="color:var(--text-primary);"></strong><br>
+                        This will <strong style="color:var(--red);">permanently replace</strong> all current data including hosts, settings, and patch history.
+                    </p>
+                    <div style="display:flex; gap:10px;">
+                        <button class="btn btn-secondary" onclick="cancelRestore()">Cancel</button>
+                        <button class="btn btn-danger" onclick="confirmRestore()" id="restore-confirm-btn">
+                            🔁 Yes, Restore Now
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+            <!-- END BACKUP TAB -->
+
+            <!-- Keep the closing div for .tabs that was already there -->
         </div>
     </div>
     
@@ -513,7 +799,7 @@
                     <select id="ssh-key-type" onchange="handleAuthTypeChange()">
                         <option value="">-- Select Authentication Method --</option>
                     </select>
-                    <div class="help-text" id="saved-key-help" style="display: none; color: #28a745;">✓ Using saved SSH key</div>
+                    <div class="help-text" id="saved-key-help" style="display: none; color: var(--green-bright);">✓ Using saved SSH key</div>
                 </div>
                 
                 <div id="ssh-key-field" class="form-group" style="display: none;">
@@ -524,7 +810,7 @@
                         <button type="button" class="btn btn-secondary" onclick="document.getElementById('ssh-key-file').click()" style="font-size: 0.9em; padding: 8px 16px;">
                             📁 Choose Key File
                         </button>
-                        <span id="key-filename" style="margin-left: 10px; font-size: 0.9em; color: #666;"></span>
+                        <span id="key-filename" style="margin-left: 10px; font-size: 0.9em; color: var(--text-muted);"></span>
                     </div>
                     <div class="help-text">Paste your private key from password manager or file</div>
                 </div>
@@ -596,7 +882,7 @@
                         <button type="button" class="btn btn-secondary" onclick="document.getElementById('key-file-upload').click()" style="font-size: 0.9em; padding: 8px 16px;">
                             📁 Choose Key File
                         </button>
-                        <span id="key-file-name" style="margin-left: 10px; font-size: 0.9em; color: #666;"></span>
+                        <span id="key-file-name" style="margin-left: 10px; font-size: 0.9em; color: var(--text-muted);"></span>
                     </div>
                 </div>
 
@@ -616,28 +902,191 @@
         </div>
     </div>
     
+    <!-- Schedule Modal -->
+    <div id="schedule-modal" class="modal">
+        <div class="modal-content" style="max-width: 650px;">
+            <div class="modal-header">
+                <h2 id="schedule-modal-title">New Auto-Patch Schedule</h2>
+                <button class="close-btn" onclick="closeModal('schedule-modal')">&times;</button>
+            </div>
+            <form id="schedule-form" onsubmit="saveSchedule(event)">
+                <div class="form-group">
+                    <label>Schedule Name *</label>
+                    <input type="text" id="sched-name" required placeholder="e.g., Weekend Maintenance Window">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Start Time</label>
+                        <input type="time" id="sched-start" value="02:00" required>
+                    </div>
+                    <div class="form-group">
+                        <label>End Time</label>
+                        <input type="time" id="sched-end" value="04:00" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Days of Week</label>
+                    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;">
+                            <input type="checkbox" class="sched-day" value="monday"> Mon</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;">
+                            <input type="checkbox" class="sched-day" value="tuesday"> Tue</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;">
+                            <input type="checkbox" class="sched-day" value="wednesday"> Wed</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;">
+                            <input type="checkbox" class="sched-day" value="thursday"> Thu</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;">
+                            <input type="checkbox" class="sched-day" value="friday"> Fri</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;">
+                            <input type="checkbox" class="sched-day" value="saturday"> Sat</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);text-transform:none;letter-spacing:0;font-weight:400;cursor:pointer;">
+                            <input type="checkbox" class="sched-day" value="sunday" checked> Sun</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Select Hosts</label>
+                    <div id="sched-hosts-list" style="max-height:200px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:8px; background:var(--bg-black);">
+                        Loading hosts...
+                    </div>
+                    <div class="help-text">All selected hosts must share the same SUDO password</div>
+                </div>
+                <div class="form-group">
+                    <label>Shared SUDO Password *</label>
+                    <input type="password" id="sched-password" placeholder="Enter SUDO password for all hosts" required>
+                </div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="sched-auto-reboot" style="width:auto;margin:0;">
+                        <span>Auto-Reboot after patching (if required)</span>
+                    </label>
+                    <div class="help-text">If enabled, hosts will automatically reboot when patches require it</div>
+                </div>
+                <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('schedule-modal')">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Schedule</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Import Hosts Modal -->
+    <div id="import-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Import Hosts</h2>
+                <button class="close-btn" onclick="closeModal('import-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Format</label>
+                    <select id="import-format">
+                        <option value="json">JSON</option>
+                        <option value="csv">CSV</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Data</label>
+                    <textarea id="import-data" style="min-height:200px; font-family:'JetBrains Mono',monospace; font-size:12px;" placeholder='CSV (no header): ip_address,hostname,ssh_port,tags,notes&#10;   e.g. 192.168.1.50,myserver,22,,&#10;CSV (with header): hostname,ip_address,ssh_user,ssh_port,tags,notes&#10;JSON: [{"hostname":"server1","ip_address":"10.0.0.1","ssh_user":"root","ssh_port":22}]'></textarea>
+                </div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="import-overwrite" style="width:auto;margin:0;" checked>
+                        <span>Overwrite existing hosts</span>
+                    </label>
+                </div>
+                <div style="margin-top:8px;">
+                    <input type="file" id="import-file" accept=".json,.csv" style="display:none;">
+                    <button type="button" class="btn btn-secondary" onclick="document.getElementById('import-file').click()">📁 Load from File</button>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="closeModal('import-modal')">Cancel</button>
+                    <button class="btn btn-primary" onclick="executeImport()">Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <script>
-        // Tab switching
+        // Auth check - settings page requires authentication
+        (async function() {
+            const API = window.location.hostname === 'localhost'
+                ? 'http://localhost:8000/api' : '/api';
+            try {
+                const res = await fetch(`${API}/auth/me`, { credentials: 'include' });
+                const data = await res.json();
+                if (!data.authenticated) {
+                    window.location.href = 'login.html';
+                    return;
+                }
+            } catch (e) {
+                window.location.href = 'login.html';
+                return;
+            }
+        })();
+
+        // Override fetch to always include credentials
+        const _origFetch = window.fetch;
+        window.fetch = function(url, opts = {}) {
+            opts.credentials = opts.credentials || 'include';
+            return _origFetch.call(this, url, opts);
+        };
+
+        // Tab switching with hash update
         function switchTab(tabName) {
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            
+            const tabEl = document.getElementById(tabName + '-tab');
+            if (tabEl) tabEl.classList.add('active');
+            
+            // Find and activate the matching button
             document.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.classList.remove('active');
+                if (btn.textContent.toLowerCase().includes(tabName.replace('-', ' ').replace('ssh keys', 'ssh'))) {
+                    btn.classList.add('active');
+                }
+            });
+            // More precise: match by onclick
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                const onclick = btn.getAttribute('onclick') || '';
+                if (onclick.includes(`'${tabName}'`)) btn.classList.add('active');
             });
             
-            // Show selected tab
-            document.getElementById(tabName + '-tab').classList.add('active');
-            event.target.classList.add('active');
+            // Update URL hash
+            window.location.hash = tabName;
+            
+            // Load data for specific tabs
+            if (tabName === 'users') loadUsers();
+            if (tabName === 'schedules') loadSchedules();
         }
+        
+        // Handle hash-based navigation on page load
+        (function() {
+            const hash = window.location.hash.replace('#', '');
+            const tabMap = {
+                'hosts': 'hosts',
+                'general': 'general',
+                'ssh-keys': 'ssh-keys',
+                'users': 'users',
+                'schedules': 'schedules',
+                'advanced': 'advanced',
+                'backup': 'backup'
+            };
+            if (hash && tabMap[hash]) {
+                // Defer to let page render first
+                setTimeout(() => switchTab(tabMap[hash]), 100);
+            }
+        })();
         
         // Modal management
         function openAddHostModal() {
-            currentEditHostId = null;  // Clear edit mode
+            currentEditHostId = null;
             document.getElementById('modal-title').textContent = 'Add Host';
             document.getElementById('host-form').reset();
-            document.getElementById('hostname').disabled = false;  // Re-enable hostname field
+            document.getElementById('hostname').disabled = false;
+            const savedUser = document.getElementById('default-ssh-user').value;
+            const savedPort = document.getElementById('default-ssh-port').value;
+            if (savedUser) document.getElementById('ssh-user').value = savedUser;
+            if (savedPort) document.getElementById('ssh-port').value = savedPort;
             document.getElementById('host-modal').classList.add('active');
             populateAuthDropdown();
             toggleAuthFields();
@@ -645,8 +1094,349 @@
         
         function closeModal(modalId) {
             document.getElementById(modalId).classList.remove('active');
-            currentEditHostId = null;  // Clear edit mode
-            document.getElementById('hostname').disabled = false;  // Re-enable hostname
+            currentEditHostId = null;
+            const hostnameEl = document.getElementById('hostname');
+            if (hostnameEl) hostnameEl.disabled = false;
+        }
+        
+        // =========================================================================
+        // IMPORT / EXPORT
+        // =========================================================================
+        
+        function openImportModal() {
+            document.getElementById('import-data').value = '';
+            document.getElementById('import-overwrite').checked = true;
+            document.getElementById('import-modal').classList.add('active');
+        }
+        
+        // File upload handler for import
+        document.getElementById('import-file')?.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                document.getElementById('import-data').value = event.target.result;
+                // Auto-detect format
+                if (file.name.endsWith('.csv')) {
+                    document.getElementById('import-format').value = 'csv';
+                } else {
+                    document.getElementById('import-format').value = 'json';
+                }
+            };
+            reader.readAsText(file);
+        });
+        
+        async function executeImport() {
+            const format = document.getElementById('import-format').value;
+            const data = document.getElementById('import-data').value.trim();
+            const overwrite = document.getElementById('import-overwrite').checked;
+            
+            if (!data) {
+                alert('Please provide import data');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/settings/hosts/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ format, data, overwrite })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    closeModal('import-modal');
+                    loadHosts();
+                    alert(`Import complete!\nAdded: ${result.added}\nUpdated: ${result.updated}\nFailed: ${result.failed}` +
+                          (result.errors.length ? `\n\nErrors:\n${result.errors.join('\n')}` : ''));
+                } else {
+                    alert('Import failed: ' + (result.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Import failed: ' + error.message);
+            }
+        }
+        
+        async function exportHosts() {
+            try {
+                const response = await fetch('/api/settings/hosts/export?format=json');
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // Create download
+                    const blob = new Blob([result.data], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `patchpilot-hosts-${new Date().toISOString().slice(0,10)}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                } else {
+                    alert('Export failed: ' + (result.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Export failed: ' + error.message);
+            }
+        }
+
+        // =========================================================================
+        // AUTO-PATCH SCHEDULES
+        // =========================================================================
+        
+        let schedulesList = [];
+        let allHostsForSchedule = [];
+        let currentEditScheduleId = null;
+        
+        async function loadSchedules() {
+            try {
+                const response = await fetch('/api/schedules');
+                schedulesList = await response.json();
+                renderSchedules();
+            } catch (error) {
+                console.error('Failed to load schedules:', error);
+            }
+        }
+        
+        function renderSchedules() {
+            const container = document.getElementById('schedules-list');
+            if (schedulesList.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🕐</div>
+                        <h3>No Schedules Configured</h3>
+                        <p>Create a schedule to automate patching</p>
+                        <button class="btn btn-primary" onclick="openAddScheduleModal()">+ Create First Schedule</button>
+                    </div>`;
+                return;
+            }
+            
+            container.innerHTML = schedulesList.map(sched => {
+                const statusColor = sched.last_status === 'success' ? 'var(--green-bright)' :
+                                   sched.last_status === 'error' ? 'var(--red)' :
+                                   sched.last_status === 'running' ? 'var(--cyan)' :
+                                   sched.last_status === 'partial' ? 'var(--amber)' : 'var(--text-muted)';
+                const retryNote = (sched.last_status === 'partial' && sched.retry_count)
+                    ? ` (retrying ${sched.retry_count} host${sched.retry_count === 1 ? '' : 's'})`
+                    : '';
+                const statusText = (sched.last_status || 'never run') + retryNote;
+                const lastRun = sched.last_run ? new Date(sched.last_run).toLocaleString() : 'Never';
+                // Show hostnames if available, fall back to count
+                const hostNames = (sched.hosts && sched.hosts.length > 0)
+                    ? sched.hosts.map(h => `<span style="display:inline-block;padding:1px 7px;margin:1px 2px;border-radius:4px;background:var(--bg-black);border:1px solid var(--border);font-family:monospace;font-size:11px;color:var(--cyan)">${h.hostname}</span>`).join('')
+                    : `<span style="color:var(--text-muted)">${sched.host_count} host(s)</span>`;
+                // Format days nicely
+                const DAY_ABBR = { monday:'Mon', tuesday:'Tue', wednesday:'Wed', thursday:'Thu', friday:'Fri', saturday:'Sat', sunday:'Sun' };
+                const days = sched.day_of_week.split(',').map(d => DAY_ABBR[d.trim().toLowerCase()] || d.trim()).join(', ');
+
+                return `
+                    <div class="host-item" style="border-left-color: ${sched.enabled ? 'var(--green-bright)' : 'var(--text-muted)'}">
+                        <div class="host-info" style="flex:1;min-width:0;">
+                            <div class="host-name" style="margin-bottom:4px;">
+                                ${sched.enabled ? '✅' : '⏸️'} ${sched.name}
+                            </div>
+                            <div class="host-details" style="margin-bottom:6px;">
+                                📅 ${days} &nbsp;·&nbsp; 🕐 ${sched.start_time}–${sched.end_time} &nbsp;·&nbsp;
+                                Reboot: ${sched.auto_reboot ? '<span style="color:var(--amber)">Yes</span>' : 'No'} &nbsp;·&nbsp;
+                                Last: <span style="color:${statusColor}">${statusText}</span> (${lastRun})
+                            </div>
+                            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;">
+                                <span style="font-size:11px;color:var(--text-muted);margin-right:4px;">Hosts:</span>
+                                ${hostNames}
+                            </div>
+                        </div>
+                        <div class="host-actions" style="flex-shrink:0;margin-left:16px;">
+                            <button class="icon-btn" onclick="runScheduleNow('${sched.id}')" title="Run now">▶️ Run</button>
+                            <button class="icon-btn" onclick="editSchedule('${sched.id}')">✏️ Edit</button>
+                            <button class="icon-btn btn-delete" onclick="deleteSchedule('${sched.id}', '${sched.name}')">🗑️ Delete</button>
+                        </div>
+                    </div>`;
+            }).join('');
+        }
+        
+        async function openAddScheduleModal() {
+            currentEditScheduleId = null;
+            document.getElementById('schedule-modal-title').textContent = 'New Auto-Patch Schedule';
+            document.getElementById('schedule-form').reset();
+            // Reset day checkboxes
+            document.querySelectorAll('.sched-day').forEach(cb => cb.checked = cb.value === 'sunday');
+            document.getElementById('sched-start').value = '02:00';
+            document.getElementById('sched-end').value = '04:00';
+            
+            // Load available hosts
+            await loadHostsForSchedule();
+            
+            document.getElementById('schedule-modal').classList.add('active');
+        }
+        
+        async function loadHostsForSchedule(selectedIds = []) {
+            const container = document.getElementById('sched-hosts-list');
+            try {
+                const response = await fetch('/api/settings/hosts');
+                allHostsForSchedule = await response.json();
+                
+                container.innerHTML = allHostsForSchedule.map(h => `
+                    <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;font-size:13px;color:var(--text-secondary);border-bottom:1px solid var(--border-light,#1e1e1e);">
+                        <input type="checkbox" class="sched-host-cb" value="${h.id}" 
+                               ${selectedIds.includes(String(h.id)) ? 'checked' : ''}
+                               style="width:auto;margin:0;">
+                        <span style="color:var(--text-primary);font-weight:500;">${h.hostname}</span>
+                        <span style="margin-left:auto;font-size:11px;color:var(--text-muted);">${h.status || 'unknown'}</span>
+                    </label>
+                `).join('');
+            } catch (error) {
+                container.innerHTML = '<div style="color:var(--red);padding:12px;">Failed to load hosts</div>';
+            }
+        }
+        
+        async function saveSchedule(event) {
+            event.preventDefault();
+            
+            const name = document.getElementById('sched-name').value.trim();
+            const start_time = document.getElementById('sched-start').value;
+            const end_time = document.getElementById('sched-end').value;
+            const auto_reboot = document.getElementById('sched-auto-reboot').checked;
+            const become_password = document.getElementById('sched-password').value;
+            
+            // Get selected days
+            const days = [];
+            document.querySelectorAll('.sched-day:checked').forEach(cb => days.push(cb.value));
+            if (days.length === 0) {
+                alert('Please select at least one day');
+                return;
+            }
+            
+            // Get selected hosts
+            const host_ids = [];
+            document.querySelectorAll('.sched-host-cb:checked').forEach(cb => host_ids.push(cb.value));
+            if (host_ids.length === 0) {
+                alert('Please select at least one host');
+                return;
+            }
+            
+            const data = {
+                name,
+                day_of_week: days.join(','),
+                start_time,
+                end_time,
+                auto_reboot,
+                become_password: become_password || null,
+                host_ids
+            };
+
+            // Show saving feedback
+            const saveBtn = document.querySelector('#schedule-form .btn-primary');
+            const originalText = saveBtn ? saveBtn.textContent : '';
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.textContent = '⏳ Saving...';
+            }
+
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 15000);
+
+                let response;
+                if (currentEditScheduleId) {
+                    response = await fetch(`/api/schedules/${currentEditScheduleId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data),
+                        signal: controller.signal
+                    });
+                } else {
+                    response = await fetch('/api/schedules', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data),
+                        signal: controller.signal
+                    });
+                }
+                clearTimeout(timeout);
+                
+                if (response.ok) {
+                    closeModal('schedule-modal');
+                    loadSchedules();
+                } else {
+                    const err = await response.json().catch(() => ({}));
+                    alert('Failed: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    alert('Request timed out after 15 seconds. Check backend logs.');
+                } else {
+                    alert('Failed: ' + error.message);
+                }
+            } finally {
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = originalText;
+                }
+            }
+        }
+        
+        async function editSchedule(scheduleId) {
+            currentEditScheduleId = scheduleId;
+            try {
+                const response = await fetch(`/api/schedules/${scheduleId}`);
+                const sched = await response.json();
+                
+                document.getElementById('schedule-modal-title').textContent = 'Edit Schedule';
+                document.getElementById('sched-name').value = sched.name;
+                document.getElementById('sched-start').value = sched.start_time;
+                document.getElementById('sched-end').value = sched.end_time;
+                document.getElementById('sched-auto-reboot').checked = sched.auto_reboot;
+                document.getElementById('sched-password').value = '';
+                document.getElementById('sched-password').placeholder = sched.has_password ? 
+                    'Leave blank to keep existing password' : 'Enter SUDO password';
+                document.getElementById('sched-password').required = !sched.has_password;
+                
+                // Set days
+                const days = sched.day_of_week.split(',').map(d => d.trim().toLowerCase());
+                document.querySelectorAll('.sched-day').forEach(cb => {
+                    cb.checked = days.includes(cb.value);
+                });
+                
+                // Load hosts with selections
+                const selectedIds = sched.hosts.map(h => h.id);
+                await loadHostsForSchedule(selectedIds);
+                
+                document.getElementById('schedule-modal').classList.add('active');
+            } catch (error) {
+                alert('Failed to load schedule: ' + error.message);
+            }
+        }
+        
+        async function deleteSchedule(scheduleId, name) {
+            if (!confirm(`Delete schedule "${name}"? This cannot be undone.`)) return;
+            try {
+                const response = await fetch(`/api/schedules/${scheduleId}`, { method: 'DELETE' });
+                if (response.ok) {
+                    loadSchedules();
+                } else {
+                    alert('Failed to delete schedule');
+                }
+            } catch (error) {
+                alert('Failed: ' + error.message);
+            }
+        }
+        
+        async function runScheduleNow(scheduleId) {
+            if (!confirm('Run this schedule now? This will patch all hosts in this schedule.')) return;
+            try {
+                const response = await fetch(`/api/schedules/${scheduleId}/run`, { method: 'POST' });
+                const result = await response.json();
+                if (response.ok) {
+                    alert(result.message);
+                    loadSchedules();
+                } else {
+                    alert('Failed: ' + (result.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Failed: ' + error.message);
+            }
         }
         
         // Toggle SSH authentication fields
@@ -697,17 +1487,25 @@
             passwordField.style.display = 'none';
             savedKeyHelp.style.display = 'none';
             
-            if (keyType.startsWith('saved:')) {
+            if (keyType === 'stored') {
+                // Using stored key from existing host - show hint
+                savedKeyHelp.style.display = 'block';
+                savedKeyHelp.innerHTML = '🔒 SSH key is stored securely. Test Connection will use the stored key.<br><small>Select a different auth method to change it.</small>';
+                savedKeyHelp.style.color = '#28a745';
+            } else if (keyType.startsWith('saved:')) {
                 // Using saved key - fetch and populate
                 const keyId = keyType.replace('saved:', '');
                 try {
-                    const response = await fetch(`/api/settings/ssh-keys/${keyId}/decrypt`);
-                    const data = await response.json();
-                    document.getElementById('ssh-private-key').value = data.ssh_key;
+                    const response = await fetch(`/api/settings/ssh-keys/${keyId}/decrypt`, {
+                        credentials: 'include'
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        document.getElementById('ssh-private-key').value = data.ssh_key;
+                    }
                     savedKeyHelp.style.display = 'block';
                 } catch (error) {
                     console.error('Failed to load saved key:', error);
-                    alert('Failed to load saved SSH key');
                 }
             } else if (keyType === 'pasted') {
                 keyField.style.display = 'block';
@@ -749,23 +1547,66 @@
             resultDiv.className = 'test-result';
             resultDiv.textContent = '⏳ Testing connection...';
             
+            const rawKeyType = document.getElementById('ssh-key-type').value;
+            
             const data = {
                 hostname: document.getElementById('hostname').value,
                 ssh_user: document.getElementById('ssh-user').value,
                 ssh_port: parseInt(document.getElementById('ssh-port').value),
-                ssh_key_type: document.getElementById('ssh-key-type').value
+                ssh_key_type: 'pasted'
             };
             
-            if (data.ssh_key_type === 'pasted') {
+            // If editing an existing host, include host_id so backend can use stored key
+            if (currentEditHostId) {
+                data.host_id = currentEditHostId;
+            }
+            
+            // Handle saved keys - fetch decrypted key directly
+            if (rawKeyType === 'stored') {
+                // Using stored key from existing host - backend will fetch via host_id
+                // Don't send key content, just key_type='pasted' + host_id
+                if (!currentEditHostId) {
+                    resultDiv.className = 'test-result test-error';
+                    resultDiv.textContent = '✗ No stored key available for new hosts';
+                    return;
+                }
+            } else if (rawKeyType.startsWith('saved:')) {
+                const keyId = rawKeyType.replace('saved:', '');
+                try {
+                    const keyResp = await fetch(`/api/settings/ssh-keys/${keyId}/decrypt`, {
+                        credentials: 'include'
+                    });
+                    if (!keyResp.ok) {
+                        resultDiv.className = 'test-result test-error';
+                        resultDiv.textContent = '✗ Failed to load saved SSH key';
+                        return;
+                    }
+                    const keyData = await keyResp.json();
+                    data.ssh_private_key = keyData.ssh_key;
+                } catch (error) {
+                    resultDiv.className = 'test-result test-error';
+                    resultDiv.textContent = '✗ Failed to decrypt saved SSH key: ' + error.message;
+                    return;
+                }
+            } else if (rawKeyType === 'pasted') {
                 data.ssh_private_key = document.getElementById('ssh-private-key').value;
-            } else if (data.ssh_key_type === 'password') {
+            } else if (rawKeyType === 'password') {
+                data.ssh_key_type = 'password';
                 data.ssh_password = document.getElementById('ssh-password').value;
+            }
+            
+            // Validate we have auth data (skip if using stored key with host_id)
+            if (data.ssh_key_type === 'pasted' && !data.ssh_private_key && !data.host_id) {
+                resultDiv.className = 'test-result test-error';
+                resultDiv.textContent = '✗ No SSH key provided. Please select or paste a key.';
+                return;
             }
             
             try {
                 const response = await fetch('/api/settings/hosts/test', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
+                    credentials: 'include',
                     body: JSON.stringify(data)
                 });
                 
@@ -804,12 +1645,20 @@
             
                        // Handle saved keys vs manual entry
             const keyType = data.ssh_key_type;
-            if (keyType.startsWith('saved:')) {
+            if (keyType === 'stored') {
+                // Keep existing stored key - set type to pasted, don't send key content
+                data.ssh_key_type = 'pasted';
+                // No ssh_private_key sent = backend won't overwrite stored key
+            } else if (keyType.startsWith('saved:')) {
                 // Using saved key - get the content that was already loaded
                 data.ssh_key_type = 'pasted';
                 data.ssh_private_key = document.getElementById('ssh-private-key').value;
             } else if (keyType === 'pasted') {
-                data.ssh_private_key = document.getElementById('ssh-private-key').value;
+                const keyContent = document.getElementById('ssh-private-key').value;
+                if (keyContent.trim()) {
+                    data.ssh_private_key = keyContent;
+                }
+                // If empty and editing, don't send key - keeps existing stored key
             } else if (keyType === 'password') {
                 data.ssh_password = document.getElementById('ssh-password').value;
             } 
@@ -821,6 +1670,7 @@
                     response = await fetch(`/api/settings/hosts/${currentEditHostId}`, {
                         method: 'PUT',
                         headers: {'Content-Type': 'application/json'},
+                        credentials: 'include',
                         body: JSON.stringify(data)
                     });
                 } else {
@@ -881,8 +1731,9 @@
                             </div>
                         </div>
                         <div class="host-actions">
+                            <button class="icon-btn btn-logs" onclick="showHostLogs('${host.id}', '${host.hostname}')" title="View patch logs">📜 Logs</button>
                             <button class="icon-btn" onclick="editHost('${host.id}')">✏️ Edit</button>
-                            <button class="icon-btn" onclick="deleteHost('${host.id}', '${host.hostname}')">🗑️ Delete</button>
+                            <button class="icon-btn btn-delete" onclick="deleteHost('${host.id}', '${host.hostname}')">🗑️ Delete</button>
                         </div>
                     </div>
                 `).join('');
@@ -897,7 +1748,9 @@
         async function editHost(hostId) {
             try {
                 // Fetch host details
-                const response = await fetch(`/api/settings/hosts/${hostId}`);
+                const response = await fetch(`/api/settings/hosts/${hostId}`, {
+                    credentials: 'include'
+                });
                 const host = await response.json();
                 
                 // Store ID for updating
@@ -908,21 +1761,54 @@
                 
                 // Populate form fields
                 document.getElementById('hostname').value = host.hostname;
-                document.getElementById('hostname').disabled = true; // Can't change hostname
+                document.getElementById('hostname').disabled = true;
                 document.getElementById('ssh-user').value = host.ssh_user;
                 document.getElementById('ssh-port').value = host.ssh_port;
-                document.getElementById('ssh-key-type').value = host.ssh_key_type;
                 document.getElementById('notes').value = host.notes || '';
                 document.getElementById('is_control_node').checked = host.is_control_node || false;
-                document.getElementById('allow_auto_reboot').checked = host.allow_auto_reboot || false;
+                document.getElementById('allow_auto_reboot').checked = host.allow_auto_reboot !== false;
                 document.getElementById('tags').value = host.tags || '';
+                
+                // Populate SSH auth dropdown with saved keys first
+                populateAuthDropdown();
+                
+                // Now handle the stored key type
+                const select = document.getElementById('ssh-key-type');
+                const keyField = document.getElementById('ssh-key-field');
+                const passwordField = document.getElementById('ssh-password-field');
+                const savedKeyHelp = document.getElementById('saved-key-help');
+                
+                if (host.has_ssh_key && host.ssh_key_type === 'pasted') {
+                    // Host has a stored key - add a special option for it
+                    const storedOpt = document.createElement('option');
+                    storedOpt.value = 'stored';
+                    storedOpt.textContent = '🔒 Current stored key';
+                    select.insertBefore(storedOpt, select.children[1] || null);
+                    select.value = 'stored';
+                    
+                    // Show hint
+                    keyField.style.display = 'none';
+                    passwordField.style.display = 'none';
+                    savedKeyHelp.style.display = 'block';
+                    savedKeyHelp.innerHTML = '🔒 SSH key is stored securely. Test Connection will use the stored key.<br><small>Select a different auth method to change it.</small>';
+                    savedKeyHelp.style.color = '#28a745';
+                } else if (host.ssh_key_type === 'password') {
+                    select.value = 'password';
+                    keyField.style.display = 'none';
+                    passwordField.style.display = 'block';
+                    savedKeyHelp.style.display = 'none';
+                } else {
+                    select.value = host.ssh_key_type || '';
+                    handleAuthTypeChange();
+                }
                 
                 // Clear sensitive fields
                 document.getElementById('ssh-private-key').value = '';
                 document.getElementById('ssh-password').value = '';
                 
-                // Toggle auth fields
-                toggleAuthFields();
+                // Clear test result
+                const resultDiv = document.getElementById('test-result');
+                if (resultDiv) resultDiv.style.display = 'none';
                 
                 // Show modal
                 document.getElementById('host-modal').classList.add('active');
@@ -994,7 +1880,7 @@
             } catch (error) {
                 console.error('Failed to load SSH keys:', error);
                 document.getElementById('ssh-keys-table-body').innerHTML = 
-                    '<tr><td colspan="4" style="text-align: center; color: #d32f2f;">Failed to load SSH keys</td></tr>';
+                    '<tr><td colspan="4" style="text-align: center; color: var(--red);">Failed to load SSH keys</td></tr>';
             }
         }
 
@@ -1002,14 +1888,14 @@
         function renderKeysTable() {
             const tbody = document.getElementById('ssh-keys-table-body');
             if (savedSSHKeys.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: #888;">No saved SSH keys. Click "Add SSH Key" to create one.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--text-muted);">No saved SSH keys. Click "Add SSH Key" to create one.</td></tr>';
                 return;
             }
 
             tbody.innerHTML = savedSSHKeys.map(key => `
                 <tr>
                     <td><strong>${key.name}</strong></td>
-                    <td>${key.is_default ? '<span style="color: #28a745;">✓ Default</span>' : '-'}</td>
+                    <td>${key.is_default ? '<span style="color: var(--green-bright);">✓ Default</span>' : '-'}</td>
                     <td>${new Date(key.created_at).toLocaleDateString()}</td>
                     <td>
                         <button class="btn-action" onclick="editKey('${key.id}')" title="Edit">✏️</button>
@@ -1040,7 +1926,9 @@
             
             // Load the decrypted key content
             try {
-                const response = await fetch(`/api/settings/ssh-keys/${keyId}/decrypt`);
+                const response = await fetch(`/api/settings/ssh-keys/${keyId}/decrypt`, {
+                    credentials: 'include'
+                });
                 const data = await response.json();
                 document.getElementById('key-content').value = data.ssh_key;
             } catch (error) {
@@ -1136,6 +2024,508 @@
             };
             reader.readAsText(file);
         });
+
+        // =========================================================================
+        // GENERAL SETTINGS
+        // =========================================================================
+
+        async function loadGeneralSettings() {
+            try {
+                const response = await fetch('/api/settings/app', { credentials: 'include' });
+                if (!response.ok) return;
+                const settings = await response.json();
+                
+                if (settings.refresh_interval) {
+                    document.getElementById('refresh-interval').value = settings.refresh_interval.value;
+                }
+                if (settings.default_ssh_user) {
+                    document.getElementById('default-ssh-user').value = settings.default_ssh_user.value;
+                }
+                if (settings.default_ssh_port) {
+                    document.getElementById('default-ssh-port').value = settings.default_ssh_port.value;
+                }
+                if (settings.schedule_timezone) {
+                    document.getElementById('schedule-timezone').value = settings.schedule_timezone.value;
+                }
+                updateTimezoneWarning();
+            } catch (e) {
+                console.error('Failed to load settings:', e);
+            }
+        }
+
+        function updateTimezoneWarning() {
+            const sel = document.getElementById('schedule-timezone');
+            const warn = document.getElementById('tz-utc-warning');
+            if (!sel || !warn) return;
+            warn.style.display = (sel.value === 'UTC') ? 'block' : 'none';
+        }
+
+        async function saveGeneralSettings() {
+            const settings = {
+                refresh_interval: document.getElementById('refresh-interval').value,
+                default_ssh_user: document.getElementById('default-ssh-user').value.trim() || 'root',
+                default_ssh_port: document.getElementById('default-ssh-port').value || '22',
+                schedule_timezone: document.getElementById('schedule-timezone').value || 'UTC'
+            };
+
+            try {
+                for (const [key, value] of Object.entries(settings)) {
+                    const res = await fetch(`/api/settings/app/${key}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ value })
+                    });
+                    if (!res.ok) throw new Error(`Failed to save ${key}`);
+                }
+                alert('Settings saved successfully!');
+            } catch (e) {
+                alert('Failed to save settings: ' + e.message);
+            }
+        }
+
+        // Load general settings on page load
+        loadGeneralSettings();
+
+        // =========================================================================
+        // USER MANAGEMENT
+        // =========================================================================
+
+        async function loadUsers() {
+            const tbody = document.getElementById('users-table-body');
+            try {
+                const response = await fetch('/api/auth/users', { credentials: 'include' });
+                if (!response.ok) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--red);">Failed to load users (admin access required)</td></tr>';
+                    return;
+                }
+                const users = await response.json();
+                
+                if (users.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">No users found</td></tr>';
+                    return;
+                }
+                
+                const roleBadge = (role) => {
+                    const colors = { admin: 'danger', operator: 'warning', viewer: 'info' };
+                    return `<span class="badge-${colors[role] || 'info'}">${role}</span>`;
+                };
+                
+                const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
+                
+                tbody.innerHTML = users.map(u => `
+                    <tr style="border-bottom: 1px solid var(--border);">
+                        <td style="padding:12px 10px; color:var(--text-primary); font-weight:600;">${u.username}</td>
+                        <td style="padding:12px 10px;">${roleBadge(u.role)}</td>
+                        <td style="padding:12px 10px; color:var(--text-secondary); font-size:12px;">${formatDate(u.created_at)}</td>
+                        <td style="padding:12px 10px; color:var(--text-secondary); font-size:12px;">${formatDate(u.last_login)}</td>
+                        <td style="padding:12px 10px; text-align:right;">
+                            <button class="icon-btn btn-delete" onclick="deleteUser('${u.id}', '${u.username}')">🗑️ Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (error) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:30px; color:var(--red);">Error loading users</td></tr>';
+            }
+        }
+
+        function openAddUserModal() {
+            document.getElementById('add-user-form').style.display = 'block';
+            document.getElementById('new-username').value = '';
+            document.getElementById('new-user-password').value = '';
+            document.getElementById('new-user-role').value = 'viewer';
+            document.getElementById('user-form-error').style.display = 'none';
+        }
+
+        function closeAddUserForm() {
+            document.getElementById('add-user-form').style.display = 'none';
+        }
+
+        async function createUser() {
+            const username = document.getElementById('new-username').value.trim();
+            const password = document.getElementById('new-user-password').value;
+            const role = document.getElementById('new-user-role').value;
+            const errorDiv = document.getElementById('user-form-error');
+            errorDiv.style.display = 'none';
+
+            if (!username || !password) {
+                errorDiv.textContent = 'Username and password are required';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            if (password.length < 8) {
+                errorDiv.textContent = 'Password must be at least 8 characters';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/auth/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ username, password, role })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    errorDiv.textContent = data.detail || 'Failed to create user';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                closeAddUserForm();
+                loadUsers();
+            } catch (e) {
+                errorDiv.textContent = 'Connection error';
+                errorDiv.style.display = 'block';
+            }
+        }
+
+        async function deleteUser(userId, username) {
+            if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+            try {
+                const res = await fetch(`/api/auth/users/${userId}`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+                if (!res.ok) {
+                    const data = await res.json();
+                    alert(data.detail || 'Failed to delete user');
+                    return;
+                }
+                loadUsers();
+            } catch (e) {
+                alert('Connection error');
+            }
+        }
+
+        // ================================================================
+        // PATCH LOGS TAB
+        // ================================================================
+
+        // ================================================================
+        // HOST PATCH LOGS MODAL
+        // ================================================================
+
+        const _API_BASE = (window.location.hostname === 'localhost' ? 'http://localhost:8000' : '') + '/api';
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function toggleLogOutput(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.style.display = el.style.display === 'none' ? 'block' : 'none';
+            // Update caret indicator
+            const btn = document.getElementById('caret-' + id);
+            if (btn) btn.textContent = el.style.display === 'none' ? '▼ view output' : '▲ hide output';
+        }
+
+        async function showHostLogs(hostId, hostname) {
+            const modal   = document.getElementById('host-logs-modal');
+            const title   = document.getElementById('host-logs-title');
+            const loading = document.getElementById('host-logs-loading');
+            const empty   = document.getElementById('host-logs-empty');
+            const list    = document.getElementById('host-logs-list');
+
+            title.textContent = '📜 Patch Logs — ' + hostname;
+            modal.style.display = 'flex';
+            loading.style.display = 'block';
+            empty.style.display   = 'none';
+            list.style.display    = 'none';
+
+            try {
+                const res = await fetch(`${_API_BASE}/patch-history/host/${hostId}?limit=25`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const entries = await res.json();
+
+                loading.style.display = 'none';
+
+                if (!entries.length) {
+                    empty.style.display = 'block';
+                    return;
+                }
+
+                list.innerHTML = entries.map((e, idx) => {
+                    const date        = e.created_at ? new Date(e.created_at).toLocaleString() : '—';
+                    const dur         = e.duration_seconds != null ? `${e.duration_seconds}s` : '—';
+                    const pkgs        = Array.isArray(e.packages_updated) ? e.packages_updated.length : (e.packages_updated || 0);
+                    const statusColor = e.status === 'success' ? 'var(--green-bright)' : 'var(--red)';
+                    const statusIcon  = e.status === 'success' ? '✅' : '❌';
+                    const hasOutput   = e.output && e.output.trim().length > 0;
+                    const outputId    = `log-output-${hostId}-${idx}`;
+                    const pkgNames    = Array.isArray(e.packages_updated) && e.packages_updated.length > 0
+                                        ? `<div style="margin-top:6px;font-size:11px;color:var(--text-muted);">Packages: ${e.packages_updated.join(', ')}</div>` : '';
+                    return `
+                    <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08);
+                                border-radius:8px; overflow:hidden; margin-bottom:4px;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;
+                                    padding:10px 14px; cursor:${hasOutput ? 'pointer' : 'default'}; gap:10px;"
+                             onclick="${hasOutput ? `toggleLogOutput('${outputId}')` : ''}">
+                            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex:1;">
+                                <span style="font-size:13px">${statusIcon}</span>
+                                <span style="color:${statusColor}; font-weight:600; font-size:13px;">${e.status.toUpperCase()}</span>
+                                <span style="color:var(--text-muted); font-size:12px;">${date}</span>
+                                <span style="background:rgba(0,188,212,0.12);color:var(--lcars-blue);
+                                             border-radius:10px;padding:1px 8px;font-size:11px;">${pkgs} pkg${pkgs !== 1 ? 's' : ''}</span>
+                                <span style="color:var(--text-muted); font-size:11px; font-family:monospace;">⏱ ${dur}</span>
+                                ${e.error_message ? `<span style="color:var(--red);font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(e.error_message)}">${escapeHtml(e.error_message.substring(0,80))}</span>` : ''}
+                            </div>
+                            ${hasOutput ? `<span id="caret-${outputId}" style="color:var(--text-muted);font-size:11px;flex-shrink:0;">▼ view output</span>` : '<span style="color:var(--text-muted);font-size:10px;font-style:italic;">no output stored</span>'}
+                        </div>
+                        ${pkgNames}
+                        ${hasOutput ? `
+                        <div id="${outputId}" style="display:none;">
+                            <div style="border-top:1px solid rgba(255,255,255,0.06); padding:10px 14px;">
+                                <pre style="margin:0; background:#070710; border-radius:6px; padding:10px 12px;
+                                            font-size:11px; line-height:1.55; color:var(--text-secondary);
+                                            overflow-x:auto; max-height:380px; overflow-y:auto;
+                                            white-space:pre-wrap; word-break:break-all;">${escapeHtml(e.output)}</pre>
+                            </div>
+                        </div>` : ''}
+                    </div>`;
+                }).join('');
+
+                list.style.display = 'flex';
+                list.style.flexDirection = 'column';
+
+            } catch (err) {
+                loading.innerHTML = '<span style="color:var(--red)">Error loading patch logs: ' + err.message + '</span>';
+            }
+        }
+
+        function closeHostLogsModal() {
+            document.getElementById('host-logs-modal').style.display = 'none';
+        }
+
+        // ================================================================
+        // BACKUP & RESTORE
+        // ================================================================
+
+        const _BACKUP_API = (window.location.hostname === 'localhost' ? 'http://localhost:8000' : '') + '/api/backup';
+        let _pendingRestoreFile = null;
+
+        async function loadBackupList() {
+            const container = document.getElementById('backup-list-container');
+            container.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted);">Loading…</div>';
+            try {
+                const res = await fetch(`${_BACKUP_API}/list`);
+                const data = await res.json();
+                const backups = data.backups || data; // handle both {backups:[]} and plain []
+                if (!backups.length) {
+                    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted);">No backups yet. Create your first backup above.</div>';
+                    return;
+                }
+                container.innerHTML = `
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead>
+                            <tr style="border-bottom:1px solid var(--border);">
+                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">File</th>
+                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Size</th>
+                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Created</th>
+                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Description</th>
+                                <th style="text-align:right;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${backups.map(b => {
+                                const sizeMB = (b.size_bytes / 1048576).toFixed(1);
+                                const date = b.created_at ? new Date(b.created_at).toLocaleString() : '—';
+                                const desc = b.description || '—';
+                                return `<tr style="border-bottom:1px solid var(--border);">
+                                    <td style="padding:11px 16px;font-family:monospace;font-size:12px;color:var(--cyan);">${b.filename}</td>
+                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-secondary);">${sizeMB} MB</td>
+                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-secondary);">${date}</td>
+                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-muted);">${desc}</td>
+                                    <td style="padding:11px 16px;text-align:right;white-space:nowrap;">
+                                        <button class="btn-sm" onclick="downloadBackup('${b.filename}')" title="Download">⬇️ Download</button>
+                                        <button class="btn-sm" onclick="startRestore('${b.filename}')" title="Restore" style="color:var(--amber);border-color:rgba(243,156,18,0.3);">🔁 Restore</button>
+                                        <button class="btn-sm btn-danger" onclick="deleteBackup('${b.filename}')" title="Delete">🗑️</button>
+                                    </td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>`;
+            } catch (e) {
+                container.innerHTML = `<div style="padding:30px;text-align:center;color:var(--red);">Failed to load backups: ${e.message}</div>`;
+            }
+        }
+
+        async function createBackup() {
+            const btn = document.getElementById('backup-create-btn');
+            const desc = document.getElementById('backup-description').value.trim();
+            const includeKey = document.getElementById('backup-include-key').checked;
+            btn.disabled = true;
+            btn.textContent = '⏳ Creating…';
+            showBackupBanner('Creating backup…', 0);
+
+            try {
+                const res = await fetch(`${_BACKUP_API}/create`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ description: desc, include_encryption_key: includeKey })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Unknown error');
+
+                // Poll progress
+                await pollBackupProgress();
+                hideBackupBanner();
+                loadBackupList();
+                document.getElementById('backup-description').value = '';
+                alert('✅ Backup created successfully!');
+            } catch (e) {
+                hideBackupBanner();
+                alert('❌ Backup failed: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span class="btn-icon">💾</span> Create Backup';
+            }
+        }
+
+        async function pollBackupProgress() {
+            for (let i = 0; i < 120; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                try {
+                    const res = await fetch(`${_BACKUP_API}/status`);
+                    const status = await res.json();
+                    if (status.active) {
+                        showBackupBanner(status.message || 'Working…', status.percent || 0);
+                    } else {
+                        return;
+                    }
+                } catch (_) {}
+            }
+        }
+
+        function showBackupBanner(msg, pct) {
+            const banner = document.getElementById('backup-maintenance-banner');
+            banner.style.display = 'flex';
+            document.getElementById('backup-progress-bar').style.width = pct + '%';
+            document.getElementById('backup-progress-msg').textContent = msg;
+        }
+
+        function hideBackupBanner() {
+            document.getElementById('backup-maintenance-banner').style.display = 'none';
+        }
+
+        function downloadBackup(filename) {
+            window.location.href = `${_BACKUP_API}/download/${encodeURIComponent(filename)}`;
+        }
+
+        async function deleteBackup(filename) {
+            if (!confirm(`Delete backup "${filename}"? This cannot be undone.`)) return;
+            try {
+                const res = await fetch(`${_BACKUP_API}/delete/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error((await res.json()).detail);
+                loadBackupList();
+            } catch (e) {
+                alert('Failed to delete: ' + e.message);
+            }
+        }
+
+        function startRestore(filename) {
+            _pendingRestoreFile = filename;
+            document.getElementById('restore-filename-label').textContent = filename;
+            document.getElementById('backup-restore-panel').style.display = 'block';
+            document.getElementById('backup-restore-panel').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function cancelRestore() {
+            _pendingRestoreFile = null;
+            document.getElementById('backup-restore-panel').style.display = 'none';
+        }
+
+        async function confirmRestore() {
+            if (!_pendingRestoreFile) return;
+            const btn = document.getElementById('restore-confirm-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Restoring…';
+            showBackupBanner('Restore in progress — do not close this page…', 10);
+            try {
+                const res = await fetch(`${_BACKUP_API}/restore`, {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ filename: _pendingRestoreFile, confirm: true })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Unknown error');
+                hideBackupBanner();
+                alert('✅ Restore complete! The page will reload.');
+                window.location.reload();
+            } catch (e) {
+                hideBackupBanner();
+                alert('❌ Restore failed: ' + e.message);
+                btn.disabled = false;
+                btn.textContent = '🔁 Yes, Restore Now';
+            }
+        }
+
+        function handleBackupDrop(event) {
+            event.preventDefault();
+            document.getElementById('backup-drop-zone').style.borderColor = 'var(--border)';
+            const file = event.dataTransfer.files[0];
+            if (file) uploadBackup(file);
+        }
+
+        async function uploadBackup(file) {
+            if (!file) return;
+            const status = document.getElementById('backup-upload-status');
+            status.innerHTML = '<span style="color:var(--cyan);">⏳ Uploading…</span>';
+            const form = new FormData();
+            form.append('file', file);
+            try {
+                const res = await fetch(`${_BACKUP_API}/upload`, { method: 'POST', body: form });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Unknown error');
+                status.innerHTML = '<span style="color:var(--green-bright);">✅ Uploaded successfully</span>';
+                loadBackupList();
+            } catch (e) {
+                status.innerHTML = `<span style="color:var(--red);">❌ Upload failed: ${e.message}</span>`;
+            }
+        }
+
+        // Load backup list when switching to that tab
+        const _origSwitchTab = window.switchTab;
+        // ── Auto-load backup list when backup tab is activated ──
+        document.addEventListener('DOMContentLoaded', () => {
+            const origSwitch = window.switchTab;
+            window.switchTab = function(tabName) {
+                origSwitch(tabName);
+                if (tabName === 'backup') loadBackupList();
+            };
+        });
+
     </script>
+    <!-- Host Patch Logs Modal -->
+    <div id="host-logs-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7);
+         z-index:1000; align-items:center; justify-content:center; padding:20px;">
+        <div style="background:var(--bg-panel, #1a1a2e); border:1px solid rgba(255,255,255,0.1);
+                    border-radius:12px; width:100%; max-width:820px; max-height:90vh;
+                    display:flex; flex-direction:column;">
+            <div style="display:flex; align-items:center; justify-content:space-between;
+                        padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.08);">
+                <h2 id="host-logs-title" style="margin:0; font-size:18px;">📜 Patch Logs</h2>
+                <button onclick="closeHostLogsModal()" style="background:none;border:none;
+                    color:var(--text-muted);font-size:22px;cursor:pointer;line-height:1;">&times;</button>
+            </div>
+            <div id="host-logs-body" style="flex:1; overflow-y:auto; padding:16px 20px;">
+                <div id="host-logs-loading" style="text-align:center; color:var(--text-muted); padding:32px;">
+                    Loading…
+                </div>
+                <div id="host-logs-empty" style="display:none; text-align:center;
+                     color:var(--text-muted); padding:32px;">
+                    No patch history found for this host.
+                </div>
+                <div id="host-logs-list" style="display:none; display:flex; flex-direction:column; gap:10px;"></div>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

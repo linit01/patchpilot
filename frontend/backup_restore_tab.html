@@ -1,0 +1,675 @@
+<!--
+  PatchPilot — Backup & Restore Tab
+  ===================================
+  Drop this section into your existing settings page.
+  The tab button goes in the settings nav, the panel goes in the tab content area.
+
+  HOW TO ADD:
+  1. Find your settings tab navigation (look for <button class="tab-btn"> elements)
+     and paste the TAB BUTTON section there.
+  2. Find your settings tab content area and paste the TAB PANEL section there.
+  3. Add the <script> block before </body> or merge the JS into your app.js.
+  4. Add the <style> block into your styles.css.
+-->
+
+<!-- ═══════════════════════════════════════════════════════════════
+     TAB BUTTON — paste alongside your other settings tab buttons
+══════════════════════════════════════════════════════════════════ -->
+<button class="tab-btn" data-tab="backup" onclick="switchTab('backup')">
+    💾 Backup & Restore
+</button>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     TAB PANEL — paste alongside your other settings tab panels
+══════════════════════════════════════════════════════════════════ -->
+<div id="tab-backup" class="tab-panel" style="display:none;">
+
+    <!-- ── Maintenance Mode Banner ───────────────────────────────── -->
+    <div id="backup-maintenance-banner" class="maintenance-banner" style="display:none;">
+        <div class="maintenance-banner-inner">
+            <span class="maintenance-icon">🔒</span>
+            <div>
+                <strong>System in Maintenance Mode</strong>
+                <p id="backup-maintenance-reason">Operation in progress…</p>
+            </div>
+        </div>
+        <div class="progress-wrapper">
+            <div class="progress-bar-track">
+                <div id="backup-progress-bar" class="progress-bar-fill" style="width:0%"></div>
+            </div>
+            <span id="backup-progress-label" class="progress-label">0%</span>
+        </div>
+        <p id="backup-progress-message" class="progress-message"></p>
+    </div>
+
+    <!-- ── Create Backup ─────────────────────────────────────────── -->
+    <div class="settings-card">
+        <div class="card-header">
+            <h3>📦 Create Backup</h3>
+            <p class="card-subtitle">
+                Exports database, settings, and Ansible config into a single
+                <code>.tar.gz</code> archive. The system enters read-only mode
+                during the dump to guarantee consistency.
+            </p>
+        </div>
+
+        <div class="form-group">
+            <label for="backup-description">Description <span class="optional">(optional)</span></label>
+            <input type="text" id="backup-description"
+                   placeholder="e.g. Pre-upgrade snapshot, weekly backup…"
+                   maxlength="200">
+        </div>
+
+        <div class="form-group">
+            <label class="toggle-label">
+                <input type="checkbox" id="backup-include-key">
+                <span class="toggle-slider"></span>
+                Include encryption key
+            </label>
+            <p class="field-hint warning-hint">
+                ⚠️ Exports <code>PATCHPILOT_ENCRYPTION_KEY</code> inside the archive.
+                Required to restore encrypted SSH credentials on a different server.
+                Keep the backup file secure.
+            </p>
+        </div>
+
+        <div class="card-actions">
+            <button id="btn-create-backup" class="btn-primary" onclick="BackupRestore.createBackup()">
+                💾 Create Backup Now
+            </button>
+        </div>
+    </div>
+
+    <!-- ── Backup Archive List ────────────────────────────────────── -->
+    <div class="settings-card">
+        <div class="card-header">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <h3>📋 Available Backups</h3>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <span id="backup-retain-label" class="badge badge-info"></span>
+                    <button class="btn-secondary btn-sm" onclick="BackupRestore.loadList()">🔄 Refresh</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload existing archive -->
+        <div class="upload-drop-zone" id="backup-drop-zone"
+             ondrop="BackupRestore.handleDrop(event)"
+             ondragover="BackupRestore.handleDragOver(event)"
+             ondragleave="BackupRestore.handleDragLeave(event)">
+            <div class="upload-drop-inner">
+                <span class="upload-icon">📂</span>
+                <p>Drag & drop a <code>patchpilot_backup_*.tar.gz</code> file here to upload</p>
+                <button class="btn-secondary btn-sm" onclick="document.getElementById('backup-file-input').click()">
+                    Browse…
+                </button>
+                <input type="file" id="backup-file-input" accept=".tar.gz" style="display:none"
+                       onchange="BackupRestore.handleFileSelect(event)">
+            </div>
+        </div>
+        <div id="backup-upload-progress" style="display:none;">
+            <div class="progress-bar-track">
+                <div id="backup-upload-bar" class="progress-bar-fill" style="width:0%"></div>
+            </div>
+            <p id="backup-upload-label">Uploading…</p>
+        </div>
+
+        <!-- Backup table -->
+        <div id="backup-list-container">
+            <p class="loading-text">Loading backups…</p>
+        </div>
+
+        <div id="backup-disk-info" class="disk-info-bar"></div>
+    </div>
+
+    <!-- ── Restore Panel (shown after selecting a backup) ────────── -->
+    <div id="backup-restore-panel" class="settings-card danger-card" style="display:none;">
+        <div class="card-header">
+            <h3>♻️ Restore Confirmation</h3>
+        </div>
+        <div class="restore-warning-box">
+            <p>⚠️ <strong>This will permanently replace all current data</strong> including:</p>
+            <ul>
+                <li>All hosts and their SSH keys</li>
+                <li>All application settings</li>
+                <li>All patch history and audit logs</li>
+                <li>All Ansible inventory files</li>
+            </ul>
+            <p>The system will be in maintenance mode during the restore (~1–2 min).</p>
+        </div>
+        <div class="restore-target-info">
+            <p>Selected archive: <strong id="restore-target-filename">—</strong></p>
+            <p>Created: <span id="restore-target-date">—</span></p>
+            <p>Description: <em id="restore-target-desc">—</em></p>
+        </div>
+        <div class="form-group">
+            <label class="toggle-label">
+                <input type="checkbox" id="restore-confirm-checkbox"
+                       onchange="BackupRestore.toggleRestoreBtn()">
+                <span class="toggle-slider"></span>
+                I understand this is irreversible — proceed with restore
+            </label>
+        </div>
+        <div class="card-actions">
+            <button id="btn-restore-cancel" class="btn-secondary"
+                    onclick="BackupRestore.cancelRestore()">Cancel</button>
+            <button id="btn-restore-confirm" class="btn-danger" disabled
+                    onclick="BackupRestore.confirmRestore()">
+                ♻️ Restore Now
+            </button>
+        </div>
+    </div>
+
+</div><!-- end tab-backup -->
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     STYLES — paste into styles.css
+══════════════════════════════════════════════════════════════════ -->
+<style>
+/* ── Maintenance Banner ─────────────────────────────────────────── */
+.maintenance-banner {
+    background: linear-gradient(135deg, #2d1b4e 0%, #1a1a2e 100%);
+    border: 1px solid #7c3aed;
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 20px;
+    animation: pulse-border 2s infinite;
+}
+@keyframes pulse-border {
+    0%, 100% { border-color: #7c3aed; }
+    50%       { border-color: #a855f7; }
+}
+.maintenance-banner-inner {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 14px;
+}
+.maintenance-icon { font-size: 28px; }
+.maintenance-banner-inner strong { color: #e2e8f0; font-size: 16px; }
+.maintenance-banner-inner p { color: #94a3b8; margin: 4px 0 0; font-size: 13px; }
+
+.progress-wrapper { display: flex; align-items: center; gap: 10px; }
+.progress-bar-track {
+    flex: 1;
+    height: 8px;
+    background: #1e293b;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #7c3aed, #a855f7);
+    border-radius: 4px;
+    transition: width 0.4s ease;
+}
+.progress-label { color: #a855f7; font-size: 13px; font-weight: 600; min-width: 36px; }
+.progress-message { color: #64748b; font-size: 12px; margin: 8px 0 0; font-style: italic; }
+
+/* ── Upload Drop Zone ───────────────────────────────────────────── */
+.upload-drop-zone {
+    border: 2px dashed #334155;
+    border-radius: 10px;
+    padding: 24px;
+    margin: 16px 0;
+    text-align: center;
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+.upload-drop-zone.drag-over {
+    border-color: #7c3aed;
+    background: rgba(124, 58, 237, 0.05);
+}
+.upload-drop-inner { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.upload-icon { font-size: 32px; }
+.upload-drop-inner p { color: #64748b; font-size: 13px; margin: 0; }
+
+/* ── Backup Table ───────────────────────────────────────────────── */
+.backup-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 12px;
+    font-size: 13px;
+}
+.backup-table th {
+    text-align: left;
+    padding: 8px 12px;
+    color: #64748b;
+    font-weight: 600;
+    border-bottom: 1px solid #1e293b;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+}
+.backup-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #0f172a;
+    color: #cbd5e1;
+    vertical-align: middle;
+}
+.backup-table tr:hover td { background: rgba(124, 58, 237, 0.04); }
+.backup-table tr:last-child td { border-bottom: none; }
+.backup-filename { font-family: monospace; font-size: 12px; color: #a855f7; }
+.backup-desc { color: #64748b; font-style: italic; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.backup-badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 600;
+    margin: 1px;
+}
+.badge-yes { background: rgba(34,197,94,0.15); color: #22c55e; }
+.badge-no  { background: rgba(100,116,139,0.15); color: #475569; }
+.backup-actions { display: flex; gap: 6px; }
+
+/* ── Danger Card ────────────────────────────────────────────────── */
+.danger-card { border-color: #7f1d1d !important; }
+.danger-card .card-header h3 { color: #f87171; }
+.restore-warning-box {
+    background: rgba(239,68,68,0.08);
+    border: 1px solid rgba(239,68,68,0.2);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+}
+.restore-warning-box p { color: #fca5a5; margin: 0 0 8px; }
+.restore-warning-box ul { color: #f87171; margin: 0; padding-left: 20px; }
+.restore-warning-box ul li { margin-bottom: 4px; }
+.restore-target-info { margin: 12px 0; padding: 12px; background: #0f172a; border-radius: 8px; }
+.restore-target-info p { margin: 4px 0; font-size: 13px; color: #94a3b8; }
+.restore-target-info strong { color: #e2e8f0; }
+
+.btn-danger {
+    background: linear-gradient(135deg, #dc2626, #b91c1c);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: opacity 0.2s;
+}
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-danger:not(:disabled):hover { opacity: 0.85; }
+
+/* ── Misc ───────────────────────────────────────────────────────── */
+.disk-info-bar {
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: #0f172a;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #64748b;
+}
+.warning-hint { color: #f59e0b !important; }
+.loading-text { color: #475569; text-align: center; padding: 24px; }
+.badge-info { background: rgba(59,130,246,0.15); color: #60a5fa; padding: 3px 10px; border-radius: 99px; font-size: 11px; }
+.optional { color: #475569; font-size: 11px; font-weight: normal; }
+.field-hint { font-size: 12px; color: #64748b; margin-top: 4px; }
+</style>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     JAVASCRIPT — paste before </body> or merge into app.js
+══════════════════════════════════════════════════════════════════ -->
+<script>
+const BackupRestore = (() => {
+    const API = '/api/backup';
+    let pollTimer = null;
+    let selectedBackup = null;
+
+    // ── Init ─────────────────────────────────────────────────────
+    function init() {
+        loadList();
+        checkStatus();  // Show banner if already in maintenance mode
+    }
+
+    // ── Poll maintenance / progress status ───────────────────────
+    async function checkStatus() {
+        try {
+            const res = await fetch(`${API}/status`);
+            const data = await res.json();
+            renderMaintenanceBanner(data);
+            if (data.maintenance_mode) {
+                if (!pollTimer) pollTimer = setInterval(checkStatus, 1500);
+            } else {
+                if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                if (data.progress && data.progress.percent === 100) {
+                    loadList();  // Refresh list after completion
+                }
+            }
+        } catch (e) {
+            console.warn('Backup status check failed:', e);
+        }
+    }
+
+    function renderMaintenanceBanner(data) {
+        const banner = document.getElementById('backup-maintenance-banner');
+        const createBtn = document.getElementById('btn-create-backup');
+        if (data.maintenance_mode) {
+            banner.style.display = 'block';
+            document.getElementById('backup-maintenance-reason').textContent =
+                data.maintenance_reason || 'Operation in progress…';
+            if (data.progress) {
+                const pct = data.progress.percent || 0;
+                document.getElementById('backup-progress-bar').style.width = pct + '%';
+                document.getElementById('backup-progress-label').textContent = pct + '%';
+                document.getElementById('backup-progress-message').textContent =
+                    data.progress.message || '';
+            }
+            if (createBtn) createBtn.disabled = true;
+        } else {
+            banner.style.display = 'none';
+            if (createBtn) createBtn.disabled = false;
+        }
+    }
+
+    // ── Load backup list ─────────────────────────────────────────
+    async function loadList() {
+        const container = document.getElementById('backup-list-container');
+        container.innerHTML = '<p class="loading-text">Loading backups…</p>';
+        try {
+            const [listRes, healthRes] = await Promise.all([
+                fetch(`${API}/list`),
+                fetch(`${API}/health`),
+            ]);
+            const listData  = await listRes.json();
+            const healthData = await healthRes.json();
+
+            // Retention badge
+            document.getElementById('backup-retain-label').textContent =
+                `Keeping last ${listData.retain_count} backups`;
+
+            // Disk info
+            document.getElementById('backup-disk-info').textContent =
+                `Backup dir: ${healthData.backup_dir}  ·  `
+                + `${listData.backups.length} archive(s)  ·  `
+                + `Free space: ${healthData.disk_free_human}  ·  `
+                + `pg_dump: ${healthData.pg_tools_available ? '✓ available' : '✗ MISSING'}  ·  `
+                + `Docker socket: ${healthData.docker_socket ? '✓ mounted' : '— not mounted'}`;
+
+            if (listData.backups.length === 0) {
+                container.innerHTML = '<p class="loading-text">No backups found. Create your first backup above.</p>';
+                return;
+            }
+
+            const rows = listData.backups.map(b => `
+                <tr>
+                    <td>
+                        <div class="backup-filename">${escHtml(b.filename)}</div>
+                        <div class="backup-desc">${escHtml(b.description || '—')}</div>
+                    </td>
+                    <td>${formatDate(b.created_at)}</td>
+                    <td>${escHtml(b.size_human)}</td>
+                    <td>
+                        <span class="backup-badge ${b.includes_ansible ? 'badge-yes' : 'badge-no'}">
+                            ${b.includes_ansible ? '✓ Ansible' : '— Ansible'}
+                        </span>
+                        <span class="backup-badge ${b.includes_encryption_key ? 'badge-yes' : 'badge-no'}">
+                            ${b.includes_encryption_key ? '🔑 Key' : '— Key'}
+                        </span>
+                    </td>
+                    <td class="backup-actions">
+                        <button class="btn-secondary btn-sm" title="Download"
+                            onclick="BackupRestore.downloadBackup('${escHtml(b.filename)}')">⬇️ Download</button>
+                        <button class="btn-secondary btn-sm" title="Restore"
+                            onclick="BackupRestore.selectRestore(${JSON.stringify(b)})">♻️ Restore</button>
+                        <button class="btn-secondary btn-sm btn-danger-sm" title="Delete"
+                            onclick="BackupRestore.deleteBackup('${escHtml(b.filename)}')">🗑️ Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+
+            container.innerHTML = `
+                <table class="backup-table">
+                    <thead>
+                        <tr>
+                            <th>Archive</th>
+                            <th>Created</th>
+                            <th>Size</th>
+                            <th>Contents</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            `;
+        } catch (e) {
+            container.innerHTML = `<p class="loading-text" style="color:#ef4444;">Failed to load backups: ${e.message}</p>`;
+        }
+    }
+
+    // ── Create backup ────────────────────────────────────────────
+    async function createBackup() {
+        const description = document.getElementById('backup-description').value.trim();
+        const includeKey  = document.getElementById('backup-include-key').checked;
+
+        if (includeKey) {
+            const ok = confirm(
+                '⚠️ You are including the encryption key in the backup.\n\n'
+                + 'This key decrypts all stored SSH credentials. Keep the resulting '
+                + 'archive file in a secure location.\n\nContinue?'
+            );
+            if (!ok) return;
+        }
+
+        try {
+            const params = new URLSearchParams({ description, include_encryption_key: includeKey });
+            const res = await fetch(`${API}/create?${params}`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Unknown error');
+            showToast('Backup started — watch the progress banner above.', 'info');
+            // Start polling
+            if (!pollTimer) pollTimer = setInterval(checkStatus, 1500);
+            setTimeout(checkStatus, 500);
+        } catch (e) {
+            showToast(`Backup failed: ${e.message}`, 'error');
+        }
+    }
+
+    // ── Download ─────────────────────────────────────────────────
+    function downloadBackup(filename) {
+        const a = document.createElement('a');
+        a.href = `${API}/download/${encodeURIComponent(filename)}`;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
+
+    // ── Delete ───────────────────────────────────────────────────
+    async function deleteBackup(filename) {
+        if (!confirm(`Delete backup: ${filename}?\n\nThis cannot be undone.`)) return;
+        try {
+            const res = await fetch(`${API}/delete/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Delete failed');
+            showToast(`Deleted: ${filename}`, 'success');
+            loadList();
+        } catch (e) {
+            showToast(`Delete failed: ${e.message}`, 'error');
+        }
+    }
+
+    // ── Upload ───────────────────────────────────────────────────
+    function handleDragOver(e) {
+        e.preventDefault();
+        document.getElementById('backup-drop-zone').classList.add('drag-over');
+    }
+    function handleDragLeave(e) {
+        document.getElementById('backup-drop-zone').classList.remove('drag-over');
+    }
+    function handleDrop(e) {
+        e.preventDefault();
+        document.getElementById('backup-drop-zone').classList.remove('drag-over');
+        const file = e.dataTransfer.files[0];
+        if (file) uploadFile(file);
+    }
+    function handleFileSelect(e) {
+        const file = e.target.files[0];
+        if (file) uploadFile(file);
+    }
+
+    async function uploadFile(file) {
+        if (!file.name.endsWith('.tar.gz')) {
+            showToast('File must be a .tar.gz backup archive', 'error');
+            return;
+        }
+        const progressDiv = document.getElementById('backup-upload-progress');
+        const bar  = document.getElementById('backup-upload-bar');
+        const lbl  = document.getElementById('backup-upload-label');
+        progressDiv.style.display = 'block';
+        bar.style.width = '0%';
+        lbl.textContent = `Uploading ${file.name}…`;
+
+        const formData = new FormData();
+        formData.append('file', file);
+        try {
+            const xhr = new XMLHttpRequest();
+            xhr.upload.addEventListener('progress', e => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    bar.style.width = pct + '%';
+                    lbl.textContent = `Uploading… ${pct}%`;
+                }
+            });
+            await new Promise((resolve, reject) => {
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText));
+                    else reject(new Error(JSON.parse(xhr.responseText).detail || 'Upload failed'));
+                };
+                xhr.onerror = () => reject(new Error('Network error'));
+                xhr.open('POST', `${API}/upload`);
+                xhr.send(formData);
+            });
+            lbl.textContent = `Upload complete: ${file.name}`;
+            showToast(`Uploaded: ${file.name}`, 'success');
+            setTimeout(() => { progressDiv.style.display = 'none'; }, 2000);
+            loadList();
+        } catch (e) {
+            lbl.textContent = `Upload failed: ${e.message}`;
+            showToast(`Upload failed: ${e.message}`, 'error');
+        }
+    }
+
+    // ── Restore flow ─────────────────────────────────────────────
+    function selectRestore(backup) {
+        selectedBackup = backup;
+        const panel = document.getElementById('backup-restore-panel');
+        document.getElementById('restore-target-filename').textContent = backup.filename;
+        document.getElementById('restore-target-date').textContent = formatDate(backup.created_at);
+        document.getElementById('restore-target-desc').textContent = backup.description || '(none)';
+        document.getElementById('restore-confirm-checkbox').checked = false;
+        document.getElementById('btn-restore-confirm').disabled = true;
+        panel.style.display = 'block';
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function cancelRestore() {
+        selectedBackup = null;
+        document.getElementById('backup-restore-panel').style.display = 'none';
+    }
+
+    function toggleRestoreBtn() {
+        const checked = document.getElementById('restore-confirm-checkbox').checked;
+        document.getElementById('btn-restore-confirm').disabled = !checked;
+    }
+
+    async function confirmRestore() {
+        if (!selectedBackup) return;
+        document.getElementById('btn-restore-confirm').disabled = true;
+
+        try {
+            const res = await fetch(`${API}/restore`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: selectedBackup.filename, confirm: true }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Restore failed');
+
+            cancelRestore();
+            showToast('Restore started — the system is in maintenance mode. Page will reload when complete.', 'info');
+            if (!pollTimer) pollTimer = setInterval(checkRestoreCompletion, 2000);
+            setTimeout(checkStatus, 500);
+        } catch (e) {
+            showToast(`Restore failed: ${e.message}`, 'error');
+            document.getElementById('btn-restore-confirm').disabled = false;
+        }
+    }
+
+    async function checkRestoreCompletion() {
+        await checkStatus();
+        try {
+            const res = await fetch(`${API}/status`);
+            const data = await res.json();
+            if (!data.maintenance_mode && data.progress && data.progress.percent === 100) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                showToast('✅ Restore complete! Reloading page…', 'success');
+                setTimeout(() => window.location.reload(), 2500);
+            }
+            if (data.progress && data.progress.step === 'error') {
+                clearInterval(pollTimer);
+                pollTimer = null;
+                showToast('❌ Restore failed: ' + data.progress.message, 'error');
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    // ── Utilities ────────────────────────────────────────────────
+    function escHtml(str) {
+        const d = document.createElement('div');
+        d.appendChild(document.createTextNode(str || ''));
+        return d.innerHTML;
+    }
+
+    function formatDate(iso) {
+        if (!iso) return '—';
+        try {
+            return new Date(iso).toLocaleString(undefined, {
+                year: 'numeric', month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit',
+            });
+        } catch { return iso; }
+    }
+
+    function showToast(msg, type = 'info') {
+        // Use your app's existing toast/notification system.
+        // Fallback: create a simple toast.
+        if (window.showNotification) {
+            window.showNotification(msg, type);
+            return;
+        }
+        const toast = document.createElement('div');
+        const bg = { success:'#166534', error:'#7f1d1d', info:'#1e3a5f' }[type] || '#1e293b';
+        toast.style.cssText = `
+            position:fixed;bottom:24px;right:24px;padding:14px 20px;
+            background:${bg};color:#e2e8f0;border-radius:10px;
+            z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,0.4);
+            font-size:14px;max-width:420px;line-height:1.4;
+            animation:fadeIn 0.3s ease;
+        `;
+        toast.textContent = msg;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
+    }
+
+    // Auto-init when tab becomes visible
+    document.addEventListener('DOMContentLoaded', () => {
+        const tabBtn = document.querySelector('[data-tab="backup"]');
+        if (tabBtn) {
+            tabBtn.addEventListener('click', () => setTimeout(init, 50));
+        }
+    });
+
+    return {
+        init, loadList, createBackup, downloadBackup, deleteBackup,
+        handleDrop, handleDragOver, handleDragLeave, handleFileSelect,
+        selectRestore, cancelRestore, toggleRestoreBtn, confirmRestore,
+    };
+})();
+</script>

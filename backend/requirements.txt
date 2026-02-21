@@ -1,24 +1,43 @@
-# PatchPilot Backend - Python Dependencies
-# Phase 2 - Settings Interface
-
-# Core Framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-pydantic==2.5.3
-
-# Database
-asyncpg==0.29.0
-psycopg2-binary==2.9.9
-
-# Security & Encryption
-cryptography==42.0.0
-paramiko==3.4.0
-
-# Utilities
-python-dateutil==2.8.2
-python-multipart==0.0.6
-
-# Testing (optional)
-pytest==7.4.4
-pytest-asyncio==0.23.3
-httpx==0.26.0
+# PatchPilot backend dependencies
+# Generated from: docker exec pip freeze (2026-02-20)
+annotated-types==0.7.0
+ansible-core==2.19.6
+ansible-runner==2.4.2
+anyio==4.12.1
+APScheduler==3.11.2
+asyncpg==0.31.0
+bcrypt==5.0.0
+cffi==2.0.0
+click==8.3.1
+cryptography==46.0.5
+fastapi==0.129.0
+h11==0.16.0
+httptools==0.7.1
+httpx
+idna==3.11
+invoke==2.2.1
+Jinja2==3.1.6
+lockfile==0.12.2
+MarkupSafe==3.0.3
+packaging==26.0
+paramiko==4.0.0
+pexpect==4.9.0
+psutil==7.2.2
+ptyprocess==0.7.0
+pycparser==3.0
+pydantic==2.12.5
+pydantic_core==2.41.5
+PyNaCl==1.6.2
+python-daemon==3.1.2
+python-dotenv==1.2.1
+python-multipart==0.0.22
+PyYAML==6.0.3
+resolvelib==1.2.1
+starlette==0.52.1
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzlocal==5.3.1
+uvicorn==0.41.0
+uvloop==0.22.1
+watchfiles==1.1.1
+websockets==16.0

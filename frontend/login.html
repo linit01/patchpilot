@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PatchPilot — Sign In</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        /* Login page overrides */
+        body.login-page {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+            background: #000000;
+        }
+
+        .login-wrapper {
+            width: 100%;
+            max-width: 480px;
+        }
+
+        .login-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .login-header {
+            text-align: center;
+            padding: 36px 40px 20px;
+        }
+
+        .login-header .login-icon {
+            width: 140px;
+            height: 70px;
+            margin: 0 auto 16px;
+            overflow: hidden;
+        }
+
+        .login-header .login-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center 30%;
+            -webkit-mask-image: radial-gradient(ellipse 85% 75% at center, black 35%, transparent 70%);
+            mask-image: radial-gradient(ellipse 85% 75% at center, black 35%, transparent 70%);
+            filter: brightness(0.8) contrast(1.15) saturate(0.85);
+        }
+
+        .login-header h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 26px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .login-header h1 span { color: var(--cyan); }
+
+        .login-header p {
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .login-form {
+            padding: 0 40px 32px;
+        }
+
+        .login-form .form-group { margin-bottom: 16px; }
+
+        .login-btn {
+            width: 100%;
+            padding: 13px;
+            background: var(--cyan);
+            color: #000;
+            border: none;
+            border-radius: var(--radius);
+            font-size: 14px;
+            font-weight: 700;
+            font-family: 'Outfit', sans-serif;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .login-btn:hover:not(:disabled) {
+            box-shadow: 0 0 24px rgba(0,192,239,0.3);
+            transform: translateY(-1px);
+        }
+
+        .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .login-error {
+            background: var(--red-dim);
+            color: var(--red);
+            padding: 10px 14px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            margin-bottom: 16px;
+            display: none;
+            border: 1px solid rgba(231,76,60,0.3);
+        }
+
+        .setup-notice {
+            background: var(--cyan-dim);
+            color: var(--cyan);
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            margin-bottom: 16px;
+            border: 1px solid rgba(0,192,239,0.25);
+            line-height: 1.5;
+        }
+
+        /* Read-only status panel */
+        .status-section { margin-top: 20px; }
+
+        .status-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .status-header {
+            padding: 14px 22px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 14px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+        }
+
+        .status-header .lock-badge {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 500;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        .status-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .status-stat {
+            text-align: center;
+            padding: 16px 8px;
+            border-right: 1px solid var(--border);
+        }
+
+        .status-stat:last-child { border-right: none; }
+
+        .status-stat .stat-num {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .status-stat .stat-lbl {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 2px;
+        }
+
+        .status-stat.green .stat-num { color: var(--green-bright); }
+        .status-stat.amber .stat-num { color: var(--amber); }
+        .status-stat.red .stat-num { color: var(--red); }
+
+        .status-hosts {
+            padding: 0;
+            max-height: 240px;
+            overflow-y: auto;
+        }
+
+        .status-host-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 22px;
+            border-bottom: 1px solid var(--border-light);
+            font-size: 13px;
+        }
+
+        .status-host-row:last-child { border-bottom: none; }
+        .status-host-row .host-name { color: var(--text-primary); font-weight: 500; }
+        .status-host-row .host-os { color: var(--text-muted); font-size: 12px; margin-left: 8px; }
+
+        .status-mini-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: var(--radius);
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-mini-badge.up-to-date { background: var(--green-dim); color: var(--green-bright); }
+        .status-mini-badge.updates-available { background: var(--amber-dim); color: var(--amber); }
+        .status-mini-badge.unreachable { background: var(--red-dim); color: var(--red); }
+
+        .status-loading {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .status-footer {
+            padding: 12px 22px;
+            text-align: center;
+            font-size: 12px;
+            color: var(--text-muted);
+            background: var(--bg-panel);
+            border-top: 1px solid var(--border);
+        }
+
+        @media (max-width: 520px) {
+            .login-header { padding: 28px 24px 16px; }
+            .login-form { padding: 0 24px 24px; }
+            .status-stats { grid-template-columns: repeat(2, 1fr); }
+            .status-stat { border-bottom: 1px solid var(--border); }
+        }
+    </style>
+</head>
+<body class="login-page">
+    <div class="login-wrapper">
+        <div class="login-card">
+            <div class="login-header">
+                <div class="login-icon"><img src="patchpilot-icon.jpeg" alt="PatchPilot"></div>
+                <h1>Patch<span>Pilot</span></h1>
+                <p>System Update Management</p>
+            </div>
+
+            <div class="login-form">
+                <div id="login-error" class="login-error"></div>
+
+                <div id="setup-notice" class="setup-notice" style="display: none;">
+                    🚀 <strong>First-time setup!</strong> Create your admin account below.
+                    Choose a strong password — this will be the primary login.
+                </div>
+
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" placeholder="Enter username" autocomplete="username" autofocus>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" placeholder="Enter password" autocomplete="current-password">
+                </div>
+                <div id="confirm-group" class="form-group" style="display: none;">
+                    <label for="confirm-password">Confirm Password</label>
+                    <input type="password" id="confirm-password" placeholder="Confirm password">
+                </div>
+
+                <button id="login-btn" class="login-btn" onclick="handleLogin()">
+                    Sign In
+                </button>
+            </div>
+        </div>
+
+        <div class="status-section">
+            <div class="status-card">
+                <div class="status-header">
+                    📊 System Status
+                    <span class="lock-badge">🔒 Read-only</span>
+                </div>
+                <div class="status-stats" id="status-stats">
+                    <div class="status-stat">
+                        <div class="stat-num" id="login-total">-</div>
+                        <div class="stat-lbl">Hosts</div>
+                    </div>
+                    <div class="status-stat green">
+                        <div class="stat-num" id="login-uptodate">-</div>
+                        <div class="stat-lbl">Current</div>
+                    </div>
+                    <div class="status-stat amber">
+                        <div class="stat-num" id="login-updates">-</div>
+                        <div class="stat-lbl">Need Updates</div>
+                    </div>
+                    <div class="status-stat red">
+                        <div class="stat-num" id="login-unreachable">-</div>
+                        <div class="stat-lbl">Unreachable</div>
+                    </div>
+                </div>
+                <div class="status-hosts" id="status-hosts">
+                    <div class="status-loading">Loading host status...</div>
+                </div>
+                <div class="status-footer">
+                    Sign in to run patches, manage hosts, and access settings
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.hostname === 'localhost'
+            ? 'http://localhost:8000/api' : '/api';
+
+        let isSetupMode = false;
+
+        async function checkAuth() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
+                const data = await res.json();
+                if (data.authenticated) {
+                    window.location.href = 'index.html';
+                    return;
+                }
+            } catch (e) {}
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/check-setup`);
+                const data = await res.json();
+                if (!data.has_users) {
+                    isSetupMode = true;
+                    document.getElementById('setup-notice').style.display = 'block';
+                    document.getElementById('confirm-group').style.display = 'block';
+                    document.getElementById('login-btn').textContent = 'Create Admin & Sign In';
+                    document.getElementById('password').setAttribute('autocomplete', 'new-password');
+                }
+            } catch (e) {
+                console.error('Setup check failed:', e);
+            }
+        }
+
+        async function handleLogin() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const errorDiv = document.getElementById('login-error');
+            const btn = document.getElementById('login-btn');
+
+            errorDiv.style.display = 'none';
+
+            if (!username || !password) { showError('Please enter username and password'); return; }
+
+            if (isSetupMode) {
+                const confirm = document.getElementById('confirm-password').value;
+                if (password !== confirm) { showError('Passwords do not match'); return; }
+                if (password.length < 8) { showError('Password must be at least 8 characters'); return; }
+            }
+
+            btn.disabled = true;
+            btn.textContent = isSetupMode ? 'Setting up...' : 'Signing in...';
+
+            try {
+                const endpoint = isSetupMode ? '/auth/setup' : '/auth/login';
+                const res = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await res.json();
+                if (!res.ok) {
+                    showError(data.detail || 'Login failed');
+                    btn.disabled = false;
+                    btn.textContent = isSetupMode ? 'Create Admin & Sign In' : 'Sign In';
+                    return;
+                }
+                window.location.href = 'index.html';
+            } catch (e) {
+                showError('Connection error. Is the backend running?');
+                btn.disabled = false;
+                btn.textContent = isSetupMode ? 'Create Admin & Sign In' : 'Sign In';
+            }
+        }
+
+        function showError(msg) {
+            const errorDiv = document.getElementById('login-error');
+            errorDiv.textContent = msg;
+            errorDiv.style.display = 'block';
+        }
+
+        async function loadStatus() {
+            try {
+                const statsRes = await fetch(`${API_BASE}/stats`);
+                const stats = await statsRes.json();
+                document.getElementById('login-total').textContent = stats.total_hosts;
+                document.getElementById('login-uptodate').textContent = stats.up_to_date;
+                document.getElementById('login-updates').textContent = stats.need_updates;
+                document.getElementById('login-unreachable').textContent = stats.unreachable;
+
+                const hostsRes = await fetch(`${API_BASE}/hosts`);
+                const hosts = await hostsRes.json();
+                const hostsDiv = document.getElementById('status-hosts');
+
+                if (hosts.length === 0) {
+                    hostsDiv.innerHTML = '<div class="status-loading">No hosts configured yet</div>';
+                    return;
+                }
+
+                hostsDiv.innerHTML = hosts.map(h => {
+                    const badgeClass = h.status === 'up-to-date' ? 'up-to-date'
+                        : h.status === 'updates-available' ? 'updates-available' : 'unreachable';
+                    const label = h.status === 'up-to-date' ? '✓ Current'
+                        : h.status === 'updates-available' ? `⚠ ${h.total_updates} update${h.total_updates !== 1 ? 's' : ''}`
+                        : '✕ Unreachable';
+                    return `
+                        <div class="status-host-row">
+                            <div>
+                                <span class="host-name">${h.hostname}</span>
+                                <span class="host-os">${h.os_family || ''}</span>
+                            </div>
+                            <span class="status-mini-badge ${badgeClass}">${label}</span>
+                        </div>`;
+                }).join('');
+            } catch (e) {
+                document.getElementById('status-hosts').innerHTML =
+                    '<div class="status-loading">Unable to load status</div>';
+            }
+        }
+
+        document.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLogin(); });
+        checkAuth();
+        loadStatus();
+        setInterval(loadStatus, 60000);
+    </script>
+</body>
+</html>

@@ -1,67 +1,100 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Docker Compose
+# Backup/Restore additions are marked with ✚
+# ─────────────────────────────────────────────────────────────────────────────
 
 services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
     image: postgres:15-alpine
-    container_name: patchpilot-db
+    container_name: patchpilot-postgres-1      # ✚ explicit name (backup module uses it)
+    restart: unless-stopped
     environment:
-      - POSTGRES_USER=patchpilot
-      - POSTGRES_PASSWORD=patchpilot
-      - POSTGRES_DB=patchpilot
+      POSTGRES_USER:     ${POSTGRES_USER:-patchpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-patchpilot}
+      POSTGRES_DB:       ${POSTGRES_DB:-patchpilot}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database-schema.sql:/docker-entrypoint-initdb.d/init.sql
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U patchpilot"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-patchpilot}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - patchpilot
 
+  # ── Backend ────────────────────────────────────────────────────────────────
   backend:
     build: .
-    container_name: patchpilot-backend
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./ansible:/ansible
-      # - ~/.ssh:/root/.ssh:ro
-      - ./backend:/app
-    environment:
-      - DATABASE_URL=postgresql://patchpilot:patchpilot@postgres:5432/patchpilot
-      - ANSIBLE_PLAYBOOK_PATH=/ansible/check-os-updates.yml
-      - ANSIBLE_INVENTORY_PATH=/ansible/hosts
-      - ANSIBLE_HOST_KEY_CHECKING=False
-      - ANSIBLE_SSH_ARGS=-o ControlMaster=no -o ControlPersist=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+    container_name: patchpilot-backend-1
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    env_file: .env
+    environment:
+      # Postgres connection
+      POSTGRES_HOST:     postgres
+      POSTGRES_PORT:     "5432"
+      POSTGRES_USER:     ${POSTGRES_USER:-patchpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-patchpilot}
+      POSTGRES_DB:       ${POSTGRES_DB:-patchpilot}
+      DATABASE_URL:      postgresql://${POSTGRES_USER:-patchpilot}:${POSTGRES_PASSWORD:-patchpilot}@postgres:5432/${POSTGRES_DB:-patchpilot}
 
+      # App settings
+      PATCHPILOT_ENCRYPTION_KEY: ${PATCHPILOT_ENCRYPTION_KEY}
+      AUTO_REFRESH_INTERVAL:     ${AUTO_REFRESH_INTERVAL:-300}
+      DEFAULT_SSH_USER:          ${DEFAULT_SSH_USER:-root}
+      DEFAULT_SSH_PORT:          ${DEFAULT_SSH_PORT:-22}
+
+      # ✚ Backup settings
+      BACKUP_DIR:              /backups
+      BACKUP_RETAIN_COUNT:     ${BACKUP_RETAIN_COUNT:-10}
+      MAX_BACKUP_SIZE_MB:      ${MAX_BACKUP_SIZE_MB:-500}
+      POSTGRES_CONTAINER_NAME: patchpilot-postgres-1   # ✚ must match postgres container_name
+      ANSIBLE_DIR:             /ansible
+
+    volumes:
+      - ./ansible:/ansible
+      - backups:/backups                              # ✚ persistent backup storage
+
+      # ✚ OPTIONAL: Mount Docker socket for hard postgres stop/start.
+      #   Uncomment the line below if you want the backend to be able to
+      #   stop/start the postgres container via the Docker API.
+      #   Security note: this gives the backend container Docker daemon access.
+      #   Only enable this if you trust the backup endpoints are not publicly exposed.
+      #
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    ports:
+      - "8000:8000"
+    networks:
+      - patchpilot
+
+  # ── Frontend (Nginx) ───────────────────────────────────────────────────────
   frontend:
     image: nginx:alpine
-    container_name: patchpilot-frontend
-    ports:
-      - "8080:80"
+    container_name: patchpilot-frontend-1
+    restart: unless-stopped
     volumes:
       - ./frontend:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
     depends_on:
       - backend
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    networks:
+      - patchpilot
 
+# ── Volumes ────────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
+  backups:                                            # ✚ named volume for backup archives
+
+# ── Networks ───────────────────────────────────────────────────────────────
+networks:
+  patchpilot:
+    driver: bridge

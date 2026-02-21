@@ -1,0 +1,100 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Kubernetes additions for Backup & Restore
+# ─────────────────────────────────────────────────────────────────────────────
+# Add these resources to your existing k8s/ deployment manifests.
+# If you use ArgoCD / GitOps, commit these to the same app directory.
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# ── PersistentVolumeClaim for backup archives ─────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: patchpilot-backups-pvc
+  namespace: patchpilot
+  labels:
+    app: patchpilot
+    component: backups
+spec:
+  accessModes:
+    - ReadWriteOnce        # Change to ReadWriteMany if using NFS/Longhorn shared
+  resources:
+    requests:
+      storage: 5Gi         # Adjust for your backup volume needs
+  # storageClassName: longhorn   # uncomment for Longhorn on k3s
+
+---
+# ── Patch to add backups volume to backend Deployment ─────────────────────
+# Merge this into your existing backend Deployment spec.volumes and spec.containers.volumeMounts
+#
+# Under spec.template.spec.volumes add:
+#
+#   - name: backups
+#     persistentVolumeClaim:
+#       claimName: patchpilot-backups-pvc
+#
+# Under spec.template.spec.containers[backend].volumeMounts add:
+#
+#   - name: backups
+#     mountPath: /backups
+#
+# Under spec.template.spec.containers[backend].env add:
+#
+#   - name: BACKUP_DIR
+#     value: "/backups"
+#   - name: BACKUP_RETAIN_COUNT
+#     value: "10"
+#   - name: MAX_BACKUP_SIZE_MB
+#     value: "500"
+#   - name: POSTGRES_CONTAINER_NAME
+#     value: ""            # Leave empty in k8s — docker socket not used
+#   - name: ANSIBLE_DIR
+#     value: "/ansible"
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTE ON POSTGRES "DOWN" IN KUBERNETES:
+# In k8s the backup module cannot stop the postgres Pod via docker.sock.
+# Instead it uses the pg_terminate_backend() approach to quiesce all active
+# connections before running pg_dump. This is fully transaction-safe.
+#
+# For a true hard-stop restore in k8s, scale the backend deployment to 0
+# before running a restore, then scale back up:
+#
+#   kubectl scale deployment patchpilot-backend -n patchpilot --replicas=0
+#   # ... trigger restore via kubectl exec into a pg client pod ...
+#   kubectl scale deployment patchpilot-backend -n patchpilot --replicas=1
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# ── CronJob: scheduled automatic backups ─────────────────────────────────
+# This k8s CronJob calls the backup API on a schedule so you get automated
+# daily backups without any manual intervention.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: patchpilot-scheduled-backup
+  namespace: patchpilot
+  labels:
+    app: patchpilot
+    component: backup-cron
+spec:
+  schedule: "0 2 * * *"      # 2:00 AM every day — adjust as needed
+  concurrencyPolicy: Forbid   # Don't run if previous job still running
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup-trigger
+              image: curlimages/curl:latest
+              command:
+                - sh
+                - -c
+                - |
+                  curl -sf -X POST \
+                    "http://patchpilot-backend:8000/api/backup/create?description=Scheduled+daily+backup" \
+                    && echo "Backup triggered successfully" \
+                    || echo "Backup trigger failed"

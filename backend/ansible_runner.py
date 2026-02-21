@@ -2,6 +2,7 @@ import subprocess
 import sys
 import re
 import os
+import asyncio
 import tempfile
 import json
 from typing import Dict, List, Tuple
@@ -23,93 +24,96 @@ class AnsibleRunner:
         self.playbook_path = playbook_path
         self.inventory_path = inventory_path
         self.db_client = db_client
-        self.temp_files = []  # Track temp files for cleanup
-    
-    def __del__(self):
-        """Cleanup temporary key files on destruction"""
-        self.cleanup_temp_files()
-    
-    def cleanup_temp_files(self):
-        """Remove all temporary SSH key files"""
-        for filepath in self.temp_files:
+        # NOTE: No instance-level temp_files list. Each run_check / run_patch
+        # call gets its own local list so concurrent or back-to-back runs on this
+        # singleton cannot accidentally clean up each other's key files.
+
+    def _cleanup_files(self, file_list: list):
+        """Remove a caller-supplied list of temporary files."""
+        for filepath in file_list:
             try:
                 if os.path.exists(filepath):
                     os.remove(filepath)
             except Exception as e:
                 print(f"Warning: Failed to cleanup {filepath}: {e}")
-        self.temp_files.clear()
+        file_list.clear()
+    
+    async def _create_dynamic_inventory(self, limit_hosts: List[str] = None) -> tuple:
+        """
+        Create a dynamic inventory file with per-host SSH keys.
 
-    async def _create_dynamic_inventory(self, limit_hosts: List[str] = None) -> str:
-        """
-        Create a dynamic inventory file with per-host SSH keys
-        
-        Args:
-            limit_hosts: Optional list of hostnames to include
-            
         Returns:
-            Path to the temporary inventory file
+            (inventory_path: str, temp_files: list)
+            The caller owns temp_files and must call _cleanup_files(temp_files)
+            AFTER the ansible subprocess has fully exited.  This avoids the
+            shared-state race where a concurrent run_check could wipe key
+            files that a simultaneous run_patch is still using.
         """
+        local_temp = []   # owned exclusively by this invocation
+
         if not self.db_client:
-            # Fallback to static inventory if no database
-            return self.inventory_path
-        
+            return self.inventory_path, local_temp
+
         try:
-            # Fetch all hosts from database
             hosts = await self.db_client.get_all_hosts()
-            
-            # Build inventory structure
+
             inventory_data = {
                 'all': {
                     'hosts': {},
                     'vars': {
-                        'ansible_ssh_common_args': '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlMaster=no -o ControlPersist=no'
+                        'ansible_ssh_common_args': (
+                            '-o StrictHostKeyChecking=no '
+                            '-o UserKnownHostsFile=/dev/null '
+                            '-o ControlMaster=no '
+                            '-o ControlPersist=no'
+                        )
                     }
                 }
             }
-            
+
             for host in hosts:
                 hostname = host['hostname']
-                
-                # Skip if limiting and host not in list
+
                 if limit_hosts and hostname not in limit_hosts:
                     continue
-                
+
                 host_vars = {
                     'ansible_host': host.get('ip_address') or hostname,
                     'ansible_user': host.get('ssh_user', 'root'),
-                    'ansible_port': host.get('ssh_port', 22)
+                    'ansible_port': host.get('ssh_port', 22),
+                    'allow_auto_reboot': host.get('allow_auto_reboot', False),
+                    'is_control_node': host.get('is_control_node', False),
                 }
-                
-                # Handle SSH key if encrypted key exists
-                print(f"DEBUG Host {hostname}: ssh_key_type={host.get('ssh_key_type')}, has_encrypted_key={host.get('ssh_private_key_encrypted') is not None}, key_id={host.get('ssh_key_id')}")
+
+                print(f"DEBUG Host {hostname}: ssh_key_type={host.get('ssh_key_type')}, "
+                      f"has_encrypted_key={host.get('ssh_private_key_encrypted') is not None}")
+
                 if host.get('ssh_private_key_encrypted'):
                     try:
-                        print(f"DEBUG: Attempting to decrypt key for {hostname}...")
-                        # Decrypt the SSH key
+                        print(f"DEBUG: Decrypting key for {hostname}...")
                         decrypted_key = decrypt_credential(host['ssh_private_key_encrypted'])
-                        print(f"DEBUG: About to call decrypt_credential for {hostname}")
-                        print(f"Decrypted key for {hostname}: {decrypted_key[:50]}... (length: {len(decrypted_key)})")
-                        print(f"DEBUG: decrypt_credential returned for {hostname}")
+                        print(f"Decrypted key for {hostname}: {decrypted_key[:50]}... "
+                              f"(length: {len(decrypted_key)})")
 
-                        
-                        # Write to temporary file
-                        key_fd, key_path = tempfile.mkstemp(prefix=f'ansible_key_{hostname}_', suffix='.pem')
+                        key_fd, key_path = tempfile.mkstemp(
+                            prefix=f'ansible_key_{hostname}_', suffix='.pem'
+                        )
                         os.write(key_fd, decrypted_key.encode())
                         os.close(key_fd)
-                        os.chmod(key_path, 0o600)  # Set proper permissions
-                        
-                        # Track for cleanup
-                        self.temp_files.append(key_path)
-                        logger.debug(f"Created temp key file for {hostname}: {key_path}")
+                        os.chmod(key_path, 0o600)
 
-                        
-                        # Add to host vars
+                        if not os.path.exists(key_path) or os.path.getsize(key_path) == 0:
+                            raise RuntimeError(
+                                f"Temp key file write failed for {hostname}: {key_path}"
+                            )
+
+                        local_temp.append(key_path)
+                        logger.debug(f"Created temp key file for {hostname}: {key_path}")
                         host_vars['ansible_ssh_private_key_file'] = key_path
-                        
+
                     except Exception as e:
-                        print(f"ERROR: Failed to decrypt key for {hostname}: {e}")
-                
-                # Handle SSH password if exists
+                        print(f"ERROR: Failed to decrypt/write key for {hostname}: {e}")
+
                 if host.get('ssh_password_encrypted'):
                     try:
                         decrypted_password = decrypt_credential(host['ssh_password_encrypted'])
@@ -117,96 +121,268 @@ class AnsibleRunner:
                         host_vars['ansible_password'] = decrypted_password
                     except Exception as e:
                         print(f"Warning: Failed to decrypt password for {hostname}: {e}")
-                
+
                 inventory_data['all']['hosts'][hostname] = host_vars
-                # Add reboot and control node flags
-                host_vars['allow_auto_reboot'] = host.get('allow_auto_reboot', False)
-                host_vars['is_control_node'] = host.get('is_control_node', False)
-            
-            # Write inventory to temp file
+
             print(f"DEBUG INVENTORY for hosts: {list(inventory_data['all']['hosts'].keys())}")
-            for h, v in inventory_data['all']['hosts'].items():
-                if 'macmini' in h or 'mbp' in h:
-                    print(f"  {h}: {v}")
+
             inv_fd, inv_path = tempfile.mkstemp(prefix='ansible_inventory_', suffix='.json')
             os.write(inv_fd, json.dumps(inventory_data, indent=2).encode())
             os.close(inv_fd)
-            self.temp_files.append(inv_path)
-            
-            return inv_path
-            
+            local_temp.append(inv_path)
+
+            return inv_path, local_temp
+
         except Exception as e:
             print(f"Error creating dynamic inventory: {e}")
-            return self.inventory_path
+            self._cleanup_files(local_temp)
+            return self.inventory_path, []
 
     async def run_check(self, limit_hosts: List[str] = None) -> Tuple[bool, Dict]:
         """
-        Run the check playbook and return parsed results
+        Run the check playbook and return parsed results (non-blocking async subprocess).
         Returns: (success, results_dict)
         """
+        run_temp = []   # temp files for THIS invocation only
         try:
-            
-            # Create dynamic inventory with decrypted keys
+            # Create dynamic inventory; temp files are returned, not stored on self
             if self.db_client:
-                inventory_path = await self._create_dynamic_inventory(limit_hosts)
+                inventory_path, run_temp = await self._create_dynamic_inventory(limit_hosts)
             else:
                 inventory_path = self.inventory_path
-            
-            # Run ansible playbook with JSON output
+
             cmd = [
                 "ansible-playbook",
                 "-i", inventory_path,
                 self.playbook_path,
-                "-v"  # Verbose for better parsing
+                "-v"
             ]
-            # Add limit if specified
             if limit_hosts:
                 cmd.extend(["--limit", ",".join(limit_hosts)])
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minute timeout
-            )
-            
-            # Parse the output
-            # Print stderr to see connection errors
-            with open('/tmp/ansible_last_run.txt', 'w') as f: f.write(result.stdout)
-            if result.stderr:
-                print(f"ANSIBLE STDERR:\n{result.stderr}")
-            if '192.168.1.50' in result.stdout:
-                # Find lines around 192.168.1.50 failure
-                lines = result.stdout.split('\n')
-                for i, line in enumerate(lines):
-                    if '192.168.1.50' in line and ('UNREACHABLE' in line or 'failed' in line):
-                        logger.debug(f"192.168.1.50 failure context:")
-                        print('\n'.join(lines[max(0,i-5):min(len(lines),i+10)]))
-                        break
 
-            hosts_data = self._parse_ansible_output(result.stdout)
-            
-            # Print what we got
+            # Use async subprocess so the event loop stays responsive
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    process.communicate(), timeout=300
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.communicate()
+                self._cleanup_files(run_temp)
+                return False, {"error": "Ansible playbook timed out"}
+
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+            # Save last run output for debugging
+            try:
+                with open('/tmp/ansible_last_run.txt', 'w') as f:
+                    f.write(stdout)
+            except Exception:
+                pass
+
+            if stderr:
+                print(f"ANSIBLE STDERR:\n{stderr}")
+
+            hosts_data = self._parse_ansible_output(stdout)
+
             logger.debug(f"Parsed {len(hosts_data)} hosts from Ansible output")
-            logger.debug(f"Return code: {result.returncode}")
+            logger.debug(f"Return code: {process.returncode}")
             logger.debug(f"Hosts: {list(hosts_data.keys())}")
-            
-            # Cleanup temp files
-            self.cleanup_temp_files()
-            
-            # Return success=True if we got ANY host data, even if some hosts failed
-            return len(hosts_data) > 0 or result.returncode == 0, hosts_data
-            
-        except subprocess.TimeoutExpired:
-            self.cleanup_temp_files()
-            return False, {"error": "Ansible playbook timed out"}
+
+            self._cleanup_files(run_temp)
+            return len(hosts_data) > 0 or process.returncode == 0, hosts_data
+
         except Exception as e:
             print(f"ERROR in run_check: {type(e).__name__}: {str(e)}")
             import traceback
             traceback.print_exc()
-            self.cleanup_temp_files()
+            self._cleanup_files(run_temp)
             return False, {"error": str(e)}
-            return False, {"error": str(e)}
+
+    async def _send_parsed_task_output(self, line: str, progress_callback):
+        """Parse Ansible changed/ok JSON output and send clean formatted messages"""
+        import re as _re
+        
+        # Extract hostname and status from "changed: [host] => {json}" or "ok: [host] => {json}"
+        host_match = _re.match(r'(changed|ok|failed):\s*\[([^\]]+)\]\s*=>\s*(.*)', line, _re.DOTALL)
+        if not host_match:
+            # Simple changed/ok without JSON — send as-is
+            await progress_callback(line[:200])
+            return
+        
+        status = host_match.group(1)
+        hostname = host_match.group(2)
+        json_str = host_match.group(3)
+        
+        # Try to parse the JSON
+        try:
+            data = json.loads(json_str)
+        except (json.JSONDecodeError, ValueError):
+            # Not valid JSON, send a short summary
+            if status == 'changed':
+                await progress_callback(f"✅ changed: [{hostname}]")
+            else:
+                await progress_callback(f"{status}: [{hostname}]")
+            return
+        
+        # If no stdout_lines, just send a summary
+        stdout_lines = data.get('stdout_lines', [])
+        if not stdout_lines:
+            if status == 'changed':
+                await progress_callback(f"✅ changed: [{hostname}]")
+            else:
+                await progress_callback(f"{status}: [{hostname}] — no output")
+            return
+        
+        # Parse apt output into structured phases
+        phase = 'update'  # apt-get update
+        pkg_count = 0
+        download_size = ''
+        packages_to_upgrade = []
+        
+        for sline in stdout_lines:
+            s = sline.strip()
+            if not s:
+                continue
+            
+            # Skip noise: "Reading database ... X%" progress lines
+            if s.startswith('(Reading database'):
+                continue
+            # Skip carriage-return progress lines
+            if '\r' in s:
+                continue
+            
+            # Phase: apt-get update repo fetching
+            if s.startswith('Hit:') or s.startswith('Get:'):
+                continue  # Skip individual repo lines, too noisy
+            if s.startswith('Fetched') and 'in' in s:
+                await progress_callback(f"📡 [{hostname}] {s}")
+                continue
+            
+            # Phase: Calculating upgrade  
+            if s.startswith('Reading package lists'):
+                await progress_callback(f"📋 [{hostname}] Reading package lists...")
+                continue
+            if s.startswith('Building dependency tree'):
+                continue
+            if s.startswith('Reading state information'):
+                continue
+            if s.startswith('Calculating upgrade'):
+                await progress_callback(f"🔍 [{hostname}] Calculating upgrade...")
+                continue
+            
+            # Package list header
+            if s.startswith('The following packages will be upgraded:'):
+                phase = 'pkg_list'
+                continue
+            
+            # Capture package names in the list
+            if phase == 'pkg_list':
+                if _re.match(r'^\d+ upgraded', s):
+                    # Summary line like "73 upgraded, 0 newly installed..."
+                    phase = 'download'
+                    await progress_callback(f"📦 [{hostname}] {s}")
+                    continue
+                else:
+                    # Package name lines — collect them
+                    pkgs = [p.strip() for p in s.split() if p.strip()]
+                    packages_to_upgrade.extend(pkgs)
+                    continue
+            
+            # Download info
+            if s.startswith('Need to get'):
+                await progress_callback(f"📥 [{hostname}] {s}")
+                continue
+            if s.startswith('After this operation'):
+                continue
+            
+            # Individual package downloads (Get:N lines during download)
+            if _re.match(r'^Get:\d+', s):
+                continue  # Skip individual download lines
+            
+            if s.startswith('Preconfiguring'):
+                continue
+            
+            # Unpack phase
+            if s.startswith('Preparing to unpack'):
+                continue  # Skip, too verbose
+            if s.startswith('Unpacking '):
+                pkg_match = _re.match(r'Unpacking\s+(\S+)\s+\(([^)]+)\)', s)
+                if pkg_match:
+                    pkg_count += 1
+                    pkg_name = pkg_match.group(1)
+                    pkg_ver = pkg_match.group(2)
+                    total = len(packages_to_upgrade) or '?'
+                    await progress_callback(f"📦 [{hostname}] [{pkg_count}/{total}] Unpacking {pkg_name} ({pkg_ver})")
+                continue
+            
+            # Setup phase
+            if s.startswith('Setting up '):
+                pkg_match = _re.match(r'Setting up\s+(\S+)\s+\(([^)]+)\)', s)
+                if pkg_match:
+                    pkg_name = pkg_match.group(1)
+                    pkg_ver = pkg_match.group(2)
+                    await progress_callback(f"✅ [{hostname}] Setting up {pkg_name} ({pkg_ver})")
+                continue
+            
+            # Processing triggers
+            if s.startswith('Processing triggers'):
+                trigger_match = _re.match(r'Processing triggers for\s+(\S+)', s)
+                if trigger_match:
+                    await progress_callback(f"⚙️ [{hostname}] Processing triggers for {trigger_match.group(1)}")
+                continue
+            
+            # Config file updates
+            if s.startswith('Installing new version of config'):
+                continue  # Skip config file noise
+            
+            # Service status messages
+            if 'is a disabled or a static unit' in s:
+                continue
+            
+            # Diversion messages
+            if "diversion" in s.lower():
+                continue
+            
+            # initramfs updates
+            if 'update-initramfs' in s:
+                await progress_callback(f"🔧 [{hostname}] {s}")
+                continue
+            
+            # Reloading messages
+            if 'Reloading' in s:
+                await progress_callback(f"🔄 [{hostname}] {s}")
+                continue
+        
+        # Send stderr summary if present (service restarts, needrestart info)
+        stderr_lines = data.get('stderr_lines', [])
+        if stderr_lines:
+            for sline in stderr_lines:
+                s = sline.strip()
+                if not s:
+                    continue
+                if s.startswith('Running kernel'):
+                    await progress_callback(f"🐧 [{hostname}] {s}")
+                elif s.startswith('Restarting services'):
+                    await progress_callback(f"🔄 [{hostname}] Restarting services...")
+                elif s.startswith(' systemctl restart'):
+                    svc = s.replace('systemctl restart ', '').strip()
+                    await progress_callback(f"   🔄 [{hostname}] {svc}")
+                elif 'No containers need' in s:
+                    await progress_callback(f"🐳 [{hostname}] {s}")
+                # Skip noisy stderr lines like "Service restarts being deferred", user sessions, etc.
+        
+        # Final summary
+        duration = data.get('delta', '')
+        if duration:
+            await progress_callback(f"⏱️ [{hostname}] Completed in {duration}")
+
 
     async def run_patch(self, limit_hosts: List[str] = None, become_password: str = None, 
                        progress_callback=None) -> Tuple[bool, Dict]:
@@ -218,14 +394,15 @@ class AnsibleRunner:
             progress_callback: Async function to call with progress updates
         Returns: (success, results_dict)
         """
+        patch_temp = []  # hoisted so except/finally can always call _cleanup_files
         try:
             import asyncio
             # Create dynamic inventory with decrypted keys
             if self.db_client:
-                inventory_path = await self._create_dynamic_inventory(limit_hosts)
+                inventory_path, patch_temp = await self._create_dynamic_inventory(limit_hosts)
             else:
                 inventory_path = self.inventory_path
-            
+
             cmd = [
                 "ansible-playbook",
                 "-i", inventory_path,
@@ -242,54 +419,62 @@ class AnsibleRunner:
             if become_password:
                 cmd.extend(["--extra-vars", f"ansible_become_password={become_password}"])
             
-            # Use Popen for streaming output
+            # Use async subprocess for non-blocking streaming output
             env = os.environ.copy()
             env['PYTHONUNBUFFERED'] = '1'
             env['ANSIBLE_FORCE_COLOR'] = '0'
+            env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
 
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+                limit=4 * 1024 * 1024  # 4MB buffer - apt output can be huge
             )
 
             output_lines = []
             line_count = 0
 
-            # Read output line by line
-            for line in iter(process.stdout.readline, ''):
-                if not line:
+            # Read output line by line - async, so the event loop stays free
+            # to flush WebSocket messages between lines
+            while True:
+                line_bytes = await process.stdout.readline()
+                if not line_bytes:
                     break
+                line = line_bytes.decode('utf-8', errors='replace')
                 output_lines.append(line)
-                print(f"DEBUG LINE: {line.strip()}")
+                print(f"DEBUG LINE: {line.strip()[:200]}")
                 sys.stdout.flush()
                 line_count += 1
  
                 if progress_callback and line.strip():
-                    # Filter for meaningful messages only
                     line_clean = line.strip()
                 
                     # Show TASK headers
                     if line_clean.startswith('TASK ['):
                         await progress_callback(line_clean)
-                    # Show changed/failed status
-                    elif 'changed:' in line_clean or 'failed:' in line_clean:
+                    # Parse changed/ok lines that contain JSON apt output
+                    elif ('changed:' in line_clean or 'ok:' in line_clean) and '=>' in line_clean:
+                        await self._send_parsed_task_output(line_clean, progress_callback)
+                    # Show skipping/unreachable
+                    elif 'skipping:' in line_clean:
                         await progress_callback(line_clean)
-                    # Show upgrade summary (e.g., "5 upgraded, 0 newly installed")
-                    elif ' upgraded,' in line_clean and ' installed' in line_clean:
-                        await progress_callback(f"📦 {line_clean}")
-                    # Show reboot messages
+                    elif 'unreachable:' in line_clean:
+                        await progress_callback(f"⚠️ {line_clean}")
+                    # Show reboot messages and play recap
                     elif 'Rebooting' in line_clean or 'PLAY RECAP' in line_clean:
                         await progress_callback(line_clean)
+                    # Show fatal errors
+                    elif 'fatal:' in line_clean or 'FAILED!' in line_clean:
+                        await progress_callback(f"❌ {line_clean}")
+
             # Wait for process to complete
             print(f"TOTAL LINES READ: {line_count}")
-            process.wait(timeout=1800)
+            await asyncio.wait_for(process.wait(), timeout=1800)
             
-            # Cleanup temp files
-            self.cleanup_temp_files()
+            # Cleanup temp files owned by this patch run only
+            self._cleanup_files(patch_temp)
             
             output = ''.join(output_lines)
             
@@ -298,16 +483,16 @@ class AnsibleRunner:
             else:
                 return False, {"error": f"Ansible failed with code {process.returncode}", "output": output}
                 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             if 'process' in locals():
                 process.kill()
-            self.cleanup_temp_files()
+            self._cleanup_files(patch_temp)
             return False, {"error": "Ansible patch timed out"}
         except Exception as e:
             print(f"ERROR in run_patch: {type(e).__name__}: {str(e)}")
             import traceback
             traceback.print_exc()
-            self.cleanup_temp_files()
+            self._cleanup_files(patch_temp)
             return False, {"error": str(e)}
 
     def _parse_ansible_output(self, output: str) -> Dict:
