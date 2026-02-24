@@ -1,0 +1,204 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Backend (FastAPI / Uvicorn)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patchpilot-backend
+  namespace: ${PP_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: patchpilot
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/version: "${PP_VERSION}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: patchpilot-backend
+  template:
+    metadata:
+      labels:
+        app: patchpilot-backend
+        app.kubernetes.io/name: patchpilot
+        app.kubernetes.io/component: backend
+    spec:
+      # Pull credentials for private Docker Hub repo
+      # The secret is created by install-k3s.sh during the push step.
+      # When PP_PULL_SECRET_NAME is empty (local strategy) this block is omitted
+      # by the installer via sed — the placeholder stays harmless if left in.
+      imagePullSecrets:
+      - name: ${PP_PULL_SECRET_NAME}
+      initContainers:
+      # Wait for postgres to accept connections before starting
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command:
+          - sh
+          - -c
+          - |
+            echo "Waiting for PostgreSQL..."
+            until nc -z postgres 5432; do
+              echo "  postgres not ready, retrying in 2s..."
+              sleep 2
+            done
+            echo "PostgreSQL is up!"
+
+      # Seed ansible PVC from playbooks baked into the image at /ansible-src/
+      # cp -rn = no-clobber so redeployments don't overwrite user customisations
+      - name: seed-ansible
+        image: ${PP_BACKEND_IMAGE}
+        imagePullPolicy: ${PP_IMAGE_PULL_POLICY}
+        command:
+          - sh
+          - -c
+          - |
+            echo "Seeding ansible PVC from image..."
+            cp -rn /ansible-src/. /ansible/
+            echo "Ansible PVC contents: $(ls /ansible/)"
+        volumeMounts:
+        - name: ansible-data
+          mountPath: /ansible
+
+      containers:
+      - name: backend
+        image: ${PP_BACKEND_IMAGE}
+        imagePullPolicy: ${PP_IMAGE_PULL_POLICY}
+        ports:
+        - containerPort: 8000
+          name: http
+
+        env:
+        # ── Database ──────────────────────────────────────────────────────
+        - name: POSTGRES_HOST
+          value: "postgres"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: POSTGRES_DB
+        # DATABASE_URL intentionally omitted — backend uses individual POSTGRES_*
+        # env vars via asyncpg keyword args to avoid URL-escaping issues with passwords.
+
+        # ── Encryption ────────────────────────────────────────────────────
+        - name: PATCHPILOT_ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: PATCHPILOT_ENCRYPTION_KEY
+
+        # ── Network / CORS ────────────────────────────────────────────────
+        - name: APP_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: APP_BASE_URL
+        - name: ALLOWED_ORIGINS
+          valueFrom:
+            secretKeyRef:
+              name: patchpilot-secrets
+              key: ALLOWED_ORIGINS
+
+        # ── Application ───────────────────────────────────────────────────
+        - name: APP_VERSION
+          value: "${PP_VERSION}"
+        - name: AUTO_REFRESH_INTERVAL
+          value: "${PP_AUTO_REFRESH_INTERVAL}"
+        - name: DEFAULT_SSH_USER
+          value: "${PP_DEFAULT_SSH_USER}"
+        - name: DEFAULT_SSH_PORT
+          value: "${PP_DEFAULT_SSH_PORT}"
+        - name: BACKUP_STORAGE_TYPE
+          value: "${PP_BACKUP_STORAGE_TYPE}"
+        - name: NFS_SERVER
+          value: "${PP_NFS_SERVER}"
+        - name: NFS_SHARE
+          value: "${PP_NFS_SHARE}"
+        - name: BACKUP_DIR
+          value: "/backups"
+        - name: BACKUP_RETAIN_COUNT
+          value: "${PP_BACKUP_RETAIN_COUNT}"
+        - name: MAX_BACKUP_SIZE_MB
+          value: "${PP_MAX_BACKUP_SIZE_MB}"
+        - name: ANSIBLE_DIR
+          value: "/ansible"
+        - name: ANSIBLE_PLAYBOOK_PATH
+          value: "/ansible/check-os-updates.yml"
+        - name: ANSIBLE_INVENTORY_PATH
+          value: "/ansible/hosts"
+
+        volumeMounts:
+        - name: ansible-data
+          mountPath: /ansible
+        - name: backups
+          mountPath: /backups
+          subPath: patchpilot-backups
+        - name: ssh-keys
+          mountPath: /root/.ssh
+          readOnly: true
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          failureThreshold: 4
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 3
+
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+      volumes:
+      - name: ansible-data
+        persistentVolumeClaim:
+          claimName: patchpilot-ansible-data
+      - name: backups
+        persistentVolumeClaim:
+          claimName: patchpilot-backups
+      - name: ssh-keys
+        secret:
+          secretName: patchpilot-ssh-keys
+          defaultMode: 0o600
+          optional: true         # Missing secret won't block startup
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patchpilot-backend
+  namespace: ${PP_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: patchpilot
+    app.kubernetes.io/component: backend
+spec:
+  selector:
+    app: patchpilot-backend
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000

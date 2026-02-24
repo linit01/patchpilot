@@ -1,5 +1,11 @@
 # PatchPilot backend dependencies
 # Generated from: docker exec pip freeze (2026-02-20)
+#
+# ── Security pins — do not remove or downgrade ────────────────────────────────
+wheel>=0.46.2          # CVE-2026-24049 — path traversal / chmod exploit via malicious .whl
+# pip itself is pinned in the Dockerfile RUN step (pip==26.0.1):
+#   CVE-2025-8869 — symlink escape in tar fallback extraction (fixed >=25.3)
+#   CVE-2026-1703 — wheel path traversal via os.path.commonprefix (fixed >=26.0.1)
 annotated-types==0.7.0
 ansible-core==2.19.6
 ansible-runner==2.4.2

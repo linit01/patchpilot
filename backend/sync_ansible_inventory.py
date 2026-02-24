@@ -5,71 +5,67 @@ Syncs hosts from PostgreSQL database to Ansible inventory file
 
 import asyncpg
 import logging
+import os
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SSH_USER = os.getenv("DEFAULT_SSH_USER", "root")
 
 
 async def sync_ansible_inventory(pool: asyncpg.Pool, inventory_path: str = "/ansible/hosts"):
     """
     Sync all hosts from database to Ansible inventory file.
-    
+
     Args:
         pool: Database connection pool
         inventory_path: Path to Ansible hosts file
-        
+
     Returns:
         int: Number of hosts synced
     """
     async with pool.acquire() as conn:
-        # Get all hosts from database
         hosts = await conn.fetch("""
             SELECT hostname, ssh_user, ssh_port, is_control_node
             FROM hosts
             ORDER BY hostname
         """)
-    
+
     if not hosts:
         logger.warning("No hosts found in database to sync")
         return 0
-    
+
     # Build Ansible inventory
-    inventory_lines = []
-    inventory_lines.append("[homelab]")
-    
+    inventory_lines = ["[homelab]"]
+
     for host in hosts:
         line = host['hostname']
-        
-        # Control nodes use local connection
+
         if host.get('is_control_node'):
             line += " ansible_connection=local"
         else:
-            # Add ssh_user if not default 'sanborn'
-            if host['ssh_user'] and host['ssh_user'] != 'sanborn':
+            # Only emit ansible_user if it differs from the install-time default
+            if host['ssh_user'] and host['ssh_user'] != DEFAULT_SSH_USER:
                 line += f" ansible_user={host['ssh_user']}"
-        
-        # Add ssh_port if not default 22
+
         if host['ssh_port'] and host['ssh_port'] != 22:
             line += f" ansible_port={host['ssh_port']}"
-        
+
         inventory_lines.append(line)
-    
-    # Add group vars
+
     inventory_lines.append("")
     inventory_lines.append("[homelab:vars]")
-    inventory_lines.append("ansible_user=sanborn")
-    
-    # Write to file
+    inventory_lines.append(f"ansible_user={DEFAULT_SSH_USER}")
+
+    # Write to file — log on failure, do NOT re-raise (non-fatal)
     try:
         with open(inventory_path, 'w') as f:
             f.write('\n'.join(inventory_lines) + '\n')
-        
         logger.info(f"✓ Synced {len(hosts)} hosts to Ansible inventory: {inventory_path}")
         return len(hosts)
-        
     except Exception as e:
-        logger.error(f"Failed to write Ansible inventory: {e}")
-        raise
+        logger.error(f"Failed to write Ansible inventory at {inventory_path}: {e}")
+        return 0
 
 
 async def add_host_to_inventory(pool: asyncpg.Pool, hostname: str, ssh_user: str = None, 

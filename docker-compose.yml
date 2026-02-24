@@ -7,6 +7,22 @@
 #        (Nginx Proxy Manager, Traefik, Caddy, Cloudflare Tunnel)
 #
 # Backup/Restore additions are marked with ✚
+#
+# NFS BACKUPS: By default, backups use a local named Docker volume.
+# To use NFS, replace the `backups:` volume entry at the bottom of this
+# file with the NFS variant shown in the Setup Wizard "Done" screen,
+# or configure it manually:
+#
+#   backups:
+#     driver: local
+#     driver_opts:
+#       type: nfs
+#       o: addr=<NFS_SERVER_IP>,rw,nfsvers=4
+#       device: ":<NFS_SHARE_PATH>"
+#
+# The NFS server and share are also saved to the settings table during
+# first-run setup so you can retrieve the exact snippet from Settings →
+# Backup & Restore at any time.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:

@@ -1,301 +1,233 @@
-# PatchPilot Quick Start Guide
+# PatchPilot — Quick Start Guide
 
-Get PatchPilot running in **5 minutes** using Docker Compose.
+Get PatchPilot running in **under 10 minutes**.
 
-## Prerequisites
+---
 
-- Docker and Docker Compose installed
-- A free Supabase account ([sign up here](https://supabase.com))
-- Your Ansible playbook and hosts file
+## Choose Your Install Mode
 
-## Step-by-Step Installation
+| Mode | Best for | Time |
+|------|----------|------|
+| Docker Compose | Single host, home lab, LAN access | ~5 min |
+| K3s / Kubernetes | Cluster deployment, HTTPS, production-grade | ~10 min |
 
-### 1. Download PatchPilot
+---
+
+## Option A — Docker Compose
+
+### What you need
+
+- **Docker** (Docker Desktop on Mac/Windows, Docker Engine on Linux) — must be **running**
+- **Docker Compose** (bundled with Docker Desktop, or install the plugin)
+- Your Ansible playbook (`check-os-updates.yml`) and inventory (`hosts` file)
+
+### Install
 
 ```bash
 git clone https://github.com/yourusername/patchpilot.git
 cd patchpilot
-```
-
-### 2. Run the Installer
-
-```bash
-./install.sh
+./install.sh --docker
 ```
 
 The installer will:
-- ✅ Check that Docker is installed
-- ✅ Ask for your Supabase credentials
-- ✅ Copy your Ansible files
-- ✅ Build and start the services
-- ✅ Open the dashboard in your browser
+1. Verify Docker is installed and running
+2. Generate a Fernet encryption key and write `.env`
+3. Find (or prompt for) your Ansible playbook and inventory
+4. Build the backend image
+5. Start PostgreSQL, backend, and frontend containers
 
-**That's it!** PatchPilot is now running.
+**Dashboard:** `http://localhost:8080`
 
-## What You'll See
-
-### On First Load
-
-The dashboard will show "Loading hosts..." for about 30 seconds while PatchPilot runs its initial Ansible check of your systems.
-
-### After Initial Check
-
-You'll see:
-
-1. **Statistics Cards** at the top:
-   - Total hosts
-   - Hosts up to date
-   - Hosts needing updates
-   - Unreachable hosts
-   - Total pending updates
-
-2. **Host Table** showing:
-   - Each system's hostname
-   - Current update status
-   - Number of available updates
-   - Last check time
-
-3. **Action Buttons**:
-   - "Refresh Status" - runs a new check
-   - "Patch Selected" - updates chosen hosts
-
-## Using PatchPilot
-
-### Check for New Updates
-
-Click **"Refresh Status"** to run an Ansible check across all your systems.
-
-### Patch Your Systems
-
-1. **Select hosts** using the checkboxes
-2. Click **"Patch Selected"**
-3. Enter your **sudo password**
-4. Click **"Confirm Patch"**
-
-PatchPilot will run the updates and automatically refresh the status when complete.
-
-### View Package Details
-
-Click **"View Details"** on any host to see:
-- Which specific packages need updating
-- Current and available versions
-- Package names
-
-## Common Tasks
-
-### View Logs
+### Managing services
 
 ```bash
-docker-compose logs -f
+# Stream all logs
+docker compose logs -f
+
+# Stream backend only
+docker compose logs -f backend
+
+# Stop
+docker compose down
+
+# Restart
+docker compose restart
+
+# Upgrade (after git pull)
+docker compose up -d --build
 ```
 
-### Stop PatchPilot
+### Access from other LAN devices
 
-```bash
-docker-compose down
-```
+PatchPilot binds to `0.0.0.0:8080` by default, so any device on your LAN can reach it at `http://<host-ip>:8080`.
 
-### Restart Services
-
-```bash
-docker-compose restart
-```
-
-### Update PatchPilot
-
-```bash
-git pull
-docker-compose up -d --build
-```
-
-## Troubleshooting
-
-### Dashboard Shows No Hosts
-
-- Wait 30-60 seconds after startup for the initial check
-- Click "Refresh Status" manually
-- Check logs: `docker-compose logs backend`
-
-### Can't Connect to Hosts
-
-Verify your SSH keys are accessible:
-
-```bash
-docker exec -it patchpilot-backend ls -la /root/.ssh
-```
-
-Test Ansible connectivity:
-
-```bash
-docker exec -it patchpilot-backend ansible all -i /ansible/hosts -m ping
-```
-
-### Patching Fails
-
-- Verify you entered the correct sudo password
-- Ensure hosts are reachable
-- Check that your playbook works manually
-
-### Backend Won't Start
-
-Check Supabase credentials:
-
-```bash
-docker exec -it patchpilot-backend env | grep SUPABASE
-```
-
-## Next Steps
-
-### Schedule Automatic Checks
-
-Add a cron job to check for updates daily:
-
-```bash
-0 9 * * * cd /path/to/patchpilot && docker exec patchpilot-backend curl -X POST http://localhost:8000/api/check
-```
-
-### Deploy to Production
-
-See [KUBERNETES.md](KUBERNETES.md) for deploying to your Kubernetes cluster.
-
-### Customize
-
-- Edit `ansible/check-os-updates.yml` to modify checks
-- Adjust auto-refresh in `frontend/app.js`
-- Add email notifications in `backend/app.py`
-
-## Getting Help
-
-- 📖 Full docs: [README.md](README.md)
-- 🐛 Report issues: [GitHub Issues](https://github.com/yourusername/patchpilot/issues)
-- 💬 Community: [Discord](https://discord.gg/patchpilot)
+To add HTTPS, put a reverse proxy in front (Nginx Proxy Manager, Traefik, Caddy, or a Cloudflare Tunnel) pointing at port 8080.
 
 ---
 
-**You're all set!** Enjoy automated patch management with PatchPilot 🎯
+## Option B — K3s / Kubernetes
 
-### Step 1: Set up Supabase (2 minutes)
+### What you need
 
-1. Go to https://supabase.com and sign up (free)
-2. Create a new project
-3. Go to SQL Editor and run the contents of `database-schema.sql`
-4. Go to Settings > API and copy:
-   - Project URL
-   - anon/public key
+On the machine where you run the installer (your Mac or Linux workstation):
 
-### Step 2: Configure the Application (1 minute)
+- **Docker** — must be installed and **running** (used to build images here, not on the cluster)
+- **`kubectl`** — configured and pointing at your k3s cluster
+- **Docker Hub account** — `linit01/patchpilot` private repo (username + access token)
+- **Python 3** with PyYAML (`pip3 install pyyaml`)
 
-1. Copy your environment file:
-   ```bash
-   cd patch-dashboard
-   cp .env.example .env
-   ```
+In your k3s cluster:
 
-2. Edit `.env` with your Supabase credentials:
-   ```
-   SUPABASE_URL=https://xxxxx.supabase.co
-   SUPABASE_KEY=your-key-here
-   ```
+- **Traefik** — ships with k3s by default
+- **cert-manager** — `kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml`
+- **Cloudflare API token secret** (DNS-01 TLS) — see step 1 below
 
-3. Copy your Ansible files:
-   ```bash
-   mkdir -p ansible
-   cp ~/check-os-updates.yml ansible/
-   cp ~/hosts ansible/
-   ```
+### Step 1 — Cloudflare API token (DNS-01 only)
 
-### Step 3: Deploy (2 minutes)
+If you're using DNS-01 challenge (required for `.lan` / private hostnames):
 
 ```bash
-./deploy.sh
-# Select option 1 for Local Dev
+# Create the secret in the cert-manager namespace
+kubectl create secret generic cloudflare-api-token-secret \
+  --from-literal=api-token=YOUR_CF_TOKEN \
+  -n cert-manager
 ```
 
-That's it! The dashboard will open at http://localhost:8080
+Token needs **Zone → DNS → Edit** permission on your domain. Create it at:  
+Cloudflare Dashboard → My Profile → API Tokens → Create Token
 
-## What You'll See
+### Step 2 — Edit `k8s/install-config.yaml`
 
-1. **Stats Cards** showing:
-   - Total hosts
-   - Hosts up to date
-   - Hosts needing updates
-   - Unreachable hosts
-   - Total pending updates
-
-2. **Host Table** with:
-   - Checkbox to select hosts
-   - Hostname, IP, OS type
-   - Status badge
-   - Number of updates available
-   - Last checked time
-   - View Details button
-
-3. **Action Buttons**:
-   - Refresh Status (runs Ansible check)
-   - Patch Selected (patches chosen hosts)
-
-## Using the Dashboard
-
-### Check for Updates
-Click "Refresh Status" - this runs your Ansible playbook and updates the database.
-
-### Patch Hosts
-1. Select one or more hosts using checkboxes
-2. Click "Patch Selected"
-3. Enter your sudo password
-4. Confirm
-
-The system will:
-- Run Ansible with the apply-updates tag
-- Patch the selected hosts
-- Update the dashboard after completion
-
-### View Host Details
-Click "View Details" on any host to see:
-- Host information
-- List of pending packages
-- Current and available versions
-
-## Next Steps
-
-### Deploy to Your k3s Cluster
-
-See the main README.md for Kubernetes deployment instructions.
-
-### Customize
-
-- Modify the Ansible playbook to add more checks
-- Adjust the auto-refresh interval in `frontend/app.js`
-- Add email notifications in `backend/app.py`
-- Create a scheduled CronJob to run checks automatically
-
-### Monitor
-
-Watch the logs:
 ```bash
-docker-compose logs -f backend
+nano k8s/install-config.yaml
 ```
+
+Minimum required changes:
+
+```yaml
+patchpilot:
+  network:
+    hostname: patchpilot.yourdomain.com      # ← your real hostname
+    additionalHostnames:
+      - patchpilot.lan                        # ← optional internal hostname
+
+  certManager:
+    email: you@yourdomain.com                 # ← Let's Encrypt contact email
+    cloudflare:
+      email: you@cloudflare.com               # ← Cloudflare account email
+
+  postgres:
+    storageClass: "app-data"                  # ← your StorageClass, or "" for default
+
+  storage:
+    storageClass: "app-data"                  # ← same SC for backups/ansible
+```
+
+Everything else has safe defaults. Passwords and the Fernet encryption key are auto-generated if left blank.
+
+### Step 3 — Run the installer
+
+```bash
+./install.sh --k3s
+```
+
+The installer will:
+1. Verify Docker, kubectl, Python prerequisites
+2. Build backend and frontend images locally
+3. Log in to Docker Hub and push both images (`linit01/patchpilot-backend`, `linit01/patchpilot-frontend`)
+4. Create a `patchpilot-dockerhub` imagePullSecret in the cluster so k3s can pull from the private repo
+5. Generate rendered Kubernetes manifests in `k8s/.generated/`
+6. Apply them to your cluster in dependency order
+7. Wait for all deployments to roll out
+
+**Dashboard:** `https://patchpilot.yourdomain.com`
+
+### Useful k3s commands
+
+```bash
+# Watch pod status
+kubectl get pods -n patchpilot -w
+
+# Backend logs
+kubectl logs -n patchpilot -l app=patchpilot-backend -f
+
+# Frontend logs
+kubectl logs -n patchpilot -l app=patchpilot-frontend -f
+
+# TLS certificate status
+kubectl describe cert patchpilot-tls -n patchpilot
+
+# Get all PatchPilot resources
+kubectl get all -n patchpilot
+
+# Uninstall
+./k8s/install-k3s.sh --uninstall
+```
+
+---
+
+## First Steps After Install
+
+### 1 — Add an SSH Key
+
+1. Open **Settings → SSH Keys → Add SSH Key**
+2. Name it (e.g. `homelab-key`)
+3. Click **Choose Key File** and select `~/.ssh/id_ed25519` (or your key)
+4. Check **Set as default key**
+5. **Save Key**
+
+### 2 — Add a Host
+
+1. **Settings → Hosts → Add New Host**
+2. Fill in:
+   - **Hostname:** server IP or FQDN
+   - **SSH User:** your username (default set in config)
+   - **SSH Port:** 22
+   - **Authentication:** select your saved key
+3. Click **Test Connection** to verify
+4. **Save Host**
+
+PatchPilot runs a background check on the new host within 30 seconds.
+
+### 3 — Review the Dashboard
+
+After the first check completes you'll see:
+
+- Stats cards: hosts up to date / need updates / unreachable / total pending packages
+- Host table with status badges and last-checked timestamps
+- **View Details** → per-host package list with current and available versions
+
+### 4 — Patch
+
+1. Select one or more hosts using the checkboxes
+2. Click **Patch Selected**
+3. Enter the sudo password
+4. Watch the real-time progress stream
+5. Dashboard auto-refreshes on completion
+
+---
 
 ## Troubleshooting
 
-**Dashboard shows no hosts:**
-- Wait 10 seconds after startup for initial check
-- Click "Refresh Status" manually
-- Check backend logs for errors
+**Hosts don't appear after adding**  
+Wait 30–60 seconds for the background check. Or click **Refresh Status** to trigger immediately.
 
-**Ansible connection fails:**
-- Verify SSH keys are accessible
-- Test Ansible manually:
-  ```bash
-  docker exec -it patch-dashboard-backend-1 \
-    ansible all -i /ansible/hosts -m ping
-  ```
+**SSH connection test fails**  
+```bash
+# Test from the backend container directly
+docker exec -it patchpilot-backend-1 ssh -v -i /root/.ssh/id_rsa user@host
+# k3s
+kubectl exec -n patchpilot deploy/patchpilot-backend -- ssh -v user@host
+```
 
-**Can't patch hosts:**
-- Make sure you entered the correct sudo password
-- Check that hosts are reachable
-- Verify the Ansible playbook works manually
+**Patching fails with permission denied**  
+The sudo password must match what's set on the target host for the SSH user. Test with `sudo -v` on the host first.
 
-## Support
+**TLS not issuing (k3s)**  
+```bash
+kubectl describe cert patchpilot-tls -n patchpilot
+kubectl logs -n cert-manager deploy/cert-manager | tail -30
+```
+Most common cause: Cloudflare token is missing, wrong scope, or in the wrong namespace.
 
-Check the main README.md for detailed documentation and troubleshooting.
+**Full documentation:** [README.md](README.md)

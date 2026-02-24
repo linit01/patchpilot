@@ -1,12 +1,8 @@
 // API Configuration
-const API_BASE_URL = window.location.hostname === 'localhost' 
-    ? 'http://localhost:8000/api'
-    : '/api';  // Use relative path in production
+const API_BASE_URL = '/api';  // Use relative path in production
 
 // WebSocket Configuration
-const WS_BASE_URL = window.location.hostname === 'localhost'
-    ? 'ws://localhost:8000'
-    : `ws://${window.location.host}`;
+const WS_BASE_URL = `ws${window.location.protocol === 'https:' ? 's' : ''}://${window.location.host}`;
 
 // Auth State
 let currentUser = null;
@@ -217,6 +213,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Check authentication and initialize
 async function checkAuthAndInit() {
+    // ── Setup guard: redirect to wizard if no users exist ──────────────────
+    try {
+        const setupRes = await fetch(`${API_BASE_URL}/auth/check-setup`);
+        const setupData = await setupRes.json();
+        if (setupData.setup_required || !setupData.has_users) {
+            window.location.replace('setup.html');
+            return;
+        }
+    } catch (e) {
+        // backend not ready yet — continue and let auth check handle it
+    }
+
     try {
         const res = await fetch(`${API_BASE_URL}/auth/me`, { credentials: 'include' });
         const data = await res.json();

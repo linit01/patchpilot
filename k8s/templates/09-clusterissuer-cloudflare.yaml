@@ -1,0 +1,32 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Let's Encrypt ClusterIssuer (Cloudflare DNS-01)
+#
+# Prerequisites:
+#   1. Create the Cloudflare API token secret in the cert-manager namespace:
+#        kubectl create secret generic cloudflare-api-token-secret \
+#          --from-literal=api-token=YOUR_CF_TOKEN -n cert-manager
+#   2. The token needs Zone:Read + DNS:Edit permissions on your zone.
+#
+# DNS-01 is required for:
+#   - Internal-only hostnames (.lan, .local) that can't do HTTP-01
+#   - Wildcard certificates
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ${PP_CLUSTER_ISSUER}
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${PP_LE_EMAIL}
+    privateKeySecretRef:
+      name: ${PP_CLUSTER_ISSUER}-account-key
+    solvers:
+    - dns01:
+        cloudflare:
+          email: ${PP_CF_EMAIL}
+          apiTokenSecretRef:
+            name: ${PP_CF_API_TOKEN_SECRET}
+            key: api-token
+      selector: {}          # Apply to all domains (including .lan)

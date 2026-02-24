@@ -7,19 +7,26 @@ from typing import Optional, List, Dict
 
 class DatabaseClient:
     def __init__(self):
-        self.database_url = (
-            f"postgresql://{os.getenv('POSTGRES_USER', 'patchpilot')}:"
-            f"{os.getenv('POSTGRES_PASSWORD', 'patchpilot')}@"
-            f"{os.getenv('POSTGRES_HOST', 'localhost')}:"
-            f"{os.getenv('POSTGRES_PORT', '5432')}/"
-            f"{os.getenv('POSTGRES_DB', 'patchpilot')}"
-        )
+        # Store connection params individually — never build a URL string with the
+        # password embedded in it. Passwords containing URL special chars (@, :, /)
+        # silently corrupt the parsed host/port and cause cryptic connection errors.
+        self._db_host     = os.getenv('POSTGRES_HOST', 'localhost')
+        self._db_port     = int(os.getenv('POSTGRES_PORT', '5432'))
+        self._db_user     = os.getenv('POSTGRES_USER', 'patchpilot')
+        self._db_password = os.getenv('POSTGRES_PASSWORD', 'patchpilot')
+        self._db_name     = os.getenv('POSTGRES_DB', 'patchpilot')
         self.pool = None
 
     async def connect(self):
         """Create database connection pool"""
         if not self.pool:
-            self.pool = await asyncpg.create_pool(self.database_url)
+            self.pool = await asyncpg.create_pool(
+                host=self._db_host,
+                port=self._db_port,
+                user=self._db_user,
+                password=self._db_password,
+                database=self._db_name,
+            )
     
     async def close(self):
         """Close database connection pool"""

@@ -277,10 +277,16 @@ async def change_password(req: ChangePasswordRequest, request: Request,
 
 @router.get("/check-setup")
 async def check_setup(pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Check if any users exist (for initial setup flow)"""
+    """Check if any users exist (for initial setup flow).
+    Returns both has_users (legacy) and setup_required (new) for compatibility."""
     async with pool.acquire() as conn:
         count = await conn.fetchval("SELECT COUNT(*) FROM users")
-    return {"has_users": count > 0, "user_count": count}
+    has_users = count > 0
+    return {
+        "has_users": has_users,
+        "setup_required": not has_users,
+        "user_count": count,
+    }
 
 
 @router.post("/setup")

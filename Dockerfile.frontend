@@ -1,0 +1,12 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Frontend Image
+# Bakes the static UI files into nginx:alpine so they don't need a volume mount.
+# The nginx.conf is injected via ConfigMap at runtime (mounted over this one).
+# ─────────────────────────────────────────────────────────────────────────────
+FROM nginx:alpine
+
+# Copy all frontend static assets into the nginx web root
+COPY frontend/ /usr/share/nginx/html/
+
+# Expose HTTP
+EXPOSE 80

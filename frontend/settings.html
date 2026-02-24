@@ -570,19 +570,19 @@
 
                 <div class="form-group">
                     <label>Application Base URL</label>
-                    <input type="url" id="app-base-url" placeholder="https://patchpilot.example.com"
+                    <input type="url" id="app-base-url" placeholder="https://patchpilot.BLAH.com"
                            style="font-family: monospace;">
                     <div class="help-text">
                         The public URL where PatchPilot is reachable (include protocol and domain, no trailing slash).
                         Used for CORS validation and self-referencing links.
-                        <br>Examples: <code>https://patchpilot.example.com</code> &nbsp;|&nbsp;
+                        <br>Examples: <code>https://patchpilot.BLAH.com</code> &nbsp;|&nbsp;
                         <code>https://patchpilot.lan</code> &nbsp;|&nbsp; <code>http://192.168.1.50:8080</code>
                     </div>
                 </div>
 
                 <div class="form-group">
                     <label>Allowed Origins <span style="color:var(--text-muted);font-weight:400;font-size:12px;">(CORS)</span></label>
-                    <input type="text" id="allowed-origins" placeholder="https://patchpilot.example.com,https://patchpilot.lan"
+                    <input type="text" id="allowed-origins" placeholder="https://patchpilot.BLAH.com,https://patchpilot.lan"
                            style="font-family: monospace;">
                     <div id="origins-warning" style="display:none;margin-top:8px;padding:10px 14px;border-radius:6px;
                          background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);
@@ -595,7 +595,7 @@
                         Comma-separated list of origins browsers are allowed to send requests from.
                         Use <code>*</code> for open / local access.  For multi-user or internet-facing
                         deployments list each URL explicitly
-                        (e.g. <code>https://patchpilot.example.com,https://patchpilot.lan</code>).
+                        (e.g. <code>https://patchpilot.BLAH.com,https://patchpilot.lan</code>).
                         <strong>Requires a container restart to take effect.</strong>
                     </div>
                 </div>
@@ -1056,8 +1056,7 @@
     <script>
         // Auth check - settings page requires authentication
         (async function() {
-            const API = window.location.hostname === 'localhost'
-                ? 'http://localhost:8000/api' : '/api';
+            const API = '/api';
             try {
                 const res = await fetch(`${API}/auth/me`, { credentials: 'include' });
                 const data = await res.json();
@@ -2301,7 +2300,7 @@
         // HOST PATCH LOGS MODAL
         // ================================================================
 
-        const _API_BASE = (window.location.hostname === 'localhost' ? 'http://localhost:8000' : '') + '/api';
+        const _API_BASE = '/api';
 
         function escapeHtml(str) {
             if (!str) return '';
@@ -2402,7 +2401,7 @@
         // BACKUP & RESTORE
         // ================================================================
 
-        const _BACKUP_API = (window.location.hostname === 'localhost' ? 'http://localhost:8000' : '') + '/api/backup';
+        const _BACKUP_API = '/api/backup';
         let _pendingRestoreFile = null;
 
         async function loadBackupList() {

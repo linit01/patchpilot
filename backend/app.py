@@ -81,6 +81,7 @@ from settings_api import router as settings_router
 from auth import router as auth_router, require_auth, log_audit, cleanup_expired_sessions
 from schedules_api import router as schedules_router
 from backup_restore import router as backup_router, set_pool as backup_set_pool
+from setup_api import router as setup_router
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -127,13 +128,14 @@ _ansible_check_lock = asyncio.Lock()
 _ansible_patch_running = False
 
 # Create FastAPI app
-app = FastAPI(title="PatchPilot API", version="0.9.1")
+_APP_VERSION = os.getenv("APP_VERSION", "0.9.4-alpha")
+app = FastAPI(title="PatchPilot API", version=_APP_VERSION)
 
 # ── CORS configuration ────────────────────────────────────────────────────────
 # ALLOWED_ORIGINS env var: comma-separated list of allowed origins.
 # Examples:
 #   ALLOWED_ORIGINS=*                                          (open — dev/default)
-#   ALLOWED_ORIGINS=https://patchpilot.example.com,https://patchpilot.lan
+#   ALLOWED_ORIGINS=https://patchpilot.BLAH.com,https://patchpilot.lan
 #
 # When "*" is used, allow_credentials must be False per the CORS spec.
 # When specific origins are listed, credentials (session cookies) work correctly.
@@ -154,6 +156,7 @@ app.include_router(settings_router)
 app.include_router(auth_router)
 app.include_router(schedules_router)
 app.include_router(backup_router)
+app.include_router(setup_router)
 
 # Pydantic models
 class PatchRequest(BaseModel):
@@ -174,26 +177,29 @@ async def startup_event():
     # Wire pool into backup/restore router
     backup_set_pool(pool)
     
-    # Run auth migration if needed
+    # ── STEP 1: Core schema (hosts, packages, patch_history) ─────────────────
+    # Must run BEFORE any column-check helpers that assume the tables exist.
+    await ensure_core_tables(pool)
+
+    # ── STEP 2: Auth tables (users, sessions, audit_log) ─────────────────────
     await run_auth_migration(pool)
     
     # Cleanup expired sessions
     await cleanup_expired_sessions(pool)
     
-    # Ensure settings table exists
+    # ── STEP 3: Settings table ────────────────────────────────────────────────
     await ensure_settings_table(pool)
     
-    # Ensure audit_log has all columns (may predate auth migration)
+    # ── STEP 4: Additive column migrations for existing installs ──────────────
     await ensure_audit_log_columns(pool)
-    
-    # Ensure hosts table has all columns
     await ensure_hosts_columns(pool)
-    
-    # Ensure patch_history has output column (added in v0.9.1)
     await ensure_patch_history_columns(pool)
     
-    # Ensure patch_schedules tables exist
+    # ── STEP 5: Scheduling tables ─────────────────────────────────────────────
     await ensure_schedules_tables(pool)
+
+    # ── STEP 6: Saved SSH keys table ──────────────────────────────────────────
+    await ensure_saved_ssh_keys_table(pool)
     
     # Start background task for periodic checks
     asyncio.create_task(periodic_ansible_check())
@@ -212,6 +218,92 @@ async def shutdown_event():
     await db.close()
     from dependencies import close_pool
     await close_pool()
+
+
+async def ensure_core_tables(pool):
+    """
+    Create the canonical core tables on a fresh install.
+    Uses IF NOT EXISTS so it is safe to run on every startup.
+    All current columns are included here — the ensure_*_columns helpers
+    below only handle ADDITIVE migrations for existing older installs.
+    """
+    try:
+        async with pool.acquire() as conn:
+            # hosts — central table, created first (others FK to it)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS hosts (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    hostname          VARCHAR(255) UNIQUE NOT NULL,
+                    ip_address        VARCHAR(45),
+                    os_type           VARCHAR(50),
+                    os_family         VARCHAR(50),
+                    last_checked      TIMESTAMP WITH TIME ZONE,
+                    status            VARCHAR(50)   DEFAULT 'unknown',
+                    total_updates     INTEGER       DEFAULT 0,
+                    reboot_required   BOOLEAN       DEFAULT FALSE,
+                    allow_auto_reboot BOOLEAN       DEFAULT TRUE,
+                    ssh_user          VARCHAR(100)  DEFAULT 'root',
+                    ssh_port          INTEGER       DEFAULT 22,
+                    ssh_key_type               VARCHAR(50)   DEFAULT 'default',
+                    ssh_private_key_encrypted  BYTEA,
+                    ssh_password_encrypted     BYTEA,
+                    notes             TEXT,
+                    tags              VARCHAR(255),
+                    is_control_node   BOOLEAN       DEFAULT FALSE,
+                    created_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hosts_hostname ON hosts(hostname)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hosts_status ON hosts(status)"
+            )
+
+            # packages
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS packages (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    host_id           UUID REFERENCES hosts(id) ON DELETE CASCADE,
+                    package_name      VARCHAR(255) NOT NULL,
+                    current_version   VARCHAR(100),
+                    available_version VARCHAR(100),
+                    update_type       VARCHAR(50),
+                    detected_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    UNIQUE(host_id, package_name)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_packages_host_id ON packages(host_id)"
+            )
+
+            # patch_history (includes output column from v0.9.1)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS patch_history (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    host_id           UUID REFERENCES hosts(id) ON DELETE CASCADE,
+                    execution_time    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    packages_updated  TEXT[],
+                    success           BOOLEAN,
+                    error_message     TEXT,
+                    duration_seconds  INTEGER,
+                    output            TEXT DEFAULT ''
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_patch_history_host_id "
+                "ON patch_history(host_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_patch_history_execution_time "
+                "ON patch_history(execution_time)"
+            )
+
+            print("Core tables ready (hosts, packages, patch_history)")
+    except Exception as e:
+        print(f"Core table creation FAILED: {e}")
+        raise  # Fatal — cannot continue without schema
 
 
 async def run_auth_migration(pool):
@@ -264,12 +356,12 @@ async def ensure_settings_table(pool):
                 # ── Network / HTTPS settings ───────────────────────────────────
                 ('app_base_url',     os.getenv('APP_BASE_URL', ''),
                  'Public base URL of this PatchPilot instance '
-                 '(e.g. https://patchpilot.example.com). '
+                 '(e.g. https://patchpilot.BLAH.com). '
                  'Used for CORS and self-referencing links.'),
                 ('allowed_origins',  os.getenv('ALLOWED_ORIGINS', '*'),
                  'Comma-separated CORS origins. Use * for dev/open access or list '
                  'explicit URLs for production '
-                 '(e.g. https://patchpilot.example.com,https://patchpilot.lan). '
+                 '(e.g. https://patchpilot.BLAH.com,https://patchpilot.lan). '
                  'Changes require a container restart to take effect.'),
             ]
             await conn.executemany("""
@@ -331,7 +423,7 @@ async def ensure_patch_history_columns(pool):
 
 
 async def ensure_hosts_columns(pool):
-    """Add missing columns to hosts table from newer features"""
+    """Add missing columns to hosts table and rename legacy column names."""
     columns_to_add = [
         ("allow_auto_reboot", "BOOLEAN DEFAULT TRUE"),
     ]
@@ -347,6 +439,27 @@ async def ensure_hosts_columns(pool):
                 if not exists:
                     await conn.execute(f"ALTER TABLE hosts ADD COLUMN {col_name} {col_type}")
                     print(f"Added column '{col_name}' to hosts table")
+
+            # Rename ssh_private_key -> ssh_private_key_encrypted for existing installs
+            old_key = await conn.fetchval("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_name='hosts' AND column_name='ssh_private_key')
+            """)
+            if old_key:
+                await conn.execute("ALTER TABLE hosts RENAME COLUMN ssh_private_key TO ssh_private_key_encrypted")
+                await conn.execute("ALTER TABLE hosts ALTER COLUMN ssh_private_key_encrypted TYPE BYTEA USING ssh_private_key_encrypted::bytea")
+                print("Migrated hosts.ssh_private_key -> ssh_private_key_encrypted (BYTEA)")
+
+            # Rename ssh_password -> ssh_password_encrypted for existing installs
+            old_pwd = await conn.fetchval("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_name='hosts' AND column_name='ssh_password')
+            """)
+            if old_pwd:
+                await conn.execute("ALTER TABLE hosts RENAME COLUMN ssh_password TO ssh_password_encrypted")
+                await conn.execute("ALTER TABLE hosts ALTER COLUMN ssh_password_encrypted TYPE BYTEA USING ssh_password_encrypted::bytea")
+                print("Migrated hosts.ssh_password -> ssh_password_encrypted (BYTEA)")
+
     except Exception as e:
         print(f"Hosts column check failed: {e}")
 
@@ -410,6 +523,44 @@ async def ensure_schedules_tables(pool):
             print("Patch schedules tables ready")
     except Exception as e:
         print(f"Schedule tables init failed: {e}")
+
+
+async def ensure_saved_ssh_keys_table(pool):
+    """Create saved_ssh_keys table if it doesn't exist (missing from original core schema)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS saved_ssh_keys (
+                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name        VARCHAR(100) NOT NULL UNIQUE,
+                    ssh_key_encrypted BYTEA NOT NULL,
+                    is_default  BOOLEAN DEFAULT FALSE,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_saved_ssh_keys_name ON saved_ssh_keys(name)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_saved_ssh_keys_default ON saved_ssh_keys(is_default)"
+            )
+            # Ensure only one default key (use DO block to skip if index already exists)
+            await conn.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_one_default_key'
+                    ) THEN
+                        CREATE UNIQUE INDEX idx_one_default_key
+                            ON saved_ssh_keys(is_default)
+                            WHERE is_default = TRUE;
+                    END IF;
+                END $$;
+            """)
+            print("saved_ssh_keys table ready")
+    except Exception as e:
+        print(f"saved_ssh_keys table init failed: {e}")
 
 
 # Background task to run Ansible check
@@ -1059,9 +1210,14 @@ async def websocket_patch_progress(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
+@app.get("/health")
+async def health():
+    """Kubernetes liveness/readiness probe endpoint."""
+    return {"status": "ok", "version": _APP_VERSION}
+
 @app.get("/")
 async def root():
-    return {"message": "PatchPilot API", "version": "0.9.1"}
+    return {"message": "PatchPilot API", "version": _APP_VERSION}
 
 # =========================================================================
 # PUBLIC ENDPOINTS (read-only, no auth required)
