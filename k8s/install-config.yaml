@@ -1,10 +1,10 @@
 patchpilot:
-  version: 0.9.4-alpha
+  version: 0.9.5-alpha
   namespace: patchpilot
   image:
     strategy: registry
     dockerHubRepo: linit01/patchpilot
-    tag: 0.9.4-alpha
+    tag: 0.9.5-alpha
     pullPolicy: Always
   dockerHub:
     username: linit01

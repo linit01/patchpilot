@@ -82,6 +82,7 @@ from auth import router as auth_router, require_auth, log_audit, cleanup_expired
 from schedules_api import router as schedules_router
 from backup_restore import router as backup_router, set_pool as backup_set_pool
 from setup_api import router as setup_router
+from uninstall_api import router as uninstall_router
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -128,7 +129,7 @@ _ansible_check_lock = asyncio.Lock()
 _ansible_patch_running = False
 
 # Create FastAPI app
-_APP_VERSION = os.getenv("APP_VERSION", "0.9.4-alpha")
+_APP_VERSION = os.getenv("APP_VERSION", "0.9.5-alpha")
 app = FastAPI(title="PatchPilot API", version=_APP_VERSION)
 
 # ── CORS configuration ────────────────────────────────────────────────────────
@@ -157,6 +158,7 @@ app.include_router(auth_router)
 app.include_router(schedules_router)
 app.include_router(backup_router)
 app.include_router(setup_router)
+app.include_router(uninstall_router)
 
 # Pydantic models
 class PatchRequest(BaseModel):

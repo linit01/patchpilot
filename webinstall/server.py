@@ -1,5 +1,5 @@
 """
-PatchPilot v0.9.4-alpha — Web Install Server
+PatchPilot v0.9.5-alpha — Web Install Server
 Collects configuration via browser wizard, writes config files,
 then streams ./install.sh output back to the browser via SSE.
 """
@@ -82,7 +82,7 @@ class K3sConfig(BaseModel):
     dh_repo: str = "linit01/patchpilot"
     dh_username: str
     dh_token: str
-    image_tag: str = "0.9.4-alpha"
+    image_tag: str = "0.9.5-alpha"
     pull_policy: str = "Always"
     hostname: str
     additional_hostnames: str = ""
@@ -258,7 +258,7 @@ def _write_k3s_config(cfg: K3sConfig):
     additional = [h.strip() for h in cfg.additional_hostnames.replace(",", " ").split() if h.strip()]
     data = {
         "patchpilot": {
-            "version": "0.9.4-alpha",
+            "version": "0.9.5-alpha",
             "namespace": cfg.namespace,
             "image": {
                 "strategy": "registry",

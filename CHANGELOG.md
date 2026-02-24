@@ -4,6 +4,23 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.9.5-alpha] - 2026-02-24
+
+### Added
+- **Web-based Uninstaller (Settings → Advanced → Danger Zone)** — Admin users can now initiate a full PatchPilot uninstall directly from the UI. The system auto-detects the install type (Docker Compose or Kubernetes/k3s) and presents a two-phase workflow:
+  - **Preview phase** — shows exactly which steps will be automated vs which require manual host access, before anything is executed.
+  - **Confirmation gate** — operator must type `UNINSTALL` to proceed, preventing accidental execution.
+  - **Execution phase** — animated progress bar while the backend runs; shows completed/failed steps on completion.
+  - **Manual commands panel** — any steps the backend cannot perform (hostPath cleanup, removing the repo directory, optional full k3s/Docker removal) are displayed in a copyable code block.
+- **`backend/uninstall_api.py`** — New FastAPI router (`/api/uninstall/status`, `/api/uninstall/execute`). Admin-only. Detects install type via env var `PATCHPILOT_INSTALL_MODE`, k3s kubeconfig presence, or Docker socket. Docker uninstall runs `docker compose down -v`, prunes patchpilot images/volumes. K3s uninstall delegates to existing `k8s/install-k3s.sh --uninstall` (with `NO_INTERACTIVE=true`) or direct `kubectl delete namespace` fallback.
+- **Docker uninstall script support** — Docker Compose installs previously had no equivalent to `k8s/install-k3s.sh --uninstall`. The new API handles Docker teardown natively.
+
+### Changed
+- `backend/app.py` — registers the new `uninstall_router`.
+- `frontend/settings.html` — Advanced tab now includes a **Danger Zone** section with the Uninstall PatchPilot button and a three-step modal (confirm → progress → results).
+
+---
+
 ## [0.9.4-alpha] - 2026-02-24
 
 ### Added

@@ -79,6 +79,9 @@ services:
       POSTGRES_CONTAINER_NAME: patchpilot-postgres-1
       ANSIBLE_DIR:             /ansible
 
+      # Tells the uninstaller which deployment type this is
+      PATCHPILOT_INSTALL_MODE: docker
+
     volumes:
       - ./ansible:/ansible
       - backups:/backups
