@@ -714,6 +714,39 @@
                         Detecting...
                     </div>
                 </div>
+
+                <!-- ── Danger Zone ─────────────────────────────────────────── -->
+                <div style="margin-top: 40px; border: 1px solid rgba(231,76,60,0.35); border-radius: 10px; overflow: hidden;">
+                    <div style="background: rgba(231,76,60,0.08); padding: 14px 20px; border-bottom: 1px solid rgba(231,76,60,0.25); display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 18px;">☢️</span>
+                        <div>
+                            <div style="font-weight: 700; color: var(--red); font-size: 14px;">Danger Zone</div>
+                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Irreversible actions — proceed with extreme caution</div>
+                        </div>
+                    </div>
+                    <div style="padding: 20px; display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap;">
+                        <div>
+                            <div style="font-weight: 600; color: var(--text-primary); font-size: 14px; margin-bottom: 4px;">Uninstall PatchPilot</div>
+                            <div style="font-size: 13px; color: var(--text-secondary); max-width: 480px;">
+                                Remove all containers, volumes, Kubernetes resources, and application data.
+                                Some steps require manual execution on the host after this process completes.
+                            </div>
+                            <div style="margin-top: 10px; font-size: 12px; color: var(--text-muted);">
+                                <span id="uninstall-detect-icon">⏳</span>
+                                <span id="uninstall-detect-label"> Detecting install type…</span>
+                            </div>
+                        </div>
+                        <button id="uninstall-open-btn" onclick="openUninstallModal()"
+                                style="flex-shrink: 0; background: transparent; border: 1px solid var(--red); color: var(--red);
+                                       padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 600;
+                                       cursor: pointer; transition: all 0.2s; white-space: nowrap;"
+                                onmouseover="this.style.background='rgba(231,76,60,0.12)'"
+                                onmouseout="this.style.background='transparent'">
+                            🗑️ Uninstall PatchPilot…
+                        </button>
+                    </div>
+                </div>
+
             </div>
 
             <!-- ══════════════════════════════════════════════════════════
@@ -2620,6 +2653,330 @@
             </div>
         </div>
     </div>
+
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         UNINSTALL MODAL
+         ═══════════════════════════════════════════════════════════════════════ -->
+    <div id="uninstall-modal" class="modal">
+        <div class="modal-content" style="max-width: 680px;">
+
+            <!-- Header -->
+            <div class="modal-header" style="background: rgba(231,76,60,0.08); border-bottom: 1px solid rgba(231,76,60,0.3);">
+                <h2 style="color: var(--red); display: flex; align-items: center; gap: 8px;">
+                    <span>☢️</span> Uninstall PatchPilot
+                </h2>
+                <button class="modal-close" onclick="closeUninstallModal()">×</button>
+            </div>
+
+            <!-- Step 1: Confirm -->
+            <div id="uninstall-step-confirm" class="modal-body">
+                <div style="background: rgba(231,76,60,0.08); border: 1px solid rgba(231,76,60,0.3); border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; font-size: 13px; color: var(--text-secondary); line-height: 1.6;">
+                    <strong style="color: var(--red);">⚠️ This action is irreversible.</strong>
+                    The uninstaller will remove all PatchPilot containers, volumes, database data, and cluster resources.
+                    You will be given a list of manual commands to complete the cleanup.
+                </div>
+
+                <!-- Install type detected -->
+                <div style="margin-bottom: 20px; padding: 14px 16px; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border);">
+                    <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 10px;">Detected Install Type</div>
+                    <div id="ui-install-type-badge" style="font-size: 14px; font-weight: 600; color: var(--text-primary);">⏳ Loading…</div>
+                    <div id="ui-install-type-desc" style="font-size: 13px; color: var(--text-secondary); margin-top: 6px;"></div>
+                </div>
+
+                <!-- What will be automated -->
+                <div style="margin-bottom: 16px;">
+                    <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">
+                        ✅ Automated Steps
+                    </div>
+                    <ul id="ui-auto-steps" style="margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 6px;">
+                        <li style="color: var(--text-muted); font-size: 13px;">Loading…</li>
+                    </ul>
+                </div>
+
+                <!-- What requires manual action -->
+                <div style="margin-bottom: 24px;">
+                    <div style="font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">
+                        🖥️ Manual Steps Required After Uninstall
+                    </div>
+                    <div id="ui-manual-steps" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; background: var(--bg-black); border: 1px solid var(--border); border-radius: 6px; padding: 12px; color: var(--cyan); white-space: pre; overflow-x: auto; line-height: 1.6;">Loading…</div>
+                </div>
+
+                <!-- Confirmation input -->
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 8px;">
+                        Type <code style="background: var(--bg-panel); padding: 2px 6px; border-radius: 4px; color: var(--red); font-family: monospace;">UNINSTALL</code> to confirm
+                    </label>
+                    <input type="text" id="uninstall-confirm-input" placeholder="UNINSTALL"
+                           style="width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px;
+                                  background: var(--bg-black); color: var(--text-primary); font-size: 14px;
+                                  font-family: monospace; outline: none; transition: border-color 0.2s; box-sizing: border-box;"
+                           oninput="checkUninstallConfirm(this.value)"
+                           onfocus="this.style.borderColor='var(--cyan)'"
+                           onblur="this.style.borderColor='var(--border)'">
+                </div>
+
+                <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                    <button onclick="closeUninstallModal()" class="btn btn-secondary">Cancel</button>
+                    <button id="uninstall-execute-btn" onclick="executeUninstall()" disabled
+                            style="background: var(--red); color: #fff; border: none; padding: 10px 24px;
+                                   border-radius: 8px; font-size: 13px; font-weight: 600; cursor: not-allowed;
+                                   opacity: 0.4; transition: all 0.2s;">
+                        🗑️ Uninstall Now
+                    </button>
+                </div>
+            </div>
+
+            <!-- Step 2: Progress -->
+            <div id="uninstall-step-progress" class="modal-body" style="display: none;">
+                <div style="text-align: center; padding: 20px 0 16px;">
+                    <div style="font-size: 32px; margin-bottom: 12px;" id="uninstall-progress-icon">⚙️</div>
+                    <div style="font-size: 16px; font-weight: 600; color: var(--text-primary);" id="uninstall-progress-title">Running uninstall…</div>
+                    <div style="font-size: 13px; color: var(--text-muted); margin-top: 6px;" id="uninstall-progress-subtitle">This may take up to 60 seconds</div>
+                </div>
+                <div style="background: var(--bg-black); border: 1px solid var(--border); border-radius: 8px; height: 6px; overflow: hidden; margin: 16px 0;">
+                    <div id="uninstall-progress-bar" style="height: 100%; background: var(--red); width: 0%; transition: width 0.6s;"></div>
+                </div>
+            </div>
+
+            <!-- Step 3: Results -->
+            <div id="uninstall-step-results" class="modal-body" style="display: none;">
+                <div id="uninstall-result-header" style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+                    <span id="uninstall-result-icon" style="font-size: 28px;"></span>
+                    <div>
+                        <div id="uninstall-result-title" style="font-size: 16px; font-weight: 700;"></div>
+                        <div id="uninstall-result-subtitle" style="font-size: 13px; color: var(--text-muted); margin-top: 3px;"></div>
+                    </div>
+                </div>
+
+                <!-- Completed -->
+                <div id="uninstall-completed-section" style="margin-bottom: 16px; display: none;">
+                    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--green-bright); margin-bottom: 8px;">✅ Completed</div>
+                    <ul id="uninstall-completed-list" style="margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 4px;"></ul>
+                </div>
+
+                <!-- Failed -->
+                <div id="uninstall-failed-section" style="margin-bottom: 16px; display: none;">
+                    <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--red); margin-bottom: 8px;">❌ Failed Steps</div>
+                    <ul id="uninstall-failed-list" style="margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 4px;"></ul>
+                </div>
+
+                <!-- Manual commands -->
+                <div id="uninstall-manual-section" style="margin-bottom: 20px; display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--amber, #f39c12);">🖥️ Run These Commands Manually</div>
+                        <button onclick="copyManualCommands()" style="font-size: 11px; background: var(--bg-panel); border: 1px solid var(--border); color: var(--text-secondary); padding: 4px 10px; border-radius: 4px; cursor: pointer;">📋 Copy</button>
+                    </div>
+                    <pre id="uninstall-manual-cmds" style="margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; background: var(--bg-black); border: 1px solid var(--border); border-radius: 6px; padding: 12px; color: var(--cyan); white-space: pre; overflow-x: auto; line-height: 1.7;"></pre>
+                </div>
+
+                <div style="display: flex; justify-content: flex-end;">
+                    <button onclick="closeUninstallModal()" class="btn btn-secondary">Close</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+    // ============================================================================
+    // UNINSTALL
+    // ============================================================================
+
+    let _uninstallStatus = null;
+
+    async function loadUninstallStatus() {
+        const icon  = document.getElementById('uninstall-detect-icon');
+        const label = document.getElementById('uninstall-detect-label');
+        try {
+            const res = await fetch('/api/uninstall/status', { credentials: 'include' });
+            if (!res.ok) {
+                const body = await res.text();
+                if (icon)  icon.textContent  = '❌';
+                if (label) label.textContent = ` HTTP ${res.status}: ${body.substring(0, 120)}`;
+                console.error('loadUninstallStatus HTTP error:', res.status, body);
+                return;
+            }
+            _uninstallStatus = await res.json();
+
+            // Update badge on the Advanced tab
+            const typeMap = { docker: '🐳 Docker Compose', k3s: '☸️ Kubernetes / k3s', unknown: '❓ Unknown' };
+            if (icon)  icon.textContent  = _uninstallStatus.install_type === 'docker' ? '🐳' : _uninstallStatus.install_type === 'k3s' ? '☸️' : '❓';
+            if (label) label.textContent = ' ' + (typeMap[_uninstallStatus.install_type] || _uninstallStatus.install_type) + ' install detected';
+
+        } catch (e) {
+            console.error('loadUninstallStatus fetch failed:', e);
+            if (icon)  icon.textContent  = '❌';
+            if (label) label.textContent = ` Fetch error: ${e.message}`;
+        }
+    }
+
+    function openUninstallModal() {
+        // Reset to step 1
+        document.getElementById('uninstall-step-confirm').style.display = '';
+        document.getElementById('uninstall-step-progress').style.display = 'none';
+        document.getElementById('uninstall-step-results').style.display = 'none';
+        document.getElementById('uninstall-confirm-input').value = '';
+        const btn = document.getElementById('uninstall-execute-btn');
+        btn.disabled = true;
+        btn.style.opacity = '0.4';
+        btn.style.cursor = 'not-allowed';
+
+        if (_uninstallStatus) {
+            populateUninstallPreview(_uninstallStatus);
+        } else {
+            // Fetch if not loaded yet
+            fetch('/api/uninstall/status', { credentials: 'include' })
+                .then(r => r.json())
+                .then(data => { _uninstallStatus = data; populateUninstallPreview(data); })
+                .catch(() => {});
+        }
+
+        document.getElementById('uninstall-modal').classList.add('active');
+    }
+
+    function populateUninstallPreview(status) {
+        const typeMap = { docker: '🐳 Docker Compose', k3s: '☸️ Kubernetes / k3s', unknown: '❓ Unknown' };
+        document.getElementById('ui-install-type-badge').textContent = typeMap[status.install_type] || status.install_type;
+        document.getElementById('ui-install-type-desc').textContent  = status.description;
+
+        const autoList = document.getElementById('ui-auto-steps');
+        if (status.automated_steps && status.automated_steps.length) {
+            autoList.innerHTML = status.automated_steps.map(s =>
+                `<li style="font-size: 13px; color: var(--text-secondary); display: flex; gap: 8px; align-items: flex-start;">
+                    <span style="color: var(--green-bright); flex-shrink: 0;">✓</span><span>${s}</span>
+                 </li>`
+            ).join('');
+        } else {
+            autoList.innerHTML = '<li style="color: var(--text-muted); font-size: 13px;">No automated steps available — manual uninstall required.</li>';
+        }
+
+        const manPre = document.getElementById('ui-manual-steps');
+        manPre.textContent = (status.manual_steps || []).join('\n') || '(none)';
+    }
+
+    function closeUninstallModal() {
+        document.getElementById('uninstall-modal').classList.remove('active');
+    }
+
+    function checkUninstallConfirm(value) {
+        const btn = document.getElementById('uninstall-execute-btn');
+        const enabled = value.trim() === 'UNINSTALL';
+        btn.disabled = !enabled;
+        btn.style.opacity  = enabled ? '1'       : '0.4';
+        btn.style.cursor   = enabled ? 'pointer' : 'not-allowed';
+        document.getElementById('uninstall-confirm-input').style.borderColor = enabled ? 'var(--red)' : 'var(--border)';
+    }
+
+    async function executeUninstall() {
+        // Switch to progress step
+        document.getElementById('uninstall-step-confirm').style.display = 'none';
+        document.getElementById('uninstall-step-progress').style.display = '';
+        document.getElementById('uninstall-step-results').style.display  = 'none';
+
+        // Animate progress bar
+        const bar = document.getElementById('uninstall-progress-bar');
+        let pct = 0;
+        const ticker = setInterval(() => {
+            pct = Math.min(pct + (pct < 60 ? 4 : pct < 85 ? 1.5 : 0.4), 92);
+            bar.style.width = pct + '%';
+        }, 400);
+
+        try {
+            const res = await fetch('/api/uninstall/execute', {
+                method: 'POST',
+                credentials: 'include',
+            });
+            clearInterval(ticker);
+            bar.style.width = '100%';
+
+            const data = await res.json();
+
+            // Brief pause so user sees 100%
+            await new Promise(r => setTimeout(r, 600));
+            showUninstallResults(data);
+
+        } catch (e) {
+            clearInterval(ticker);
+            bar.style.width = '100%';
+            bar.style.background = 'var(--red)';
+            await new Promise(r => setTimeout(r, 400));
+            showUninstallResults({
+                success: false,
+                steps_completed: [],
+                steps_failed: [`Network error: ${e.message}`],
+                manual_commands: _uninstallStatus ? (_uninstallStatus.manual_steps || []) : [],
+                message: 'Uninstall request failed — server may have shut down. Run manual commands below.',
+            });
+        }
+    }
+
+    function showUninstallResults(data) {
+        document.getElementById('uninstall-step-confirm').style.display   = 'none';
+        document.getElementById('uninstall-step-progress').style.display  = 'none';
+        document.getElementById('uninstall-step-results').style.display   = '';
+
+        document.getElementById('uninstall-result-icon').textContent    = data.success ? '✅' : '⚠️';
+        document.getElementById('uninstall-result-title').textContent   = data.success ? 'Uninstall Completed' : 'Uninstall Completed with Errors';
+        document.getElementById('uninstall-result-title').style.color   = data.success ? 'var(--green-bright)' : 'var(--amber, #f39c12)';
+        document.getElementById('uninstall-result-subtitle').textContent = data.message;
+
+        // Completed steps
+        const compSec  = document.getElementById('uninstall-completed-section');
+        const compList = document.getElementById('uninstall-completed-list');
+        if (data.steps_completed && data.steps_completed.length) {
+            compList.innerHTML = data.steps_completed.map(s =>
+                `<li style="font-size: 13px; color: var(--text-secondary); display: flex; gap: 8px;">
+                    <span style="color: var(--green-bright);">✓</span><span>${s}</span>
+                 </li>`
+            ).join('');
+            compSec.style.display = '';
+        }
+
+        // Failed steps
+        const failSec  = document.getElementById('uninstall-failed-section');
+        const failList = document.getElementById('uninstall-failed-list');
+        if (data.steps_failed && data.steps_failed.length) {
+            failList.innerHTML = data.steps_failed.map(s =>
+                `<li style="font-size: 13px; color: var(--text-secondary); display: flex; gap: 8px;">
+                    <span style="color: var(--red);">✗</span><span>${s}</span>
+                 </li>`
+            ).join('');
+            failSec.style.display = '';
+        }
+
+        // Manual commands
+        const manSec = document.getElementById('uninstall-manual-section');
+        const manPre = document.getElementById('uninstall-manual-cmds');
+        if (data.manual_commands && data.manual_commands.length) {
+            manPre.textContent = data.manual_commands.join('\n');
+            manSec.style.display = '';
+        }
+    }
+
+    function copyManualCommands() {
+        const text = document.getElementById('uninstall-manual-cmds').textContent;
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = event.target;
+            btn.textContent = '✅ Copied!';
+            setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
+        });
+    }
+
+    // Hook into existing switchTab — load uninstall status when Advanced tab opens
+    (function() {
+        const _origSwitch = window.switchTab;
+        window.switchTab = function(tabName) {
+            if (_origSwitch) _origSwitch(tabName);
+            if (tabName === 'advanced') loadUninstallStatus();
+        };
+        // Also load if advanced tab is already active on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            const advTab = document.getElementById('advanced-tab');
+            if (advTab && advTab.classList.contains('active')) loadUninstallStatus();
+        });
+    })();
+    </script>
 
 </body>
 </html>

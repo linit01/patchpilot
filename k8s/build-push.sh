@@ -8,7 +8,7 @@
 # Usage:
 #   cd patchpilot
 #   ./k8s/build-push.sh                  # reads tag/repo from install-config.yaml
-#   ./k8s/build-push.sh --tag 0.9.4-alpha  # override tag
+#   ./k8s/build-push.sh --tag 0.9.5-alpha  # override tag
 #   ./k8s/build-push.sh --platform linux/arm64  # override target platform
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -75,7 +75,7 @@ DH_REPO="$(yaml_get patchpilot.image.dockerHubRepo linit01/patchpilot)"
 DH_REPO="${DH_REPO%/}"
 DH_USERNAME="$(yaml_get patchpilot.dockerHub.username)"
 DH_TOKEN="$(yaml_get patchpilot.dockerHub.token)"
-IMAGE_TAG="${OVERRIDE_TAG:-$(yaml_get patchpilot.image.tag 0.9.4-alpha)}"
+IMAGE_TAG="${OVERRIDE_TAG:-$(yaml_get patchpilot.image.tag 0.9.5-alpha)}"
 
 # Detect cluster arch for platform if not overridden
 if [[ -n "${OVERRIDE_PLATFORM}" ]]; then

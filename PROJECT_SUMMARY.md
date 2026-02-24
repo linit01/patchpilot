@@ -1,6 +1,6 @@
 # PatchPilot — Project Summary
 
-**Version:** 0.9.4-alpha  
+**Version:** 0.9.5-alpha  
 **Status:** Active development — public release candidate
 
 ---

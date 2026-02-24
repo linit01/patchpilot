@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-# PatchPilot v0.9.4-alpha — Installer
+# PatchPilot v0.9.5-alpha — Installer
 # Supports: Docker Compose  |  K3s (Kubernetes)  |  Web Wizard
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +27,7 @@ print_banner() {
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/  
 EOF
   echo -e "${NC}"
-  echo -e "${BLUE}System Update Management — v0.9.4-alpha${NC}"
+  echo -e "${BLUE}System Update Management — v0.9.5-alpha${NC}"
   echo ""
 }
 
@@ -199,7 +199,7 @@ docker_start_services() {
 docker_show_completion() {
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo -e "${GREEN}🎉  PatchPilot v0.9.4-alpha ready (Docker)!${NC}"
+  echo -e "${GREEN}🎉  PatchPilot v0.9.5-alpha ready (Docker)!${NC}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   echo -e "${BLUE}📊 Dashboard:${NC}  http://localhost:8080"

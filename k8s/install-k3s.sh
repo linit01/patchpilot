@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# PatchPilot v0.9.4-alpha — K3s Installer
+# PatchPilot v0.9.5-alpha — K3s Installer
 #
 # Usage:
 #   ./k8s/install-k3s.sh                    # Uses k8s/install-config.yaml
@@ -65,7 +65,7 @@ print_banner() {
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/
 EOF
   echo -e "${NC}"
-  echo -e "${BLUE}K3s Installer — v0.9.4-alpha${NC}"
+  echo -e "${BLUE}K3s Installer — v0.9.5-alpha${NC}"
   echo ""
 }
 
@@ -233,7 +233,7 @@ detect_target_platform() {
 load_config() {
   step "Loading configuration"
 
-  PP_VERSION="$(yaml_get patchpilot.version 0.9.4-alpha)"
+  PP_VERSION="$(yaml_get patchpilot.version 0.9.5-alpha)"
   PP_NAMESPACE="$(yaml_get patchpilot.namespace patchpilot)"
   PP_NAMESPACE="$(prompt_value "Kubernetes namespace" "${PP_NAMESPACE}")"
 
@@ -243,13 +243,13 @@ load_config() {
   PP_DH_REPO="${PP_DH_REPO%/}"
 
   PP_IMAGE_STRATEGY="$(yaml_get patchpilot.image.strategy registry)"
-  PP_IMAGE_TAG="$(yaml_get patchpilot.image.tag 0.9.4-alpha)"
+  PP_IMAGE_TAG="$(yaml_get patchpilot.image.tag 0.9.5-alpha)"
   PP_IMAGE_PULL_POLICY="$(yaml_get patchpilot.image.pullPolicy Always)"
   PP_PULL_SECRET_NAME="$(yaml_get patchpilot.image.pullSecretName dockerhub-pull-secret)"
 
   # Detect arch NOW so we can bake it into the image tags
   # This prevents arm64 Docker builds from overwriting amd64 k3s images (and vice versa)
-  # Tags become: linit01/patchpilot:backend-0.9.4-alpha-amd64
+  # Tags become: linit01/patchpilot:backend-0.9.5-alpha-amd64
   local target_platform
   target_platform="$(detect_target_platform)"
   PP_TARGET_ARCH="$(echo "${target_platform}" | sed 's|linux/||;s|/|-|')"  # amd64, arm64, arm-v7
