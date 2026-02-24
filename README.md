@@ -1,455 +1,392 @@
 # 🎯 PatchPilot
 
-**Automated patch management system for Linux and macOS hosts with real-time monitoring and secure execution.**
+**Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-0.9.4--alpha-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-## 📋 Table of Contents
+---
+
+## Table of Contents
 
 - [Features](#features)
 - [Architecture](#architecture)
 - [Installation](#installation)
-- [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Security](#security)
-- [Development](#development)
+- [API Reference](#api-reference)
 - [Troubleshooting](#troubleshooting)
 
-## ✨ Features
+---
+
+## Features
 
 ### Core Functionality
-- **Multi-Platform Support**: Manages updates for Debian/Ubuntu (apt), macOS (Homebrew), and RHEL-based systems
-- **Real-Time Monitoring**: WebSocket-powered live patching progress with streaming task output
-- **Automated Scheduling**: Background checks every 2 minutes with countdown timer
-- **Single-Host Checks**: Fast targeted checks (~30 seconds) instead of full fleet scans
+- **Multi-Platform Host Support** — Debian/Ubuntu (`apt`), RHEL/CentOS (`dnf`/`yum`), macOS (`brew` + `softwareupdate` + Mac App Store via `mas`)
+- **Real-Time Patching Progress** — WebSocket streaming of live Ansible task output, per-task timestamps
+- **Background Checks** — Configurable interval (default 5 min), with countdown timer in the UI
+- **Single-Host Checks** — Fast targeted scan (~30 s) via `/api/check/{hostname}` — auto-triggered on host creation
+- **Scheduled Patching** — Time-based patch windows with encrypted sudo-password storage
 
 ### Security & Authentication
-- **Encrypted SSH Key Storage**: AES-256 encryption with Fernet for all credentials
-- **Saved SSH Keys Library**: Store and reuse SSH keys across multiple hosts
-- **Per-Host SSH Keys**: Support for different keys per host or shared keys
-- **Control Node Protection**: Prevents accidental patching of the management server
-- **Password Authentication**: Fallback option (not recommended)
+- **Login Required** — Session-based auth before any dashboard access
+- **Fernet Encryption (AES-256)** — All SSH private keys and sudo passwords encrypted at rest in PostgreSQL
+- **Saved SSH Keys Library** — Store, reuse, upload, and set defaults per host
+- **Per-Host SSH Configuration** — Different key, user, and port per target
+- **Control Node Protection** — Detects when a managed host is also running PatchPilot; warns before patching, never auto-reboots it
 
-### Advanced Features
-- **Auto-Reboot Management**: Per-host configurable automatic reboots after patching
-- **Ubuntu Phased Updates**: Automatically force-install deferred updates
-- **Package-Level Details**: View specific packages pending update with version info
-- **SSH ControlMaster Disabled**: Prevents connection pooling conflicts
-- **Smart Caching**: Browser cache-busting for real-time UI updates
+### Infrastructure & Deployment
+- **Docker Compose** — Single-command local or LAN deployment
+- **K3s / Kubernetes** — Full manifest set with Traefik ingress, cert-manager, Let's Encrypt TLS (DNS-01 Cloudflare or HTTP-01)
+- **PostgreSQL 15** — Persistent storage for hosts, packages, SSH keys, settings, schedules, and audit history
+- **Ansible** — Remote execution engine; playbook and inventory configurable per deployment
 
-### User Experience
-- **Intuitive Dashboard**: At-a-glance view of fleet health with color-coded status
-- **Settings Management**: Centralized host configuration with test connections
-- **File Upload Support**: Upload SSH keys instead of copy/paste
-- **Default Keys**: Set default SSH key for quick host additions
-- **Responsive Design**: Works on desktop and mobile
+---
 
-## 🏗 Architecture
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Frontend (Nginx)                        │
-│  - HTML/CSS/JavaScript                                       │
-│  - Real-time WebSocket connection                            │
-│  - Browser-based UI                                          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   Backend (FastAPI/Python)                   │
-│  - REST API endpoints                                        │
-│  - WebSocket server for real-time updates                   │
-│  - Encryption/decryption layer                               │
-│  - Background task scheduler                                 │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                    ┌─────────┴─────────┐
-                    ▼                   ▼
-        ┌──────────────────┐  ┌──────────────────┐
-        │   PostgreSQL     │  │  Ansible Runner  │
-        │   - Hosts        │  │  - SSH executor  │
-        │   - Packages     │  │  - Playbooks     │
-        │   - SSH Keys     │  │  - Inventory     │
-        └──────────────────┘  └──────────────────┘
-                                       │
-                                       ▼
-                              ┌──────────────────┐
-                              │  Managed Hosts   │
-                              │  - Linux/macOS   │
-                              │  - SSH access    │
-                              └──────────────────┘
+Browser (HTTPS / HTTP)
+        │
+        ▼
+  Traefik Ingress ─────────────────────────── (k3s only)
+  or Nginx (Docker)
+        │
+        ▼
+  patchpilot-frontend  (Nginx serving static HTML/JS/CSS)
+        │
+        │  /api/*  and  /ws/*
+        ▼
+  patchpilot-backend   (Python 3.11 · FastAPI · Uvicorn)
+        │
+   ┌────┴────┐
+   │         │
+   ▼         ▼
+PostgreSQL  Ansible Runner
+(port 5432) (SSH → managed hosts)
 ```
 
 ### Technology Stack
 
-**Frontend:**
-- HTML5/CSS3
-- Vanilla JavaScript (no frameworks)
-- WebSocket API for real-time updates
+| Layer | Technology |
+|-------|-----------|
+| Frontend | HTML5 · Vanilla JS · WebSocket API |
+| Backend | Python 3.11 · FastAPI · Uvicorn |
+| Database | PostgreSQL 15 |
+| Remote execution | Ansible (inside backend container) |
+| Encryption | `cryptography` (Fernet / AES-256) |
+| Web server | Nginx (Alpine) |
+| Container runtime | Docker / containerd (k3s) |
+| Ingress (k3s) | Traefik v3 |
+| TLS (k3s) | cert-manager + Let's Encrypt |
 
-**Backend:**
-- FastAPI (Python 3.11+)
-- asyncpg for PostgreSQL
-- Ansible for remote execution
-- Cryptography (Fernet) for encryption
+---
 
-**Infrastructure:**
-- Docker Compose
-- Nginx (frontend server)
-- PostgreSQL 15
-- Ansible 2.19
+## Installation
 
-## 🚀 Installation
+PatchPilot ships with a single installer that supports two deployment modes.
 
 ### Prerequisites
 
-- Docker & Docker Compose
-- Git
-- 2GB RAM minimum
-- Linux or macOS host
+**Both modes require on the machine where you run `install.sh`:**
+
+| Requirement | Notes |
+|-------------|-------|
+| Docker (Desktop or Engine) | Must be running — used to build images |
+| Python 3.8+ | For the YAML config parser and key generation |
+| Git | To clone the repo |
+
+**Docker Compose mode additionally requires:**
+| Requirement | Notes |
+|-------------|-------|
+| Docker Compose (plugin or legacy) | Ships with Docker Desktop |
+
+**K3s mode additionally requires:**
+| Requirement | Notes |
+|-------------|-------|
+| `kubectl` configured | Pointing at your k3s cluster |
+| SSH access to k3s node | When building on macOS or a machine that is not itself a k3s node |
+| cert-manager installed | In the cluster |
+| Cloudflare API token secret | Pre-created in the `cert-manager` namespace (DNS-01 only) |
 
 ### Quick Install
 
 ```bash
-# Clone repository
 git clone https://github.com/yourusername/patchpilot.git
 cd patchpilot
 
-# Generate encryption key
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Interactive — prompts for install mode
+./install.sh
 
-# Create .env file
-cat > .env << EOF
-ENCRYPTION_KEY=<your-generated-key>
-DATABASE_URL=postgresql://patchpilot:patchpilot@postgres:5432/patchpilot
-EOF
-
-# Start services
-docker-compose up -d
-
-# Check status
-docker-compose ps
+# Or specify directly
+./install.sh --docker   # Docker Compose
+./install.sh --k3s      # K3s / Kubernetes
 ```
 
-**Access UI:** http://localhost:3000
+### Docker Compose (LAN / single host)
 
-## 🎬 Quick Start
+The installer handles everything:
 
-### 1. Add SSH Key (Recommended)
+1. Generates a Fernet encryption key and writes `.env`
+2. Locates or prompts for your Ansible playbook and inventory
+3. Builds the backend image and starts all services
+4. Accessible at `http://<host-ip>:8080`
 
-1. Go to **Settings → 🔑 SSH Keys**
-2. Click **"Add SSH Key"**
-3. Name: `Personal Laptop`
-4. Click **"📁 Choose Key File"** → Select `~/.ssh/id_ed25519`
-5. Check **"Set as default key"**
-6. Click **"Save Key"**
+To add HTTPS, put a reverse proxy (Nginx Proxy Manager, Traefik, Caddy, Cloudflare Tunnel) in front of port 8080.
 
-### 2. Add Your First Host
+### K3s / Kubernetes
 
-1. Go to **Settings → 📋 Hosts**
-2. Click **"Add New Host"**
-3. Fill in:
-   - **Hostname:** `server.example.com` or IP address
-   - **SSH User:** `your-username`
-   - **SSH Port:** `22` (default)
-   - **SSH Authentication:** Select your saved key (auto-selected if default)
-4. Click **"Test Connection"** (optional)
-5. Click **"Save Host"**
+See **[KUBERNETES.md](KUBERNETES.md)** for the full step-by-step guide.
 
-**Within 30 seconds**, the host will be checked and appear in the dashboard!
+```bash
+# 1. Edit the config (hostnames, email, storage class, etc.)
+nano k8s/install-config.yaml
 
-### 3. Patch Hosts
+# 2. Run
+./install.sh --k3s
 
-1. Select hosts with pending updates
-2. Click **"⚡ Patch Selected"**
-3. Enter sudo password
-4. Click **"Confirm Patch"**
-5. Watch real-time progress in the modal
+# Preview without applying
+./k8s/install-k3s.sh --dry-run
 
-## ⚙️ Configuration
+# Uninstall
+./k8s/install-k3s.sh --uninstall
+```
 
-### Environment Variables
+---
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ENCRYPTION_KEY` | Fernet encryption key (required) | None |
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://...` |
-| `ANSIBLE_HOST_KEY_CHECKING` | Disable SSH host key checking | `False` |
-| `ANSIBLE_SSH_ARGS` | SSH connection options | ControlMaster disabled |
+## Configuration
 
-### Per-Host Settings
+### Environment Variables (Docker Compose — `.env`)
 
-**Auto-Reboot:**
-- Click host → **View Details**
-- Enable **"Allow Auto-Reboot"**
-- Host will reboot automatically after patching if required
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PATCHPILOT_ENCRYPTION_KEY` | ✅ | — | Fernet key (auto-generated by installer) |
+| `POSTGRES_USER` | | `patchpilot` | DB username |
+| `POSTGRES_PASSWORD` | ✅ | — | DB password |
+| `POSTGRES_DB` | | `patchpilot` | DB name |
+| `APP_BASE_URL` | | `http://localhost:8080` | Public URL (used for CORS + cookies) |
+| `ALLOWED_ORIGINS` | | `*` | Comma-separated CORS origins |
+| `AUTO_REFRESH_INTERVAL` | | `300` | Background check interval (seconds) |
+| `DEFAULT_SSH_USER` | | `root` | Default SSH user for new hosts |
+| `DEFAULT_SSH_PORT` | | `22` | Default SSH port for new hosts |
+| `BACKUP_RETAIN_COUNT` | | `10` | Max backups to keep |
 
-**Control Node:**
-- Automatically detected (host running PatchPilot)
-- Orange warning badge in dashboard
-- Requires confirmation before patching
-- Never auto-reboots (safety feature)
+### K3s Config File (`k8s/install-config.yaml`)
 
-### Background Checks
+All k3s settings live in one YAML file — see inline comments for every option. Key sections:
 
-- Runs every **2 minutes** automatically
-- Can be triggered manually via **"Refresh Status"**
-- Countdown timer shows next check
-- Single-host checks available via API
+- `patchpilot.network` — hostname(s), TLS, ingress class
+- `patchpilot.certManager` — Let's Encrypt email, challenge type, Cloudflare settings
+- `patchpilot.postgres` — credentials and storage class
+- `patchpilot.app` — encryption key, SSH defaults, backup retention
+- `patchpilot.ansible` — playbook and inventory paths
 
-## 📖 Usage
+---
+
+## Usage
 
 ### Dashboard
 
-**Stats Cards:**
-- **Total Hosts:** Count of configured hosts
-- **Up to Date:** Hosts with no pending updates
-- **Need Updates:** Hosts with patches available
-- **Unreachable:** Hosts that can't be reached via SSH
-- **Total Pending Updates:** Aggregate package count
+| Card | Meaning |
+|------|---------|
+| Total Hosts | All configured hosts |
+| Up to Date | No pending packages |
+| Need Updates | Patches available |
+| Unreachable | SSH failed on last check |
+| Total Pending | Package count across fleet |
 
-**Host Table:**
-- Checkbox for bulk operations
-- Color-coded status badges
-- Last checked timestamp
-- View Details button for package list
+### Adding a Host
 
-### Settings Tabs
+1. **Settings → Hosts → Add New Host**
+2. Fill in hostname/IP, SSH user, port
+3. Select a saved SSH key (or enter a password)
+4. Click **Test Connection** to verify
+5. Save — a background check runs automatically within 30 seconds
 
-**📋 Hosts:**
-- List all configured hosts
-- Add/Edit/Delete hosts
-- Test SSH connections
-- Import/Export configurations
+### Patching
 
-**🔑 SSH Keys:**
-- Manage saved SSH keys
-- Set default key
-- Encrypted storage
-- Reuse across hosts
+1. Select one or more hosts with the checkboxes
+2. **Patch Selected**
+3. Enter the sudo password for those hosts
+4. Watch real-time output stream in the progress modal
+5. Dashboard refreshes automatically on completion
 
-**⚙️ General:**
-- Application settings
-- Future configuration options
+### SSH Keys
 
-**🔧 Advanced:**
-- System information
-- Ansible version
-- Debug options
+1. **Settings → SSH Keys → Add SSH Key**
+2. Paste or upload the private key file
+3. Check **Set as default** to auto-select for new hosts
+4. Keys are encrypted with your Fernet key before storage in PostgreSQL
 
-## 🔒 Security
+### Backup & Restore
 
-### Encryption
+See **[README_BACKUP_RESTORE.md](README_BACKUP_RESTORE.md)** for full instructions.
 
-All sensitive data is encrypted at rest:
-- SSH private keys → AES-256 (Fernet)
-- SSH passwords → AES-256 (Fernet)
-- Encryption key stored in environment variable
+---
 
-### SSH Security
+## Security
 
-- Keys stored encrypted in PostgreSQL BYTEA columns
-- Temporary key files created with 0600 permissions
-- Keys decrypted only when needed
-- Temp files cleaned up after use
-- No keys logged or exposed in UI
-
-### Network Security
-
-**Allowed Outbound Domains:**
-- `api.anthropic.com`
-- `*.ubuntu.com`
-- `*.pythonhosted.org`
-- `registry.npmjs.org`
-- And other package repositories
-
-**No Inbound Access Required:**
-- PatchPilot connects outbound to managed hosts
-- Hosts don't need to reach PatchPilot
+- All SSH private keys and sudo passwords are encrypted at rest (Fernet / AES-256) before being written to PostgreSQL
+- Temporary key files are created with `0600` permissions and deleted immediately after use
+- The Fernet key lives in an environment variable (`.env` for Docker, Kubernetes Secret for k3s) — never in the database
+- Traefik middleware enforces HSTS and standard security headers in k3s mode
+- Control node (the host running PatchPilot) is detected automatically and protected from accidental auto-reboot
 
 ### Best Practices
 
-1. **Use SSH Keys** over passwords
-2. **Rotate encryption key** periodically
-3. **Limit sudo access** on managed hosts
-4. **Review logs** regularly
-5. **Test on dev hosts** before production
-6. **Enable auto-reboot** only on non-critical hosts
-7. **Backup database** with encrypted credentials
+1. Use SSH key authentication over passwords
+2. Scope Cloudflare API tokens to Zone:DNS:Edit on your domain only
+3. Never commit `.env` to version control
+4. Run `BACKUP_RETAIN_COUNT` backups and store one off-site
+5. Test patching on non-critical hosts first
+6. Enable auto-reboot only on hosts that can afford unplanned reboots
 
-## 🛠 Development
+---
 
-### Project Structure
+## API Reference
 
-```
-patchpilot/
-├── backend/
-│   ├── app.py                 # FastAPI main application
-│   ├── ansible_runner.py      # Ansible execution wrapper
-│   ├── database.py            # Database client
-│   ├── settings_api.py        # Settings endpoints
-│   ├── encryption_utils.py    # Encryption/decryption
-│   ├── crypto_utils.py        # Key management
-│   └── migrations/            # SQL migrations
-├── frontend/
-│   ├── index.html            # Main dashboard
-│   ├── settings.html         # Settings interface
-│   ├── app.js                # Dashboard logic
-│   └── styles.css            # Global styles
-├── ansible/
-│   ├── check-os-updates.yml  # Update check playbook
-│   └── hosts                 # Static inventory (fallback)
-└── docker-compose.yml        # Service orchestration
-```
-
-### Running Tests
-
-```bash
-# Backend tests
-docker exec patchpilot-backend pytest
-
-# Check logs
-docker-compose logs -f backend
-
-# Database access
-docker exec -it patchpilot-db psql -U patchpilot -d patchpilot
-```
-
-### Adding Features
-
-1. **Backend:** Add endpoint to `settings_api.py`
-2. **Database:** Create migration in `migrations/`
-3. **Frontend:** Update `settings.html` or `index.html`
-4. **Test:** Manually test all workflows
-
-### Debug Mode
-
-Enable debug logging:
-
-```python
-# backend/app.py
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
-
-## 🐛 Troubleshooting
-
-### Host Shows "Unreachable"
-
-**Check:**
-1. SSH key is correct: `ssh -i ~/.ssh/id_ed25519 user@host`
-2. Host is online: `ping host`
-3. SSH port is accessible: `nc -zv host 22`
-4. Firewall allows outbound SSH from PatchPilot
-5. Backend logs: `docker-compose logs backend | grep hostname`
-
-### Patching Fails
-
-**Common causes:**
-1. **Permission denied:** User needs sudo without password or provide sudo password
-2. **Locked package manager:** Another process is using apt/brew
-3. **Network timeout:** Poor connection or slow mirrors
-4. **Disk full:** No space for package downloads
-
-**Check logs:**
-```bash
-docker-compose logs backend --tail 100 | grep -A 20 "Running Ansible patch"
-```
-
-### Auto-Reboot Not Working
-
-**Requirements:**
-1. Host has `/var/run/reboot-required` file (Ubuntu/Debian)
-2. "Allow Auto-Reboot" is enabled for host
-3. Host is NOT the control node
-4. Patch completed successfully
-
-### Database Connection Fails
-
-```bash
-# Check PostgreSQL status
-docker-compose ps postgres
-
-# View logs
-docker-compose logs postgres
-
-# Reset database (⚠️ destroys data)
-docker-compose down -v
-docker-compose up -d
-```
-
-### Frontend Not Loading
-
-```bash
-# Check Nginx logs
-docker-compose logs frontend
-
-# Verify container is running
-docker-compose ps frontend
-
-# Check file permissions
-docker exec patchpilot-frontend ls -la /usr/share/nginx/html/
-```
-
-## 📝 API Documentation
-
-### REST Endpoints
+### Hosts
 
 ```
-GET  /api/hosts              # List all hosts
-POST /api/hosts              # Create host
-GET  /api/hosts/{id}         # Get host details
-PUT  /api/hosts/{id}         # Update host
-DELETE /api/hosts/{id}       # Delete host
+GET    /api/hosts              List all hosts
+POST   /api/hosts              Create host
+GET    /api/hosts/{id}         Get host
+PUT    /api/hosts/{id}         Update host
+DELETE /api/hosts/{id}         Delete host
+GET    /api/hosts/{id}/packages  Packages for host
+```
 
-GET  /api/hosts/{id}/packages  # List packages for host
+### Checks & Patching
 
-POST /api/check              # Trigger full fleet check
-POST /api/check/{hostname}   # Check single host
+```
+POST /api/check                Full fleet check
+POST /api/check/{hostname}     Single-host check
+POST /api/patch                Patch selected hosts
+GET  /api/stats                Dashboard statistics
+```
 
-POST /api/patch              # Patch selected hosts
-GET  /api/stats              # Dashboard statistics
+### SSH Keys
 
-GET  /api/settings/ssh-keys        # List saved SSH keys
-POST /api/settings/ssh-keys        # Create SSH key
-GET  /api/settings/ssh-keys/{id}   # Get SSH key metadata
-PUT  /api/settings/ssh-keys/{id}   # Update SSH key
-DELETE /api/settings/ssh-keys/{id} # Delete SSH key
-GET  /api/settings/ssh-keys/{id}/decrypt  # Get decrypted key content
+```
+GET    /api/settings/ssh-keys
+POST   /api/settings/ssh-keys
+PUT    /api/settings/ssh-keys/{id}
+DELETE /api/settings/ssh-keys/{id}
+GET    /api/settings/ssh-keys/{id}/decrypt
 ```
 
 ### WebSocket
 
 ```
-WS /ws/patch-progress        # Real-time patching updates
+WS /ws/patch-progress
 
 Message types:
-- start: { type: "start", hosts: [...] }
-- progress: { type: "progress", host: "...", message: "..." }
-- success: { type: "success" }
-- complete: { type: "complete" }
-- error: { type: "error", message: "..." }
+  start     { type, hosts }
+  progress  { type, host, message, timestamp }
+  success   { type }
+  complete  { type }
+  error     { type, message }
 ```
-
-## 📄 License
-
-MIT License - See LICENSE file for details
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Test thoroughly
-4. Submit pull request
-
-## 📧 Support
-
-- **Issues:** https://github.com/yourusername/patchpilot/issues
-- **Discussions:** https://github.com/yourusername/patchpilot/discussions
 
 ---
 
-**Built with ❤️ for sysadmins who value automation and security**
+## Troubleshooting
+
+### Host shows "Unreachable"
+
+```bash
+# Test SSH from the backend container
+docker exec -it patchpilot-backend-1 ssh -i /root/.ssh/id_rsa user@host
+
+# k3s
+kubectl exec -n patchpilot deploy/patchpilot-backend -- ssh -i /root/.ssh/id_rsa user@host
+
+# Test Ansible
+docker exec -it patchpilot-backend-1 ansible all -i /ansible/hosts -m ping
+```
+
+### Backend won't start (DB connection failed)
+
+```bash
+# Docker
+docker compose logs postgres
+docker compose logs backend
+
+# k3s
+kubectl logs -n patchpilot -l app=patchpilot-postgres
+kubectl logs -n patchpilot -l app=patchpilot-backend
+```
+
+### Patching fails
+
+```bash
+# Docker — tail backend logs during a patch
+docker compose logs -f backend
+
+# k3s
+kubectl logs -n patchpilot -l app=patchpilot-backend -f
+```
+
+Common causes: wrong sudo password, locked package manager (another process), disk full.
+
+### TLS certificate not issuing (k3s)
+
+```bash
+kubectl describe cert patchpilot-tls -n patchpilot
+kubectl logs -n cert-manager deploy/cert-manager
+```
+
+Check the Cloudflare API token has Zone:DNS:Edit permission and the secret is in the `cert-manager` namespace.
+
+### Reset database (⚠️ destroys all data)
+
+```bash
+# Docker
+docker compose down -v && docker compose up -d
+
+# k3s — delete and recreate the PVC
+kubectl delete pvc postgres-data -n patchpilot
+kubectl rollout restart deploy/patchpilot-postgres -n patchpilot
+```
+
+---
+
+## Project Structure
+
+```
+patchpilot/
+├── backend/
+│   ├── app.py                  # FastAPI application + routes
+│   ├── ansible_runner.py       # Ansible execution wrapper
+│   ├── database.py             # PostgreSQL (asyncpg) client
+│   ├── auth.py                 # Session authentication
+│   ├── settings_api.py         # Hosts, SSH keys, general settings
+│   ├── schedules_api.py        # Scheduled patch windows
+│   ├── backup_restore.py       # Backup / restore logic
+│   ├── encryption_utils.py     # Fernet encrypt/decrypt
+│   ├── requirements.txt
+│   └── migrations/             # SQL migration scripts
+├── frontend/
+│   ├── index.html              # Main dashboard
+│   ├── login.html              # Login page
+│   ├── settings.html           # Settings (hosts, keys, general)
+│   ├── backup_restore_tab.html # Backup & restore UI
+│   ├── app.js                  # Dashboard logic
+│   └── styles.css
+├── k8s/
+│   ├── install-config.yaml     # ← Edit this before k3s install
+│   ├── install-k3s.sh          # K3s installer script
+│   └── templates/              # Kubernetes manifest templates
+├── Dockerfile                  # Backend image
+├── Dockerfile.frontend         # Frontend image (nginx + static files)
+├── docker-compose.yml          # Docker Compose deployment
+├── nginx.conf                  # Nginx config (Docker Compose mode)
+├── install.sh                  # Main installer (Docker or K3s)
+├── database-schema.sql         # Initial schema
+└── .env.example                # Environment variable template
+```
+
+---
+
+*Built for sysadmins who patch first and ask questions never.*

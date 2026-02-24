@@ -1,0 +1,1185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PatchPilot — Initial Setup</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        :root {
+            --setup-max-width: 680px;
+        }
+
+        body {
+            background: #000;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .setup-wrapper {
+            width: 100%;
+            max-width: var(--setup-max-width);
+        }
+
+        /* ── Header ──────────────────────────────────────────── */
+        .setup-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .setup-logo {
+            width: 120px;
+            height: 60px;
+            margin: 0 auto 12px;
+            overflow: hidden;
+        }
+
+        .setup-logo img {
+            width: 100%; height: 100%;
+            object-fit: cover;
+            object-position: center 30%;
+            -webkit-mask-image: radial-gradient(ellipse 85% 75% at center, black 35%, transparent 70%);
+            mask-image: radial-gradient(ellipse 85% 75% at center, black 35%, transparent 70%);
+            filter: brightness(0.8) contrast(1.15) saturate(0.85);
+        }
+
+        .setup-header h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .setup-header h1 span { color: var(--cyan); }
+        .setup-header p { color: var(--text-muted); font-size: 14px; }
+
+        /* ── Progress stepper ────────────────────────────────── */
+        .stepper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 32px;
+            gap: 0;
+        }
+
+        .step-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+            flex: 1;
+        }
+
+        .step-item:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            top: 16px;
+            left: calc(50% + 16px);
+            right: calc(-50% + 16px);
+            height: 2px;
+            background: var(--border);
+            z-index: 0;
+        }
+
+        .step-item.completed:not(:last-child)::after {
+            background: var(--cyan);
+        }
+
+        .step-dot {
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            background: var(--bg-panel);
+            border: 2px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+            position: relative;
+            z-index: 1;
+            transition: all 0.3s;
+        }
+
+        .step-item.active   .step-dot { border-color: var(--cyan); color: var(--cyan); background: rgba(0,192,239,0.1); }
+        .step-item.completed .step-dot { border-color: var(--cyan); color: #000; background: var(--cyan); }
+
+        .step-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 6px;
+            white-space: nowrap;
+        }
+
+        .step-item.active .step-label    { color: var(--cyan); }
+        .step-item.completed .step-label { color: var(--text-secondary); }
+
+        /* ── Card ────────────────────────────────────────────── */
+        .setup-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 24px 32px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .card-header h2 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0 0 4px;
+        }
+
+        .card-header p {
+            color: var(--text-muted);
+            font-size: 13px;
+            margin: 0;
+        }
+
+        .card-body {
+            padding: 28px 32px;
+        }
+
+        /* ── Form elements ───────────────────────────────────── */
+        .form-row { display: grid; gap: 16px; margin-bottom: 16px; }
+        .form-row.cols-2 { grid-template-columns: 1fr 1fr; }
+        .form-row.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+        .form-group { margin-bottom: 0; }
+
+        label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+
+        label .opt {
+            color: var(--text-muted);
+            font-weight: 400;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        input[type="text"],
+        input[type="email"],
+        input[type="password"],
+        input[type="number"],
+        select,
+        textarea {
+            width: 100%;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 10px 12px;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.2s;
+            box-sizing: border-box;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--cyan);
+        }
+
+        select { cursor: pointer; }
+        textarea { resize: vertical; min-height: 60px; }
+
+        .pw-strength {
+            height: 3px;
+            border-radius: 2px;
+            margin-top: 6px;
+            background: var(--border);
+            overflow: hidden;
+        }
+
+        .pw-strength-bar {
+            height: 100%;
+            width: 0;
+            border-radius: 2px;
+            transition: width 0.3s, background 0.3s;
+        }
+
+        .pw-hint {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* ── Radio / toggle groups ───────────────────────────── */
+        .radio-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .radio-option {
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .radio-option:hover { border-color: rgba(0,192,239,0.4); }
+        .radio-option.selected { border-color: var(--cyan); background: rgba(0,192,239,0.05); }
+
+        .radio-option input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            width: 0; height: 0;
+        }
+
+        .radio-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .radio-desc {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .radio-option.selected .radio-label { color: var(--cyan); }
+
+        /* ── Host list ───────────────────────────────────────── */
+        .host-list { margin-bottom: 16px; }
+
+        .host-entry {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            position: relative;
+        }
+
+        .host-entry .remove-host {
+            position: absolute;
+            top: 10px; right: 12px;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 18px;
+            padding: 0;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+
+        .host-entry .remove-host:hover { color: var(--red); }
+
+        .add-host-btn {
+            width: 100%;
+            padding: 10px;
+            background: none;
+            border: 1px dashed var(--border);
+            border-radius: 8px;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 13px;
+            font-family: 'Outfit', sans-serif;
+            transition: all 0.2s;
+        }
+
+        .add-host-btn:hover { border-color: var(--cyan); color: var(--cyan); background: rgba(0,192,239,0.04); }
+
+        .skip-note {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        /* ── NFS details panel ───────────────────────────────── */
+        .nfs-details {
+            display: none;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 12px;
+        }
+
+        .nfs-details.visible { display: block; }
+
+        /* ── Alerts ──────────────────────────────────────────── */
+        .alert {
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            margin-bottom: 16px;
+            border: 1px solid;
+            display: none;
+        }
+
+        .alert.error   { background: var(--red-dim);  color: var(--red);  border-color: rgba(231,76,60,0.3); }
+        .alert.success { background: rgba(26,255,127,0.08); color: var(--green-bright); border-color: rgba(26,255,127,0.3); }
+        .alert.info    { background: var(--cyan-dim); color: var(--cyan); border-color: rgba(0,192,239,0.25); }
+        .alert.show    { display: block; }
+
+        /* ── Footer / buttons ────────────────────────────────── */
+        .card-footer {
+            padding: 20px 32px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg-panel);
+        }
+
+        .btn {
+            padding: 11px 24px;
+            border-radius: var(--radius);
+            font-size: 13px;
+            font-weight: 700;
+            font-family: 'Outfit', sans-serif;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-primary {
+            background: var(--cyan);
+            color: #000;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            box-shadow: 0 0 20px rgba(0,192,239,0.35);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+        }
+
+        .btn-secondary:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text-primary); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn-skip {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 13px;
+            cursor: pointer;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .btn-skip:hover { color: var(--text-secondary); }
+
+        /* ── Done screen ─────────────────────────────────────── */
+        .done-screen {
+            text-align: center;
+            padding: 40px 32px;
+        }
+
+        .done-icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+        }
+
+        .done-screen h2 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 26px;
+            font-weight: 700;
+            color: var(--green-bright);
+            margin-bottom: 8px;
+        }
+
+        .done-screen p {
+            color: var(--text-muted);
+            font-size: 14px;
+            margin-bottom: 24px;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 28px;
+            text-align: left;
+        }
+
+        .summary-item {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+        }
+
+        .summary-item .si-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
+        .summary-item .si-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        .nfs-config-hint {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .nfs-config-hint h4 {
+            font-size: 12px;
+            color: var(--amber);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 0 0 10px;
+        }
+
+        .nfs-config-hint pre {
+            background: #000;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 11px;
+            color: var(--cyan);
+            overflow-x: auto;
+            margin: 0 0 10px;
+            white-space: pre-wrap;
+        }
+
+        .nfs-config-hint p {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin: 0;
+        }
+
+        /* ── Responsive ──────────────────────────────────────── */
+        @media (max-width: 600px) {
+            .form-row.cols-2,
+            .form-row.cols-3 { grid-template-columns: 1fr; }
+            .radio-group      { grid-template-columns: 1fr; }
+            .card-body        { padding: 20px; }
+            .card-footer      { padding: 16px 20px; }
+            .summary-grid     { grid-template-columns: 1fr; }
+            .stepper          { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="setup-wrapper">
+
+        <!-- Header -->
+        <div class="setup-header">
+            <div class="setup-logo">
+                <img src="patchpilot-icon.jpeg" alt="PatchPilot">
+            </div>
+            <h1>Patch<span>Pilot</span> Setup</h1>
+            <p>Let's get your system update manager configured</p>
+        </div>
+
+        <!-- Progress Stepper -->
+        <div class="stepper" id="stepper">
+            <div class="step-item active" data-step="1">
+                <div class="step-dot">1</div>
+                <div class="step-label">Welcome</div>
+            </div>
+            <div class="step-item" data-step="2">
+                <div class="step-dot">2</div>
+                <div class="step-label">Admin</div>
+            </div>
+            <div class="step-item" data-step="3">
+                <div class="step-dot">3</div>
+                <div class="step-label">Settings</div>
+            </div>
+            <div class="step-item" data-step="4">
+                <div class="step-dot">4</div>
+                <div class="step-label">Backups</div>
+            </div>
+            <div class="step-item" data-step="5">
+                <div class="step-dot">5</div>
+                <div class="step-label">Hosts</div>
+            </div>
+            <div class="step-item" data-step="6">
+                <div class="step-dot">6</div>
+                <div class="step-label">SSH Key</div>
+            </div>
+            <div class="step-item" data-step="7">
+                <div class="step-dot">7</div>
+                <div class="step-label">Done</div>
+            </div>
+        </div>
+
+        <!-- Card -->
+        <div class="setup-card">
+
+            <!-- ── STEP 1: Welcome ─────────────────────────────── -->
+            <div class="step-panel" id="step-1">
+                <div class="card-header">
+                    <h2>Welcome to PatchPilot 🚀</h2>
+                    <p>This wizard will walk you through the initial configuration. It only runs once — afterwards you'll manage everything from the Settings page.</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert info show">
+                        <strong>Fresh Install Detected</strong><br>
+                        No users exist yet. This setup creates your admin account and configures the core settings. The entire process takes about 2 minutes.
+                    </div>
+                    <div style="color: var(--text-secondary); font-size: 14px; line-height: 1.8;">
+                        <div style="margin-bottom: 8px;">✅ &nbsp;Create your admin account</div>
+                        <div style="margin-bottom: 8px;">✅ &nbsp;Set your timezone and preferences</div>
+                        <div style="margin-bottom: 8px;">✅ &nbsp;Configure backup storage (local or NFS)</div>
+                        <div style="margin-bottom: 8px;">✅ &nbsp;Optionally add your first hosts</div>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <span></span>
+                    <button class="btn btn-primary" onclick="nextStep()">Get Started →</button>
+                </div>
+            </div>
+
+            <!-- ── STEP 2: Admin Account ───────────────────────── -->
+            <div class="step-panel" id="step-2" style="display:none;">
+                <div class="card-header">
+                    <h2>Admin Account</h2>
+                    <p>This is the primary administrator. Additional users can be added from Settings after setup.</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert error" id="step2-error"></div>
+                    <div class="form-row cols-2">
+                        <div class="form-group">
+                            <label>Username</label>
+                            <input type="text" id="admin-username" placeholder="admin" autocomplete="username">
+                        </div>
+                        <div class="form-group">
+                            <label>Email</label>
+                            <input type="email" id="admin-email" placeholder="admin@example.com" autocomplete="email">
+                        </div>
+                    </div>
+                    <div class="form-row cols-2">
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input type="password" id="admin-password" placeholder="Min. 8 characters" autocomplete="new-password" oninput="checkPasswordStrength()">
+                            <div class="pw-strength"><div class="pw-strength-bar" id="pw-bar"></div></div>
+                            <div class="pw-hint" id="pw-hint">Enter a password</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Confirm Password</label>
+                            <input type="password" id="admin-confirm" placeholder="Repeat password" autocomplete="new-password">
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+                    <button class="btn btn-primary" onclick="validateStep2()">Continue →</button>
+                </div>
+            </div>
+
+            <!-- ── STEP 3: General Settings ────────────────────── -->
+            <div class="step-panel" id="step-3" style="display:none;">
+                <div class="card-header">
+                    <h2>General Settings</h2>
+                    <p>Configure timezone, display name, and connection defaults. All of these can be changed later in Settings.</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert error" id="step3-error"></div>
+                    <div class="form-row cols-2">
+                        <div class="form-group">
+                            <label>App Title <span class="opt">(optional)</span></label>
+                            <input type="text" id="app-title" value="PatchPilot" placeholder="PatchPilot">
+                        </div>
+                        <div class="form-group">
+                            <label>Timezone</label>
+                            <select id="timezone">
+                                <option value="UTC">UTC</option>
+                                <option value="America/New_York">America/New_York (EST/EDT)</option>
+                                <option value="America/Chicago">America/Chicago (CST/CDT)</option>
+                                <option value="America/Denver">America/Denver (MST/MDT)</option>
+                                <option value="America/Los_Angeles">America/Los_Angeles (PST/PDT)</option>
+                                <option value="America/Anchorage">America/Anchorage (AKST)</option>
+                                <option value="Pacific/Honolulu">Pacific/Honolulu (HST)</option>
+                                <option value="Europe/London">Europe/London (GMT/BST)</option>
+                                <option value="Europe/Paris">Europe/Paris (CET/CEST)</option>
+                                <option value="Europe/Berlin">Europe/Berlin (CET/CEST)</option>
+                                <option value="Europe/Amsterdam">Europe/Amsterdam (CET/CEST)</option>
+                                <option value="Europe/Stockholm">Europe/Stockholm (CET/CEST)</option>
+                                <option value="Europe/Helsinki">Europe/Helsinki (EET/EEST)</option>
+                                <option value="Europe/Moscow">Europe/Moscow (MSK)</option>
+                                <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                                <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                                <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+                                <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                                <option value="Asia/Shanghai">Asia/Shanghai (CST)</option>
+                                <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
+                                <option value="Pacific/Auckland">Pacific/Auckland (NZST/NZDT)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Site URL <span class="opt">(optional — your PatchPilot URL for CORS/links)</span></label>
+                            <input type="text" id="site-url" placeholder="https://patchpilot.yourdomain.com">
+                        </div>
+                    </div>
+                    <div class="form-row cols-3">
+                        <div class="form-group">
+                            <label>Dashboard Refresh</label>
+                            <select id="refresh-interval">
+                                <option value="60">60 seconds</option>
+                                <option value="120">2 minutes</option>
+                                <option value="300" selected>5 minutes</option>
+                                <option value="600">10 minutes</option>
+                                <option value="1800">30 minutes</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Default SSH User</label>
+                            <input type="text" id="default-ssh-user" value="root" placeholder="root">
+                        </div>
+                        <div class="form-group">
+                            <label>Default SSH Port</label>
+                            <input type="number" id="default-ssh-port" value="22" min="1" max="65535">
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+                    <button class="btn btn-primary" onclick="validateStep3()">Continue →</button>
+                </div>
+            </div>
+
+            <!-- ── STEP 4: Backup Storage ──────────────────────── -->
+            <div class="step-panel" id="step-4" style="display:none;">
+                <div class="card-header">
+                    <h2>Backup Storage</h2>
+                    <p>PatchPilot can back up your database and Ansible inventory. Choose where to store backup archives.</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert error" id="step4-error"></div>
+                    <div class="radio-group">
+                        <div class="radio-option selected" id="opt-local" onclick="selectStorage('local')">
+                            <input type="radio" name="storage" value="local" checked>
+                            <div class="radio-label">💾 Local Storage</div>
+                            <div class="radio-desc">Backups stored in a Docker named volume or local path on the host. Easiest to set up.</div>
+                        </div>
+                        <div class="radio-option" id="opt-nfs" onclick="selectStorage('nfs')">
+                            <input type="radio" name="storage" value="nfs">
+                            <div class="radio-label">🗄️ NFS Share</div>
+                            <div class="radio-desc">Backups written to a network share (TrueNAS, Synology, etc). Better for multi-host HA setups.</div>
+                        </div>
+                    </div>
+
+                    <div class="nfs-details" id="nfs-details">
+                        <div class="form-row cols-2">
+                            <div class="form-group">
+                                <label>NFS Server</label>
+                                <input type="text" id="nfs-server" placeholder="192.168.1.10 or truenas.lan">
+                            </div>
+                            <div class="form-group">
+                                <label>Share Path</label>
+                                <input type="text" id="nfs-share" placeholder="/mnt/pool/backups/patchpilot">
+                            </div>
+                        </div>
+                        <div class="alert info show" style="margin-bottom:0; font-size:12px;">
+                            After setup completes, you'll see the exact snippet to add to your <code>docker-compose.yml</code> or Kubernetes PV manifest.
+                        </div>
+                    </div>
+
+                    <div class="form-row" style="margin-top: 16px;">
+                        <div class="form-group">
+                            <label>Backups to Retain</label>
+                            <select id="retain-count">
+                                <option value="5">5 backups</option>
+                                <option value="10" selected>10 backups</option>
+                                <option value="20">20 backups</option>
+                                <option value="30">30 backups</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+                    <button class="btn btn-primary" onclick="validateStep4()">Continue →</button>
+                </div>
+            </div>
+
+            <!-- ── STEP 5: First Hosts ─────────────────────────── -->
+            <div class="step-panel" id="step-5" style="display:none;">
+                <div class="card-header">
+                    <h2>Add Your First Hosts</h2>
+                    <p>Add the servers you want to monitor and patch. You can skip this and add hosts from Settings later.</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert error" id="step5-error"></div>
+                    <div class="host-list" id="host-list">
+                        <!-- host entries injected here -->
+                    </div>
+                    <button class="add-host-btn" onclick="addHostEntry()">+ Add a Host</button>
+                    <div class="skip-note">SSH keys and passwords are configured per-host from the Settings page after login.</div>
+                </div>
+                <div class="card-footer">
+                    <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+                    <div style="display:flex; gap: 12px; align-items: center;">
+                        <button class="btn-skip" onclick="skipHosts()">Skip for now</button>
+                        <button class="btn btn-primary" onclick="validateStep5()">Next: SSH Key →</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── STEP 6: Default SSH Key ──────────────────── -->
+            <div class="step-panel" id="step-6" style="display:none;">
+                <div class="card-header">
+                    <h2>Default SSH Key</h2>
+                    <p>Paste your private SSH key so PatchPilot can connect to your hosts. This will be saved as the default key and can be changed any time from Settings.</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert error" id="step6-error"></div>
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label>Key Name</label>
+                        <input type="text" id="ssh-key-name" placeholder="e.g. homelab-default" value="homelab-default">
+                        <div class="hint">A friendly name to identify this key in the UI.</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Private Key <span class="opt">(optional — can be added later)</span></label>
+                        <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                            <label class="btn btn-secondary" style="cursor:pointer; margin:0; padding: 6px 14px; font-size:13px;">
+                                📂 Upload Key File
+                                <input type="file" id="ssh-key-file" accept=".pem,.key,.pub,*" style="display:none" onchange="loadKeyFile(event)">
+                            </label>
+                            <span style="color:var(--text-secondary); font-size:13px;">or paste below</span>
+                        </div>
+                        <textarea id="ssh-key-content" rows="10" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----" style="font-family: monospace; font-size: 12px; min-height: 200px;"></textarea>
+                        <div class="hint">Upload your <code>~/.ssh/id_ed25519</code> or <code>id_rsa</code> private key file, or paste its contents above. The key is encrypted at rest.</div>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <button class="btn btn-secondary" onclick="prevStep()">← Back</button>
+                    <div style="display:flex; gap: 12px; align-items: center;">
+                        <button class="btn-skip" onclick="skipSshKey()">Skip for now</button>
+                        <button class="btn btn-primary" onclick="validateStep6()">Finish Setup →</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── STEP 7: Done ────────────────────────────────── -->
+            <div class="step-panel" id="step-7" style="display:none;">
+                <div class="done-screen">
+                    <div class="done-icon">🎉</div>
+                    <h2>Setup Complete!</h2>
+                    <p>PatchPilot is configured and ready. Redirecting you to the login page in <span id="countdown">5</span>s...</p>
+
+                    <div class="summary-grid" id="summary-grid">
+                        <!-- filled by JS -->
+                    </div>
+
+                    <div class="nfs-config-hint" id="nfs-hint" style="display:none;">
+                        <h4>⚠️ NFS Configuration Required</h4>
+                        <p style="margin-bottom:10px;">Add the following to your <strong>docker-compose.yml</strong> volumes section (replace the existing <code>backups:</code> volume):</p>
+                        <pre id="docker-snippet"></pre>
+                        <p>For Kubernetes users, see the PV snippet in the <strong>Backup &amp; Restore</strong> settings tab after login.</p>
+                    </div>
+
+                    <button class="btn btn-primary" style="width:100%; padding: 14px;" onclick="goToLogin()">
+                        → Sign In Now
+                    </button>
+                </div>
+            </div>
+
+        </div><!-- /setup-card -->
+    </div><!-- /setup-wrapper -->
+
+    <script>
+        const API_BASE = '/api';
+        let currentStep = 1;
+        const TOTAL_STEPS = 7;
+
+        // ── Setup state ───────────────────────────────────────
+        const state = {
+            admin: { username: '', email: '', password: '' },
+            settings: { app_title: 'PatchPilot', timezone: 'UTC', site_url: '', refresh_interval: 300, default_ssh_user: 'root', default_ssh_port: 22 },
+            backup: { storage_type: 'local', nfs_server: '', nfs_share: '', retain_count: 10 },
+            hosts: [],
+            ssh_key: { name: '', key: '' }
+        };
+
+        // ── Guard + pre-populate from install-time defaults ───
+        async function checkSetupRequired() {
+            try {
+                // /api/setup/status returns both setup_required and install_defaults
+                const res = await fetch(`${API_BASE}/setup/status`);
+                const data = await res.json();
+
+                if (!data.setup_required) {
+                    window.location.replace('login.html');
+                    return;
+                }
+
+                // Pre-populate state from what was collected by install-k3s.sh
+                const d = data.install_defaults || {};
+
+                if (d.default_ssh_user) {
+                    state.settings.default_ssh_user = d.default_ssh_user;
+                    const el = document.getElementById('default-ssh-user');
+                    if (el) el.value = d.default_ssh_user;
+                }
+                if (d.default_ssh_port) {
+                    state.settings.default_ssh_port = d.default_ssh_port;
+                    const el = document.getElementById('default-ssh-port');
+                    if (el) el.value = d.default_ssh_port;
+                }
+                if (d.backup_storage_type) {
+                    state.backup.storage_type = d.backup_storage_type;
+                    selectStorage(d.backup_storage_type);
+                }
+                if (d.nfs_server) {
+                    state.backup.nfs_server = d.nfs_server;
+                    const el = document.getElementById('nfs-server');
+                    if (el) el.value = d.nfs_server;
+                }
+                if (d.nfs_share) {
+                    state.backup.nfs_share = d.nfs_share;
+                    const el = document.getElementById('nfs-share');
+                    if (el) el.value = d.nfs_share;
+                }
+            } catch (e) {
+                // backend not reachable yet — stay on page
+                console.warn('[setup] Could not fetch setup status:', e);
+            }
+        }
+
+        // ── Stepper ───────────────────────────────────────────
+        function updateStepper() {
+            document.querySelectorAll('.step-item').forEach(el => {
+                const s = parseInt(el.dataset.step);
+                el.classList.remove('active', 'completed');
+                if (s === currentStep) el.classList.add('active');
+                else if (s < currentStep) el.classList.add('completed');
+            });
+        }
+
+        function showStep(n) {
+            document.querySelectorAll('.step-panel').forEach(p => p.style.display = 'none');
+            const panel = document.getElementById(`step-${n}`);
+            if (panel) panel.style.display = 'block';
+            updateStepper();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function nextStep() { currentStep++; showStep(currentStep); }
+        function prevStep() { currentStep--; showStep(currentStep); }
+
+        function showError(stepId, msg) {
+            const el = document.getElementById(`step${stepId}-error`);
+            if (el) { el.textContent = msg; el.classList.add('show'); }
+        }
+
+        function clearError(stepId) {
+            const el = document.getElementById(`step${stepId}-error`);
+            if (el) { el.textContent = ''; el.classList.remove('show'); }
+        }
+
+        // ── Password strength ─────────────────────────────────
+        function checkPasswordStrength() {
+            const pw = document.getElementById('admin-password').value;
+            const bar = document.getElementById('pw-bar');
+            const hint = document.getElementById('pw-hint');
+            let score = 0;
+            if (pw.length >= 8)  score++;
+            if (pw.length >= 12) score++;
+            if (/[A-Z]/.test(pw)) score++;
+            if (/[0-9]/.test(pw)) score++;
+            if (/[^A-Za-z0-9]/.test(pw)) score++;
+            const widths = ['0%', '20%', '40%', '60%', '80%', '100%'];
+            const colors = ['transparent', '#e74c3c', '#e67e22', '#f1c40f', '#2ecc71', '#1aff7f'];
+            const labels = ['', 'Very weak', 'Weak', 'Fair', 'Good', 'Strong'];
+            bar.style.width = widths[score];
+            bar.style.background = colors[score];
+            hint.textContent = pw.length === 0 ? 'Enter a password' : labels[score];
+            hint.style.color = colors[score] || 'var(--text-muted)';
+        }
+
+        // ── Step validation ───────────────────────────────────
+        function validateStep2() {
+            clearError(2);
+            const username = document.getElementById('admin-username').value.trim();
+            const email    = document.getElementById('admin-email').value.trim();
+            const password = document.getElementById('admin-password').value;
+            const confirm  = document.getElementById('admin-confirm').value;
+
+            if (!username || username.length < 3) return showError(2, 'Username must be at least 3 characters.');
+            if (!email || !email.includes('@'))   return showError(2, 'Enter a valid email address.');
+            if (password.length < 8)              return showError(2, 'Password must be at least 8 characters.');
+            if (password !== confirm)             return showError(2, 'Passwords do not match.');
+
+            state.admin = { username, email, password };
+            nextStep();
+        }
+
+        function validateStep3() {
+            clearError(3);
+            const sshPort = parseInt(document.getElementById('default-ssh-port').value);
+            if (isNaN(sshPort) || sshPort < 1 || sshPort > 65535) return showError(3, 'SSH port must be between 1 and 65535.');
+
+            state.settings = {
+                app_title:        document.getElementById('app-title').value.trim() || 'PatchPilot',
+                timezone:         document.getElementById('timezone').value,
+                site_url:         document.getElementById('site-url').value.trim(),
+                refresh_interval: parseInt(document.getElementById('refresh-interval').value),
+                default_ssh_user: document.getElementById('default-ssh-user').value.trim() || 'root',
+                default_ssh_port: sshPort,
+            };
+            nextStep();
+        }
+
+        function validateStep4() {
+            clearError(4);
+            const type = document.querySelector('input[name="storage"]:checked').value;
+            let nfs_server = '', nfs_share = '';
+
+            if (type === 'nfs') {
+                nfs_server = document.getElementById('nfs-server').value.trim();
+                nfs_share  = document.getElementById('nfs-share').value.trim();
+                if (!nfs_server) return showError(4, 'NFS Server is required when using NFS storage.');
+                if (!nfs_share)  return showError(4, 'NFS Share path is required when using NFS storage.');
+            }
+
+            state.backup = {
+                storage_type: type,
+                nfs_server,
+                nfs_share,
+                retain_count: parseInt(document.getElementById('retain-count').value),
+            };
+            nextStep();
+        }
+
+        function validateStep5() {
+            clearError(5);
+            collectHosts();
+            nextStep();  // go to step 6 (SSH key)
+        }
+
+        function skipHosts() {
+            state.hosts = [];
+            nextStep();  // go to step 6 (SSH key)
+        }
+
+        function loadKeyFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById('ssh-key-content').value = e.target.result.trim();
+                // Auto-fill key name from filename if name field is empty or default
+                const nameEl = document.getElementById('ssh-key-name');
+                if (!nameEl.value || nameEl.value === 'homelab-default') {
+                    nameEl.value = file.name.replace(/\.(pem|key)$/, '');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function validateStep6() {
+            clearError(6);
+            const name    = document.getElementById('ssh-key-name').value.trim();
+            const keyText = document.getElementById('ssh-key-content').value.trim();
+
+            if (keyText && !name) {
+                showError(6, 'Please enter a name for the SSH key.');
+                return;
+            }
+            if (keyText && !keyText.includes('PRIVATE KEY')) {
+                showError(6, 'That does not look like a valid private key. It should contain "PRIVATE KEY".');
+                return;
+            }
+
+            state.ssh_key = { name, key: keyText };
+            submitSetup();
+        }
+
+        function skipSshKey() {
+            state.ssh_key = { name: '', key: '' };
+            submitSetup();
+        }
+
+        // ── Storage selection ─────────────────────────────────
+        function selectStorage(type) {
+            document.getElementById('opt-local').classList.toggle('selected', type === 'local');
+            document.getElementById('opt-nfs').classList.toggle('selected', type === 'nfs');
+            document.querySelector(`input[value="${type}"]`).checked = true;
+            document.getElementById('nfs-details').classList.toggle('visible', type === 'nfs');
+        }
+
+        // ── Host management ───────────────────────────────────
+        let hostCounter = 0;
+
+        function addHostEntry(hostname = '', ssh_user = '', ssh_port = 22, notes = '') {
+            const id = ++hostCounter;
+            const sshUser = ssh_user || state.settings.default_ssh_user || 'root';
+            const div = document.createElement('div');
+            div.className = 'host-entry';
+            div.id = `host-entry-${id}`;
+            div.innerHTML = `
+                <button class="remove-host" onclick="removeHost(${id})" title="Remove">×</button>
+                <div class="form-row cols-2" style="margin-bottom:10px;">
+                    <div class="form-group">
+                        <label>Hostname / IP</label>
+                        <input type="text" class="host-hostname" placeholder="server01 or 192.168.1.50" value="${hostname}">
+                    </div>
+                    <div class="form-group">
+                        <label>SSH User</label>
+                        <input type="text" class="host-user" placeholder="${sshUser}" value="${sshUser}">
+                    </div>
+                </div>
+                <div class="form-row cols-2">
+                    <div class="form-group">
+                        <label>SSH Port</label>
+                        <input type="number" class="host-port" value="${ssh_port}" min="1" max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label>Notes <span class="opt">(optional)</span></label>
+                        <input type="text" class="host-notes" placeholder="e.g. production web server" value="${notes}">
+                    </div>
+                </div>`;
+            document.getElementById('host-list').appendChild(div);
+        }
+
+        function removeHost(id) {
+            const el = document.getElementById(`host-entry-${id}`);
+            if (el) el.remove();
+        }
+
+        function collectHosts() {
+            state.hosts = [];
+            document.querySelectorAll('.host-entry').forEach(entry => {
+                const hostname  = entry.querySelector('.host-hostname')?.value.trim();
+                const ssh_user  = entry.querySelector('.host-user')?.value.trim() || 'root';
+                const ssh_port  = parseInt(entry.querySelector('.host-port')?.value) || 22;
+                const notes     = entry.querySelector('.host-notes')?.value.trim() || '';
+                if (hostname) state.hosts.push({ hostname, ssh_user, ssh_port, notes });
+            });
+        }
+
+        // ── Submit ────────────────────────────────────────────
+        async function submitSetup() {
+            const payload = {
+                admin:    state.admin,
+                settings: state.settings,
+                backup:   state.backup,
+                hosts:    state.hosts,
+                ssh_key:  state.ssh_key.key  ? { name: state.ssh_key.name, key: state.ssh_key.key } : null,
+            };
+
+            try {
+                const res = await fetch(`${API_BASE}/setup/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showError(6, data.detail || 'Setup failed. Please check your inputs and try again.');
+                    return;
+                }
+
+                // Success — go to done screen
+                currentStep = 7;
+                showStep(7);
+                buildDoneScreen(data);
+                startCountdown();
+
+            } catch (e) {
+                showError(5, 'Connection error. Is the backend running?');
+            }
+        }
+
+        // ── Done screen ───────────────────────────────────────
+        function buildDoneScreen(result) {
+            const grid = document.getElementById('summary-grid');
+            grid.innerHTML = `
+                <div class="summary-item">
+                    <div class="si-label">Admin User</div>
+                    <div class="si-value">${result.admin_username}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="si-label">Timezone</div>
+                    <div class="si-value">${state.settings.timezone}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="si-label">Backup Storage</div>
+                    <div class="si-value">${result.backup_type === 'nfs' ? '🗄️ NFS' : '💾 Local'}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="si-label">Hosts Added</div>
+                    <div class="si-value">${result.hosts_created?.length || 0}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="si-label">SSH Key</div>
+                    <div class="si-value">${result.ssh_key_saved ? '🔑 Saved' : '—'}</div>
+                </div>`;
+
+            // Show NFS snippet if applicable
+            if (result.backup_type === 'nfs' && state.backup.nfs_server) {
+                const hint = document.getElementById('nfs-hint');
+                const snippet = document.getElementById('docker-snippet');
+                snippet.textContent = `  backups:\n    driver: local\n    driver_opts:\n      type: nfs\n      o: addr=${state.backup.nfs_server},rw,nfsvers=4\n      device: ":${state.backup.nfs_share}"`;
+                hint.style.display = 'block';
+            }
+        }
+
+        let countdownTimer;
+        function startCountdown() {
+            let n = 5;
+            countdownTimer = setInterval(() => {
+                n--;
+                const el = document.getElementById('countdown');
+                if (el) el.textContent = n;
+                if (n <= 0) { clearInterval(countdownTimer); goToLogin(); }
+            }, 1000);
+        }
+
+        function goToLogin() {
+            clearInterval(countdownTimer);
+            window.location.href = 'login.html';
+        }
+
+        // ── Init ──────────────────────────────────────────────
+        checkSetupRequired();
+        showStep(1);
+    </script>
+</body>
+</html>

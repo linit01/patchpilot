@@ -306,8 +306,7 @@
     </div>
 
     <script>
-        const API_BASE = window.location.hostname === 'localhost'
-            ? 'http://localhost:8000/api' : '/api';
+        const API_BASE = '/api';
 
         let isSetupMode = false;
 
@@ -324,12 +323,10 @@
             try {
                 const res = await fetch(`${API_BASE}/auth/check-setup`);
                 const data = await res.json();
-                if (!data.has_users) {
-                    isSetupMode = true;
-                    document.getElementById('setup-notice').style.display = 'block';
-                    document.getElementById('confirm-group').style.display = 'block';
-                    document.getElementById('login-btn').textContent = 'Create Admin & Sign In';
-                    document.getElementById('password').setAttribute('autocomplete', 'new-password');
+                // If setup hasn't been completed, send to the full wizard
+                if (data.setup_required || !data.has_users) {
+                    window.location.replace('setup.html');
+                    return;
                 }
             } catch (e) {
                 console.error('Setup check failed:', e);

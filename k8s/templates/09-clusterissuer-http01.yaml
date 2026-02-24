@@ -1,0 +1,21 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Let's Encrypt ClusterIssuer (HTTP-01)
+#
+# Use this for public domains where cert-manager can reach port 80.
+# Does NOT support internal-only hostnames (.lan, .local).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ${PP_CLUSTER_ISSUER}
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${PP_LE_EMAIL}
+    privateKeySecretRef:
+      name: ${PP_CLUSTER_ISSUER}-account-key
+    solvers:
+    - http01:
+        ingress:
+          ingressClassName: ${PP_INGRESS_CLASS}

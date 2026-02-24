@@ -57,6 +57,19 @@ class AnsibleRunner:
         try:
             hosts = await self.db_client.get_all_hosts()
 
+            # Resolve the default saved SSH key once — used for any host with ssh_key_type='default'
+            default_key_content = None
+            try:
+                async with self.db_client.pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE LIMIT 1"
+                    )
+                    if row and row['ssh_key_encrypted']:
+                        default_key_content = decrypt_credential(row['ssh_key_encrypted'])
+                        print(f"Loaded default saved SSH key (length: {len(default_key_content)})")
+            except Exception as e:
+                print(f"Warning: Could not load default saved key: {e}")
+
             inventory_data = {
                 'all': {
                     'hosts': {},
@@ -88,7 +101,27 @@ class AnsibleRunner:
                 print(f"DEBUG Host {hostname}: ssh_key_type={host.get('ssh_key_type')}, "
                       f"has_encrypted_key={host.get('ssh_private_key_encrypted') is not None}")
 
-                if host.get('ssh_private_key_encrypted'):
+                # Resolve 'default' key_type to the saved default key
+                resolved_key_encrypted = host.get('ssh_private_key_encrypted')
+                if not resolved_key_encrypted and host.get('ssh_key_type') == 'default' and default_key_content:
+                    # Use default key directly (already decrypted above)
+                    try:
+                        key_fd, key_path = tempfile.mkstemp(
+                            prefix=f'ansible_key_{hostname}_', suffix='.pem'
+                        )
+                        key_data = default_key_content.replace('\r\n', '\n').replace('\r', '\n')
+                        if not key_data.endswith('\n'):
+                            key_data += '\n'
+                        os.write(key_fd, key_data.encode())
+                        os.close(key_fd)
+                        os.chmod(key_path, 0o600)
+                        local_temp.append(key_path)
+                        host_vars['ansible_ssh_private_key_file'] = key_path
+                        print(f"Using default saved key for {hostname}")
+                    except Exception as e:
+                        print(f"ERROR: Failed to write default key for {hostname}: {e}")
+
+                if resolved_key_encrypted:
                     try:
                         print(f"DEBUG: Decrypting key for {hostname}...")
                         decrypted_key = decrypt_credential(host['ssh_private_key_encrypted'])
@@ -98,7 +131,10 @@ class AnsibleRunner:
                         key_fd, key_path = tempfile.mkstemp(
                             prefix=f'ansible_key_{hostname}_', suffix='.pem'
                         )
-                        os.write(key_fd, decrypted_key.encode())
+                        key_data = decrypted_key.replace('\r\n', '\n').replace('\r', '\n')
+                        if not key_data.endswith('\n'):
+                            key_data += '\n'
+                        os.write(key_fd, key_data.encode())
                         os.close(key_fd)
                         os.chmod(key_path, 0o600)
 

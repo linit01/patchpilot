@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PatchPilot Installer — v0.9.2-alpha</title>
+<style>
+  :root {
+    --bg:#0d1117;--surface:#161b22;--border:#30363d;
+    --text:#e6edf3;--muted:#8b949e;--accent:#7c3aed;--accent-light:#a855f7;
+    --green:#3fb950;--red:#f85149;--yellow:#d29922;--blue:#58a6ff;--orange:#f0883e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+  .header{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .header-left{display:flex;align-items:center;gap:14px}
+  .header pre{color:var(--accent-light);font-size:10px;line-height:1.2;font-family:monospace}
+  .header-title{color:var(--accent-light);font-weight:600;font-size:14px}
+  .header-sub{color:var(--muted);font-size:12px;margin-top:2px}
+  .nav{display:flex;gap:4px}
+  .nav-btn{background:none;border:1px solid transparent;border-radius:6px;padding:7px 14px;color:var(--muted);font-size:13px;cursor:pointer;transition:all .2s}
+  .nav-btn:hover{border-color:var(--border);color:var(--text)}
+  .nav-btn.active{border-color:var(--border);color:var(--text);background:var(--bg)}
+  .nav-btn.danger{color:var(--red)}
+  .nav-btn.danger:hover{border-color:var(--red);background:rgba(248,81,73,.08)}
+  .container{max-width:820px;margin:0 auto;padding:32px 24px}
+  .steps{display:flex;gap:4px;margin-bottom:32px}
+  .step-dot{flex:1;height:4px;border-radius:2px;background:var(--border);transition:background .3s}
+  .step-dot.done{background:var(--green)}
+  .step-dot.active{background:var(--accent)}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:28px;margin-bottom:20px}
+  .card h2{font-size:18px;font-weight:600;margin-bottom:6px}
+  .card .subtitle{color:var(--muted);font-size:13px;margin-bottom:24px}
+  .field{margin-bottom:18px}
+  .field label{display:block;font-size:13px;font-weight:500;margin-bottom:6px}
+  .field .hint{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .field input,.field select{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px 12px;color:var(--text);font-size:14px;transition:border-color .2s;outline:none}
+  .field input:focus,.field select:focus{border-color:var(--accent)}
+  .field input.error{border-color:var(--red)}
+  .field .errmsg{font-size:12px;color:var(--red);margin-top:4px;display:none}
+  .field input.error + .errmsg{display:block}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .toggle-group{display:flex}
+  .toggle-group label{flex:1;text-align:center;padding:9px 12px;border:1px solid var(--border);cursor:pointer;font-size:13px;background:var(--bg);color:var(--muted);transition:all .2s}
+  .toggle-group label:first-of-type{border-radius:6px 0 0 6px}
+  .toggle-group label:last-of-type{border-radius:0 6px 6px 0;border-left:none}
+  .toggle-group input[type=radio]{display:none}
+  .toggle-group input[type=radio]:checked+label{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;border:none;transition:opacity .2s}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{opacity:.85}
+  .btn-secondary{background:var(--surface);color:var(--text);border:1px solid var(--border)}
+  .btn-secondary:hover{border-color:var(--muted)}
+  .btn-danger{background:var(--red);color:#fff}
+  .btn-danger:hover{opacity:.85}
+  .btn-green{background:var(--green);color:#000;font-weight:600}
+  .btn-green:hover{opacity:.85}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .actions{display:flex;justify-content:space-between;align-items:center;margin-top:24px}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500}
+  .badge-green{background:rgba(63,185,80,.15);color:var(--green)}
+  .badge-red{background:rgba(248,81,73,.15);color:var(--red)}
+  .badge-yellow{background:rgba(210,153,34,.15);color:var(--yellow)}
+  .badge-blue{background:rgba(88,166,255,.15);color:var(--blue)}
+  .badge-orange{background:rgba(240,136,62,.15);color:var(--orange)}
+  .cluster-status{display:flex;align-items:center;gap:8px;padding:12px 16px;border-radius:6px;border:1px solid var(--border);background:var(--bg);margin-bottom:20px;font-size:13px}
+  .sc-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  .sc-table th{text-align:left;padding:6px 8px;color:var(--muted);border-bottom:1px solid var(--border)}
+  .sc-table td{padding:6px 8px}
+  .sc-table tr:hover td{background:rgba(255,255,255,.03)}
+  #log-output{background:#010409;border:1px solid var(--border);border-radius:6px;padding:16px;font-family:'JetBrains Mono','Fira Code',monospace;font-size:12px;line-height:1.6;height:480px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+  .log-line{display:block}
+  .log-line.ok{color:var(--green)}
+  .log-line.err{color:var(--red)}
+  .log-line.warn{color:var(--yellow)}
+  .log-line.step{color:var(--accent-light);font-weight:bold}
+  .log-line.info{color:var(--blue)}
+  /* Pause card */
+  .pause-card{border-color:var(--orange)!important;display:none}
+  .pause-card.visible{display:block}
+  .pause-card h3{color:var(--orange);font-size:16px;margin-bottom:8px}
+  .cmd-block{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px 16px;font-family:monospace;font-size:13px;color:var(--blue);margin:12px 0;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .cmd-block span{word-break:break-all}
+  .copy-btn{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:4px 10px;color:var(--muted);font-size:12px;cursor:pointer;white-space:nowrap;transition:all .2s}
+  .copy-btn:hover{border-color:var(--accent);color:var(--text)}
+  /* Success/fail banners */
+  .success-banner{text-align:center;padding:40px 24px}
+  .success-banner .icon{font-size:56px;margin-bottom:16px}
+  .success-banner h2{font-size:24px;margin-bottom:8px;color:var(--green)}
+  .success-banner p{color:var(--muted);margin-bottom:20px}
+  .url-chip{display:inline-block;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 16px;font-family:monospace;font-size:14px;color:var(--blue)}
+  .nfs-fields{display:none}
+  .nfs-fields.visible{display:block}
+  .hidden{display:none!important}
+  .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* Uninstall page */
+  .danger-zone{border:1px solid rgba(248,81,73,.4);border-radius:8px;padding:24px;background:rgba(248,81,73,.04);margin-bottom:20px}
+  .danger-zone h3{color:var(--red);margin-bottom:8px}
+  .danger-zone p{color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:16px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <pre>   ____        __       __    ____  _ __      __
+  / __ \____ _/ /______/ /_  / __ \(_) /___  / /_
+ / /_/ / __ `/ __/ ___/ __ \/ /_/ / / / __ \/ __/
+/_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/</pre>
+    <div>
+      <div class="header-title">Web Installer</div>
+      <div class="header-sub">v0.9.2-alpha</div>
+    </div>
+  </div>
+  <div class="nav">
+    <button class="nav-btn active" id="nav-install" onclick="showView('install')">⚙ Install</button>
+    <button class="nav-btn danger" id="nav-uninstall" onclick="showView('uninstall')">🗑 Uninstall</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     INSTALL VIEW
+════════════════════════════════════════════════════════════════════════════ -->
+<div id="view-install">
+<div class="container">
+  <div class="steps" id="steps-bar"></div>
+
+  <!-- Page 0: Mode -->
+  <div id="page-0" class="page">
+    <div class="card">
+      <h2>Welcome to PatchPilot</h2>
+      <p class="subtitle">Choose your deployment type. The wizard collects everything needed and launches the installer.</p>
+      <div class="field">
+        <label>Deployment type</label>
+        <div class="toggle-group">
+          <input type="radio" name="mode" id="mode-k3s" value="k3s" checked>
+          <label for="mode-k3s">☸ K3s / Kubernetes</label>
+          <input type="radio" name="mode" id="mode-docker" value="docker">
+          <label for="mode-docker">🐳 Docker Compose</label>
+        </div>
+      </div>
+      <div id="docker-note" class="hidden" style="color:var(--muted);font-size:13px;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+        Docker Compose installs PatchPilot on this machine. No further configuration needed — images are built and services started automatically.
+      </div>
+    </div>
+    <div class="actions"><span></span><button class="btn btn-primary" onclick="nextPage()">Continue →</button></div>
+  </div>
+
+  <!-- Page 1: Cluster -->
+  <div id="page-1" class="page hidden">
+    <div class="card">
+      <h2>Kubernetes Cluster</h2>
+      <p class="subtitle">Confirm your cluster is reachable and set the namespace.</p>
+      <div id="cluster-status" class="cluster-status"><div class="spinner"></div><span>Checking cluster…</span></div>
+      <div class="field">
+        <label>Kubernetes namespace</label>
+        <input type="text" id="namespace" value="patchpilot">
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="prevPage()">← Back</button>
+      <button class="btn btn-primary" onclick="nextPage()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- Page 2: Registry -->
+  <div id="page-2" class="page hidden">
+    <div class="card">
+      <h2>Docker Hub</h2>
+      <p class="subtitle">Images are built here and pushed to Docker Hub. Your cluster pulls from there.</p>
+      <div class="field"><label>Repository</label><input type="text" id="dh_repo" value="linit01/patchpilot"></div>
+      <div class="row">
+        <div class="field">
+          <label>Username</label>
+          <input type="text" id="dh_username" placeholder="your-dockerhub-user">
+          <div class="errmsg">Required</div>
+        </div>
+        <div class="field">
+          <label>Access Token</label>
+          <input type="password" id="dh_token" placeholder="dckr_pat_…">
+          <div class="errmsg">Required</div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">Create tokens: hub.docker.com → Account Settings → Security → New Access Token</div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="prevPage()">← Back</button>
+      <button class="btn btn-primary" onclick="nextPage()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- Page 3: Network & TLS -->
+  <div id="page-3" class="page hidden">
+    <div class="card">
+      <h2>Network & TLS</h2>
+      <p class="subtitle">Hostnames and HTTPS. All hostnames go into the Ingress and TLS cert.</p>
+      <div class="field">
+        <label>Primary hostname</label>
+        <input type="text" id="hostname" placeholder="patchpilot.yourdomain.com">
+        <div class="errmsg">Required</div>
+      </div>
+      <div class="field">
+        <label>Additional hostnames <span style="color:var(--muted);font-weight:400">(optional, space-separated)</span></label>
+        <input type="text" id="additional_hostnames" placeholder="patchpilot.lan">
+      </div>
+      <div class="field">
+        <label>HTTPS</label>
+        <div class="toggle-group">
+          <input type="radio" name="tls" id="tls-on" value="true" checked>
+          <label for="tls-on">🔒 HTTPS (Let's Encrypt)</label>
+          <input type="radio" name="tls" id="tls-off" value="false">
+          <label for="tls-off">HTTP only</label>
+        </div>
+      </div>
+      <div id="tls-fields">
+        <div class="row">
+          <div class="field">
+            <label>Let's Encrypt email</label>
+            <input type="email" id="le_email" placeholder="you@example.com">
+            <div class="errmsg">Required for TLS</div>
+          </div>
+          <div class="field">
+            <label>ACME challenge</label>
+            <select id="challenge_type" onchange="updateChallengeFields()">
+              <option value="dns01-cloudflare">DNS-01 via Cloudflare</option>
+              <option value="http01">HTTP-01 (public domain)</option>
+            </select>
+          </div>
+        </div>
+        <div id="cloudflare-fields">
+          <div class="field">
+            <label>Cloudflare account email</label>
+            <input type="email" id="cf_email" placeholder="you@example.com">
+          </div>
+          <div class="field">
+            <label>Cloudflare API token secret name</label>
+            <div class="hint">Pre-create: kubectl create secret generic cloudflare-api-token-secret --from-literal=api-token=TOKEN -n cert-manager</div>
+            <input type="text" id="cf_api_token_secret" value="cloudflare-api-token-secret">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="prevPage()">← Back</button>
+      <button class="btn btn-primary" onclick="nextPage()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- Page 4: Storage -->
+  <div id="page-4" class="page hidden">
+    <div class="card">
+      <h2>Storage</h2>
+      <p class="subtitle">PostgreSQL uses local storage. Choose where to store backups.</p>
+      <div id="sc-list" style="margin-bottom:20px"></div>
+      <div class="field">
+        <label>PostgreSQL StorageClass</label>
+        <div class="hint">Use a Retain class to protect data across reinstalls.</div>
+        <input type="text" id="postgres_storage_class" value="local-data">
+      </div>
+      <div class="field">
+        <label>PostgreSQL volume size</label>
+        <input type="text" id="postgres_storage_size" value="5Gi">
+      </div>
+      <div class="field" style="margin-top:24px">
+        <label>Backup storage</label>
+        <div class="toggle-group">
+          <input type="radio" name="backup_type" id="bt-local" value="local" checked onchange="toggleNfs()">
+          <label for="bt-local">💾 Local disk</label>
+          <input type="radio" name="backup_type" id="bt-nfs" value="nfs" onchange="toggleNfs()">
+          <label for="bt-nfs">🗄 NFS share</label>
+        </div>
+      </div>
+      <div class="nfs-fields" id="nfs-fields">
+        <div class="field"><label>NFS StorageClass</label><input type="text" id="app_storage_class" value="nfs-backups"></div>
+        <div class="row">
+          <div class="field">
+            <label>NFS server IP</label>
+            <input type="text" id="nfs_server" placeholder="192.168.1.100">
+            <div class="errmsg">Required</div>
+          </div>
+          <div class="field">
+            <label>NFS export path</label>
+            <input type="text" id="nfs_share" placeholder="/mnt/nas1/BACKUPS">
+            <div class="errmsg">Required</div>
+          </div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div class="field"><label>Backups volume size</label><input type="text" id="backups_storage_size" value="10Gi"></div>
+        <div class="field"><label>Ansible volume size</label><input type="text" id="ansible_storage_size" value="1Gi"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="prevPage()">← Back</button>
+      <button class="btn btn-primary" onclick="nextPage()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- Page 5: App settings -->
+  <div id="page-5" class="page hidden">
+    <div class="card">
+      <h2>Application Settings</h2>
+      <p class="subtitle">SSH defaults and backup policy. All can be changed in the UI later.</p>
+      <div class="row">
+        <div class="field"><label>Default SSH user</label><input type="text" id="default_ssh_user" value="root"></div>
+        <div class="field"><label>Default SSH port</label><input type="number" id="default_ssh_port" value="22"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Auto-refresh interval (s)</label><input type="number" id="auto_refresh_interval" value="60"></div>
+        <div class="field"><label>Backup retention count</label><input type="number" id="backup_retain_count" value="3"></div>
+      </div>
+      <div class="field"><label>Max backup size (MB)</label><input type="number" id="max_backup_size_mb" value="500"></div>
+      <div class="field">
+        <label>Ansible playbook path <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <div class="hint">Full path on this machine to check-os-updates.yml</div>
+        <input type="text" id="ansible_playbook_path" placeholder="/home/you/ansible/check-os-updates.yml">
+      </div>
+      <div class="field">
+        <label>Ansible inventory path <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <input type="text" id="ansible_inventory_path" placeholder="/home/you/ansible/hosts">
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="prevPage()">← Back</button>
+      <button class="btn btn-primary" onclick="nextPage()">Continue →</button>
+    </div>
+  </div>
+
+  <!-- Page 6: Review & Deploy -->
+  <div id="page-6" class="page hidden">
+    <div class="card">
+      <h2>Review & Deploy</h2>
+      <p class="subtitle">Everything look right? Hit Deploy to start.</p>
+      <div id="summary" style="font-size:13px;line-height:1.8"></div>
+    </div>
+    <div class="actions" id="deploy-actions">
+      <button class="btn btn-secondary" id="back-btn" onclick="prevPage()">← Back</button>
+      <button class="btn btn-primary" id="deploy-btn" onclick="deploy()">🚀 Deploy</button>
+    </div>
+  </div>
+
+  <!-- Install log (always below wizard) -->
+  <div id="log-panel" class="hidden">
+
+    <!-- ── Pause card — shown when cleanup is required ── -->
+    <div class="card pause-card" id="pause-card">
+      <h3>⚠ Node Cleanup Required</h3>
+      <p style="color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:12px">
+        The installer paused because stale <code>/app-data/patchpilot-*</code> directories on the k3s node
+        will break PostgreSQL initialization on a reinstall.<br><br>
+        SSH into the node and run this command, then click <strong>Continue</strong>.
+      </p>
+      <div class="cmd-block">
+        <span id="cleanup-cmd">ssh 10.0.1.x sudo rm -rf /app-data/patchpilot-*</span>
+        <button class="copy-btn" onclick="copyCmd()">Copy</button>
+      </div>
+      <div style="margin-top:16px;display:flex;align-items:center;gap:12px">
+        <button class="btn btn-green" id="continue-btn" onclick="resumeInstall()">✓ Done — Continue Install</button>
+        <span id="resume-status" style="font-size:13px;color:var(--muted)"></span>
+      </div>
+    </div>
+
+    <div class="card" style="padding:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div style="font-weight:600;font-size:15px" id="log-title">Install Output</div>
+        <div id="log-status" class="badge badge-yellow">Running…</div>
+      </div>
+      <div id="log-output"></div>
+    </div>
+
+    <div id="success-section" class="hidden">
+      <div class="card success-banner">
+        <div class="icon">🎉</div>
+        <h2>PatchPilot Deployed!</h2>
+        <p>Your instance is ready.</p>
+        <a id="success-url" href="#" target="_blank" class="url-chip"></a>
+      </div>
+    </div>
+    <div id="fail-section" class="hidden">
+      <div class="card" style="border-color:var(--red)">
+        <h2 style="color:var(--red)">Installation Failed</h2>
+        <p style="color:var(--muted);margin-top:8px;font-size:13px">Scroll up in the log to find the error. Fix it and run the installer again.</p>
+        <div style="margin-top:16px"><button class="btn btn-secondary" onclick="location.reload()">↺ Start Over</button></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+</div><!-- /view-install -->
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     UNINSTALL VIEW
+════════════════════════════════════════════════════════════════════════════ -->
+<div id="view-uninstall" class="hidden">
+<div class="container">
+  <div class="card">
+    <h2 style="color:var(--red)">🗑 Uninstall PatchPilot</h2>
+    <p class="subtitle">Remove PatchPilot from your Kubernetes cluster. This deletes the namespace and all resources within it.</p>
+    <div id="uninstall-config-check" style="font-size:13px;color:var(--muted);margin-bottom:20px"></div>
+  </div>
+
+  <!-- Pre-uninstall state -->
+  <div id="uninstall-form">
+    <div class="danger-zone">
+      <h3>This will permanently delete:</h3>
+      <p>
+        • The <code>patchpilot</code> namespace and all Kubernetes resources<br>
+        • The PostgreSQL database and all patch history<br>
+        • The ClusterIssuer for Let's Encrypt<br>
+        • All PersistentVolumeClaims (PVC data may remain on disk — see post-uninstall note)
+      </p>
+      <p style="margin-top:8px;color:var(--yellow)">⚠ This cannot be undone. Make sure you have a backup if you need the data.</p>
+    </div>
+
+    <div class="card" style="border-color:rgba(248,81,73,.3)">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:16px">
+        Uninstall reads the namespace from <code>k8s/install-config.yaml</code>. 
+        If you've changed it manually, update the config first.
+      </p>
+      <button class="btn btn-danger" id="uninstall-btn" onclick="startUninstall()">🗑 Uninstall PatchPilot</button>
+    </div>
+  </div>
+
+  <!-- Uninstall log panel -->
+  <div id="uninstall-log-panel" class="hidden">
+    <div class="card" style="padding:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div style="font-weight:600;font-size:15px">Uninstall Output</div>
+        <div id="uninstall-log-status" class="badge badge-yellow">Running…</div>
+      </div>
+      <div id="uninstall-log-output" style="background:#010409;border:1px solid var(--border);border-radius:6px;padding:16px;font-family:monospace;font-size:12px;line-height:1.6;height:360px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></div>
+    </div>
+
+    <div id="uninstall-success" class="hidden">
+      <div class="card" style="border-color:var(--green)">
+        <div class="success-banner" style="padding:24px">
+          <div class="icon">✅</div>
+          <h2>Uninstalled Successfully</h2>
+          <p>PatchPilot has been removed from the cluster.</p>
+          <div id="uninstall-cleanup-note" class="hidden" style="margin-top:16px;text-align:left">
+            <p style="color:var(--yellow);font-size:13px;margin-bottom:8px">⚠ Leftover hostPath data may remain on the node. To clean it up:</p>
+            <div class="cmd-block">
+              <span id="uninstall-cleanup-cmd"></span>
+              <button class="copy-btn" onclick="copyUninstallCmd()">Copy</button>
+            </div>
+          </div>
+          <div style="margin-top:20px">
+            <button class="btn btn-secondary" onclick="showView('install')">← Back to Installer</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="uninstall-fail" class="hidden">
+      <div class="card" style="border-color:var(--red)">
+        <h2 style="color:var(--red)">Uninstall Failed</h2>
+        <p style="color:var(--muted);font-size:13px;margin-top:8px">Check the log above. You may need to run kubectl commands manually.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div><!-- /view-uninstall -->
+
+<script>
+// ── View switching ─────────────────────────────────────────────────────────────
+function showView(v) {
+  document.getElementById('view-install').classList.toggle('hidden', v !== 'install');
+  document.getElementById('view-uninstall').classList.toggle('hidden', v !== 'uninstall');
+  document.getElementById('nav-install').classList.toggle('active', v === 'install');
+  document.getElementById('nav-uninstall').classList.toggle('active', v === 'uninstall');
+  if (v === 'uninstall') checkUninstallConfig();
+}
+
+// ── State ──────────────────────────────────────────────────────────────────────
+const PAGES_K3S    = [0,1,2,3,4,5,6];
+const PAGES_DOCKER = [0,6];
+let currentPage = 0;
+
+const $ = id => document.getElementById(id);
+const getMode = () => document.querySelector('input[name=mode]:checked').value;
+const getTls  = () => document.querySelector('input[name=tls]:checked')?.value === 'true';
+const getBt   = () => document.querySelector('input[name=backup_type]:checked').value;
+const pageList = () => getMode() === 'k3s' ? PAGES_K3S : PAGES_DOCKER;
+
+function renderSteps() {
+  const pages = pageList();
+  const bar = $('steps-bar');
+  bar.innerHTML = '';
+  pages.forEach((_, i) => {
+    const d = document.createElement('div');
+    d.className = 'step-dot' + (i < currentPage ? ' done' : i === currentPage ? ' active' : '');
+    bar.appendChild(d);
+  });
+}
+
+function showPage(idx) {
+  document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+  const pages = pageList();
+  $('page-' + pages[idx]).classList.remove('hidden');
+  currentPage = idx;
+  renderSteps();
+  $('docker-note').classList.toggle('hidden', getMode() !== 'docker');
+  if (pages[idx] === 1) checkCluster();
+  if (pages[idx] === 4) loadStorageClasses();
+  if (pages[idx] === 6) buildSummary();
+}
+
+function nextPage() {
+  if (!validateCurrent()) return;
+  const pages = pageList();
+  if (currentPage < pages.length - 1) showPage(currentPage + 1);
+}
+function prevPage() {
+  if (currentPage > 0) showPage(currentPage - 1);
+}
+
+// ── Validation ─────────────────────────────────────────────────────────────────
+function required(id) {
+  const el = $(id);
+  if (!el || el.closest('.nfs-fields:not(.visible)')) return true;
+  const ok = el.value.trim() !== '';
+  el.classList.toggle('error', !ok);
+  return ok;
+}
+function validateCurrent() {
+  const page = pageList()[currentPage];
+  if (page === 2) return !!(required('dh_username') & required('dh_token'));
+  if (page === 3) { let ok = required('hostname'); if (getTls()) ok = required('le_email') && ok; return !!ok; }
+  if (page === 4 && getBt() === 'nfs') return !!(required('nfs_server') & required('nfs_share'));
+  return true;
+}
+
+// ── Toggles ────────────────────────────────────────────────────────────────────
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => {
+  $('docker-note').classList.toggle('hidden', getMode() !== 'docker');
+  renderSteps();
+}));
+document.querySelectorAll('input[name=tls]').forEach(r => r.addEventListener('change', () => {
+  $('tls-fields').style.display = getTls() ? '' : 'none';
+}));
+function updateChallengeFields() {
+  $('cloudflare-fields').style.display = $('challenge_type').value === 'dns01-cloudflare' ? '' : 'none';
+}
+function toggleNfs() {
+  $('nfs-fields').classList.toggle('visible', getBt() === 'nfs');
+}
+
+// ── Cluster check ──────────────────────────────────────────────────────────────
+async function checkCluster() {
+  $('cluster-status').innerHTML = '<div class="spinner"></div> <span>Checking cluster connection…</span>';
+  try {
+    const r = await fetch('/api/validate-cluster').then(r => r.json());
+    if (r.ok) {
+      $('cluster-status').innerHTML = `<span style="color:var(--green)">✓</span> Connected — <strong>${r.context}</strong>`;
+      $('cluster-status').style.borderColor = 'var(--green)';
+    } else {
+      $('cluster-status').innerHTML = `<span style="color:var(--red)">✗</span> ${r.error || 'Cannot reach cluster'}`;
+      $('cluster-status').style.borderColor = 'var(--red)';
+    }
+  } catch(e) {
+    $('cluster-status').innerHTML = '<span style="color:var(--red)">✗</span> Server error';
+  }
+}
+
+async function loadStorageClasses() {
+  try {
+    const info = await fetch('/api/cluster-info').then(r => r.json());
+    if (info.storageClasses?.length) {
+      let html = '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Available StorageClasses:</div>';
+      html += '<table class="sc-table"><thead><tr><th>Name</th><th>Provisioner</th></tr></thead><tbody>';
+      info.storageClasses.forEach(sc => {
+        html += `<tr><td><code style="color:var(--blue)">${sc.name}</code></td><td style="color:var(--muted)">${sc.provisioner}</td></tr>`;
+      });
+      html += '</tbody></table>';
+      $('sc-list').innerHTML = html;
+    }
+  } catch(e) {}
+}
+
+// ── Summary ────────────────────────────────────────────────────────────────────
+function buildSummary() {
+  if (getMode() === 'docker') {
+    $('summary').innerHTML = '<p>Docker Compose install on localhost.</p>';
+    return;
+  }
+  const rows = [
+    ['Namespace',      $('namespace').value],
+    ['Docker Hub',     `${$('dh_repo').value} (${$('dh_username').value})`],
+    ['Hostname',       $('hostname').value + ($('additional_hostnames').value ? ` + ${$('additional_hostnames').value}` : '')],
+    ['TLS',            getTls() ? `Yes (${$('challenge_type').value})` : 'HTTP only'],
+    ['Postgres SC',    $('postgres_storage_class').value],
+    ['Backup storage', getBt() === 'nfs' ? `NFS ${$('nfs_server').value}:${$('nfs_share').value}` : 'Local disk'],
+    ['Default SSH',    `${$('default_ssh_user').value}:${$('default_ssh_port').value}`],
+  ];
+  $('summary').innerHTML = rows.map(([k,v]) =>
+    `<div style="display:flex;gap:12px;border-bottom:1px solid var(--border);padding:6px 0">
+      <div style="width:160px;color:var(--muted)">${k}</div><div>${v}</div></div>`
+  ).join('');
+}
+
+// ── Deploy ─────────────────────────────────────────────────────────────────────
+async function deploy() {
+  const mode = getMode();
+  $('deploy-btn').disabled = true;
+  $('back-btn').disabled = true;
+
+  if (mode === 'k3s') {
+    const cfg = {
+      mode:'k3s',
+      namespace:              $('namespace').value,
+      dh_repo:                $('dh_repo').value,
+      dh_username:            $('dh_username').value,
+      dh_token:               $('dh_token').value,
+      hostname:               $('hostname').value,
+      additional_hostnames:   $('additional_hostnames').value,
+      tls_enabled:            getTls(),
+      le_email:               $('le_email').value,
+      challenge_type:         $('challenge_type').value,
+      cf_email:               $('cf_email').value,
+      cf_api_token_secret:    $('cf_api_token_secret').value,
+      postgres_storage_class: $('postgres_storage_class').value,
+      postgres_storage_size:  $('postgres_storage_size').value,
+      backup_storage_type:    getBt(),
+      app_storage_class:      $('app_storage_class')?.value || '',
+      backups_storage_size:   $('backups_storage_size').value,
+      ansible_storage_size:   $('ansible_storage_size').value,
+      nfs_server:             $('nfs_server').value,
+      nfs_share:              $('nfs_share').value,
+      default_ssh_user:       $('default_ssh_user').value,
+      default_ssh_port:       parseInt($('default_ssh_port').value),
+      auto_refresh_interval:  parseInt($('auto_refresh_interval').value),
+      backup_retain_count:    parseInt($('backup_retain_count').value),
+      max_backup_size_mb:     parseInt($('max_backup_size_mb').value),
+      ansible_playbook_path:  $('ansible_playbook_path').value,
+      ansible_inventory_path: $('ansible_inventory_path').value,
+    };
+    const resp = await fetch('/api/configure/k3s', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)
+    });
+    if (!resp.ok) { alert('Config error: ' + await resp.text()); $('deploy-btn').disabled = false; return; }
+  }
+
+  $('log-panel').classList.remove('hidden');
+  $('log-panel').scrollIntoView({behavior:'smooth'});
+  streamOutput('/api/install-stream?mode=' + mode, 'install');
+}
+
+// ── Streaming output (shared for install + uninstall) ──────────────────────────
+function addLogLine(outputEl, raw) {
+  const clean = raw.replace(/\x1b\[[0-9;]*m/g, '');
+  const span = document.createElement('span');
+  span.className = 'log-line';
+  if (/^✓/.test(clean))      span.classList.add('ok');
+  else if (/^✗/.test(clean)) span.classList.add('err');
+  else if (/^!/.test(clean)) span.classList.add('warn');
+  else if (/^▸/.test(clean)) span.classList.add('step');
+  else if (/^ℹ/.test(clean)) span.classList.add('info');
+  span.textContent = clean + '\n';
+  outputEl.appendChild(span);
+  outputEl.scrollTop = outputEl.scrollHeight;
+}
+
+function streamOutput(url, context) {
+  const isInstall = context === 'install';
+  const logEl    = $(isInstall ? 'log-output' : 'uninstall-log-output');
+  const statusEl = $(isInstall ? 'log-status' : 'uninstall-log-status');
+
+  const es = new EventSource(url);
+  es.onmessage = e => {
+    const raw = JSON.parse(e.data);
+
+    // ── Pause for cleanup (install only) ──
+    if (raw.startsWith('__PAUSE_CLEANUP__')) {
+      const cmd = raw.slice('__PAUSE_CLEANUP__'.length).trim();
+      $('cleanup-cmd').textContent = cmd;
+      $('pause-card').classList.add('visible');
+      $('pause-card').scrollIntoView({behavior:'smooth'});
+      addLogLine(logEl, '! ⏸  Installer paused — complete cleanup in the card above, then click Continue');
+      return;
+    }
+
+    // ── Post-uninstall cleanup note ──
+    if (raw.startsWith('__NOTE_CLEANUP__')) {
+      const cmd = raw.slice('__NOTE_CLEANUP__'.length).trim();
+      if (isInstall) return;
+      $('uninstall-cleanup-cmd').textContent = cmd;
+      $('uninstall-cleanup-note').classList.remove('hidden');
+      return;
+    }
+
+    // ── Exit ──
+    if (raw.startsWith('__EXIT__')) {
+      es.close();
+      const code = parseInt(raw.replace('__EXIT__', ''));
+      if (isInstall) {
+        if (code === 0) {
+          statusEl.className = 'badge badge-green'; statusEl.textContent = '✓ Complete';
+          $('success-section').classList.remove('hidden');
+          const url = getMode() === 'docker' ? 'http://localhost:8080'
+            : (getTls() ? `https://${$('hostname').value}` : `http://${$('hostname').value}`);
+          $('success-url').textContent = url; $('success-url').href = url;
+        } else {
+          statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
+          $('fail-section').classList.remove('hidden');
+        }
+      } else {
+        if (code === 0) {
+          statusEl.className = 'badge badge-green'; statusEl.textContent = '✓ Complete';
+          $('uninstall-success').classList.remove('hidden');
+        } else {
+          statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
+          $('uninstall-fail').classList.remove('hidden');
+        }
+      }
+      return;
+    }
+
+    if (raw.startsWith('__ERROR__')) {
+      es.close();
+      statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Error';
+      (isInstall ? $('fail-section') : $('uninstall-fail')).classList.remove('hidden');
+      return;
+    }
+
+    addLogLine(logEl, raw);
+  };
+  es.onerror = () => {
+    es.close();
+    statusEl.className = 'badge badge-orange'; statusEl.textContent = '⚠ Connection lost';
+  };
+}
+
+// ── Resume after cleanup ───────────────────────────────────────────────────────
+async function resumeInstall() {
+  const btn = $('continue-btn');
+  const status = $('resume-status');
+  btn.disabled = true;
+  status.textContent = 'Signalling installer…';
+  try {
+    const r = await fetch('/api/resume', {method:'POST'});
+    if (r.ok) {
+      $('pause-card').classList.remove('visible');
+      status.textContent = '';
+    } else {
+      status.textContent = 'Error — try again';
+      btn.disabled = false;
+    }
+  } catch(e) {
+    status.textContent = 'Error: ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+function copyCmd() {
+  navigator.clipboard.writeText($('cleanup-cmd').textContent).then(() => {
+    const btn = document.querySelector('.pause-card .copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+
+function copyUninstallCmd() {
+  navigator.clipboard.writeText($('uninstall-cleanup-cmd').textContent).then(() => {
+    const btn = document.querySelector('#uninstall-cleanup-note .copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+
+// ── Uninstall ──────────────────────────────────────────────────────────────────
+async function checkUninstallConfig() {
+  const el = $('uninstall-config-check');
+  try {
+    const r = await fetch('/api/cluster-info').then(r => r.json());
+    el.innerHTML = r.contexts.length
+      ? `<span style="color:var(--green)">✓</span> Cluster connected`
+      : `<span style="color:var(--yellow)">⚠</span> No cluster contexts found`;
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--muted)">Could not check cluster status</span>`;
+  }
+}
+
+async function startUninstall() {
+  $('uninstall-btn').disabled = true;
+  $('uninstall-form').style.opacity = '0.5';
+  $('uninstall-log-panel').classList.remove('hidden');
+  $('uninstall-log-panel').scrollIntoView({behavior:'smooth'});
+  streamOutput('/api/uninstall-stream', 'uninstall');
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────────
+showPage(0);
+</script>
+</body>
+</html>

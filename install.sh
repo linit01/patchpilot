@@ -1,262 +1,266 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
-# PatchPilot Installer
-# Automated system update management for your infrastructure
+# PatchPilot v0.9.4-alpha — Installer
+# Supports: Docker Compose  |  K3s (Kubernetes)  |  Web Wizard
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-NC='\033[0m' # No Color
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Banner
+# ── Colors ────────────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'; NC='\033[0m'
+
+ok()   { echo -e "${GREEN}✓${NC} $*"; }
+err()  { echo -e "${RED}✗${NC} $*" >&2; }
+warn() { echo -e "${YELLOW}!${NC} $*"; }
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+step() { echo ""; echo -e "${PURPLE}▸${NC} $*"; echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; }
+
+# ── Banner ────────────────────────────────────────────────────────────────────
 print_banner() {
-    echo -e "${PURPLE}"
-    cat << "EOF"
+  echo -e "${PURPLE}"
+  cat << "EOF"
     ____        __       __    ____  _ __      __ 
    / __ \____ _/ /______/ /_  / __ \(_) /___  / /_
   / /_/ / __ `/ __/ ___/ __ \/ /_/ / / / __ \/ __/
  / ____/ /_/ / /_/ /__/ / / / ____/ / / /_/ / /_  
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/  
-                                                    
 EOF
-    echo -e "${NC}"
-    echo -e "${BLUE}System Update Management Made Easy${NC}"
-    echo ""
+  echo -e "${NC}"
+  echo -e "${BLUE}System Update Management — v0.9.4-alpha${NC}"
+  echo ""
 }
 
-# Helper functions
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
+# ── Argument parsing ──────────────────────────────────────────────────────────
+MODE=""
+NO_INTERACTIVE=false
+WEB_PORT=9090
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --docker)          MODE="docker"; shift ;;
+    --k3s)             MODE="k3s";    shift ;;
+    --web)             MODE="web";    shift ;;
+    --no-interactive)  NO_INTERACTIVE=true; shift ;;
+    --port)            WEB_PORT="$2"; shift 2 ;;
+    --help|-h)
+      echo "Usage: ./install.sh [--docker | --k3s | --web] [OPTIONS]"
+      echo ""
+      echo "  --docker           Install using Docker Compose"
+      echo "  --k3s              Install on a K3s/Kubernetes cluster"
+      echo "  --web              Launch web-based install wizard (http://localhost:9090)"
+      echo "  --no-interactive   Skip all prompts — config must exist in k8s/install-config.yaml"
+      echo "  --port N           Web wizard port (default: 9090)"
+      exit 0
+      ;;
+    *) err "Unknown argument: $1"; exit 1 ;;
+  esac
+done
+
+export NO_INTERACTIVE
+
+# ── Sanity checks ─────────────────────────────────────────────────────────────
+check_not_root() {
+  if [[ "$EUID" -eq 0 ]]; then
+    err "Please don't run this installer as root."
+    exit 1
+  fi
 }
 
-print_error() {
-    echo -e "${RED}✗${NC} $1"
+# ── Mode selection ────────────────────────────────────────────────────────────
+select_mode() {
+  [[ -n "${MODE}" ]] && return
+
+  echo -e "${CYAN}How would you like to install PatchPilot?${NC}"
+  echo ""
+  echo "  1) ${GREEN}Docker Compose${NC}  — single host, quickest setup"
+  echo "  2) ${BLUE}K3s / Kubernetes${NC} — cluster deployment with Traefik + cert-manager"
+  echo "  3) ${PURPLE}Web Wizard${NC}       — browser-based guided install (http://localhost:${WEB_PORT})"
+  echo ""
+  local choice=""
+  while [[ "${choice}" != "1" && "${choice}" != "2" && "${choice}" != "3" ]]; do
+    echo -en "${CYAN}Choose [1/2/3]: ${NC}"
+    read -r choice
+  done
+  case "${choice}" in
+    1) MODE="docker" ;;
+    2) MODE="k3s" ;;
+    3) MODE="web" ;;
+  esac
 }
 
-print_warning() {
-    echo -e "${YELLOW}!${NC} $1"
+# ═════════════════════════════════════════════════════════════════════════════
+# WEB WIZARD
+# ═════════════════════════════════════════════════════════════════════════════
+install_web() {
+  step "Starting PatchPilot Web Installer"
+  local web_dir="${SCRIPT_DIR}/webinstall"
+
+  [[ -d "${web_dir}" ]] || { err "webinstall/ not found"; exit 1; }
+  command -v python3 &>/dev/null || { err "python3 required"; exit 1; }
+
+  info "Installing web installer dependencies..."
+  pip3 install fastapi "uvicorn[standard]" pyyaml python-multipart \
+    --quiet --break-system-packages 2>/dev/null || \
+  pip3 install --user fastapi "uvicorn[standard]" pyyaml python-multipart --quiet
+
+  export PATCHPILOT_ROOT="${SCRIPT_DIR}"
+  export PATCHPILOT_WEB_PORT="${WEB_PORT}"
+
+  echo ""
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${GREEN}  PatchPilot Web Installer${NC}"
+  echo -e "${GREEN}  → http://localhost:${WEB_PORT}${NC}"
+  echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${YELLOW}  Press Ctrl+C to stop${NC}"
+  echo ""
+
+  sleep 1 && (
+    open "http://localhost:${WEB_PORT}" 2>/dev/null || \
+    xdg-open "http://localhost:${WEB_PORT}" 2>/dev/null || true
+  ) &
+
+  cd "${web_dir}" && python3 -m uvicorn server:app \
+    --host 127.0.0.1 --port "${WEB_PORT}" --log-level warning
 }
 
-print_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
+# ═════════════════════════════════════════════════════════════════════════════
+# DOCKER COMPOSE INSTALL
+# ═════════════════════════════════════════════════════════════════════════════
+DOCKER_COMPOSE_CMD=""
+
+docker_check_prerequisites() {
+  step "Checking Docker prerequisites"
+  local missing=()
+  ! command -v docker &>/dev/null && missing+=("docker") && err "Docker not installed" \
+    || ok "Docker: $(docker --version)"
+  if docker compose version &>/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker compose"; ok "Docker Compose plugin: found"
+  elif command -v docker-compose &>/dev/null; then
+    DOCKER_COMPOSE_CMD="docker-compose"; ok "Docker Compose legacy: found"
+  else
+    missing+=("docker-compose"); err "Docker Compose not installed"
+  fi
+  [[ ${#missing[@]} -gt 0 ]] && { err "Missing: ${missing[*]}"; exit 1; }
+  ok "All Docker prerequisites satisfied"
 }
 
-print_step() {
-    echo ""
-    echo -e "${PURPLE}▸${NC} $1"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+docker_setup_env() {
+  step "Configuring environment"
+  if [[ -f ".env" ]]; then info "Existing .env found — skipping"; return; fi
+  [[ -f ".env.example" ]] || { err ".env.example not found"; exit 1; }
+  cp .env.example .env
+  local fernet_key
+  fernet_key="$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || \
+                python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")"
+  sed -i.bak "s|PATCHPILOT_ENCRYPTION_KEY=CHANGE_ME_FERNET_KEY|PATCHPILOT_ENCRYPTION_KEY=${fernet_key}|" .env
+  rm -f .env.bak
+  warn "Auto-generated Fernet key — saved to .env — keep this safe"
+  ok "Environment configured"
 }
 
-# Check if running as root (we don't want this)
-check_root() {
-    if [ "$EUID" -eq 0 ]; then
-        print_error "Please don't run this installer as root"
-        echo "Run as your normal user: ./install.sh"
-        exit 1
-    fi
-}
-
-# Check prerequisites
-check_prerequisites() {
-    print_step "Checking prerequisites"
-    
-    local missing_deps=()
-    
-    # Check Docker
-    if ! command -v docker &> /dev/null; then
-        missing_deps+=("docker")
-        print_error "Docker is not installed"
+docker_setup_ansible() {
+  step "Setting up Ansible configuration"
+  mkdir -p ansible
+  for file_type in "playbook:check-os-updates.yml:check-os-updates.yml" "inventory:hosts:hosts"; do
+    IFS=':' read -r type filename target <<< "${file_type}"
+    [[ -f "ansible/${target}" ]] && { info "Existing Ansible ${type} found"; continue; }
+    local found=""
+    for p in "$HOME/${filename}" "$HOME/ansible/${filename}" "$HOME/Scripts/${filename}"; do
+      [[ -f "${p}" ]] && { found="${p}"; break; }
+    done
+    if [[ -n "${found}" ]]; then
+      cp "${found}" "ansible/${target}"; ok "Copied ${type} from ${found}"
+    elif [[ "${NO_INTERACTIVE}" != "true" ]]; then
+      echo -en "${CYAN}Path to Ansible ${type} [skip]: ${NC}"; read -r user_path
+      [[ -n "${user_path}" && -f "${user_path}" ]] && cp "${user_path}" "ansible/${target}" \
+        && ok "Copied Ansible ${type}" || warn "Ansible ${type} not set"
     else
-        print_success "Docker is installed"
+      warn "Ansible ${type} not set — configure later in ./ansible/"
     fi
-    
-    # Check Docker Compose
-    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-        missing_deps+=("docker-compose")
-        print_error "Docker Compose is not installed"
-    else
-        print_success "Docker Compose is available"
-        if docker compose version &> /dev/null; then
-            DOCKER_COMPOSE_CMD="docker compose"
-        else
-            DOCKER_COMPOSE_CMD="docker-compose"
-        fi
-    fi
-    
-    # Check Ansible
-    if ! command -v ansible &> /dev/null; then
-        print_warning "Ansible not found locally (not critical - will run in container)"
-    else
-        print_success "Ansible is installed"
-    fi
-    
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        echo ""
-        print_error "Missing required dependencies: ${missing_deps[*]}"
-        echo ""
-        echo "Please install the missing dependencies:"
-        echo "  Docker: https://docs.docker.com/get-docker/"
-        echo "  Docker Compose: https://docs.docker.com/compose/install/"
-        exit 1
-    fi
-    
-    print_success "All prerequisites satisfied"
+  done
+  ok "Ansible configuration ready"
 }
 
-# Setup Ansible files
-setup_ansible() {
-    print_step "Setting up Ansible configuration"
-    
-    mkdir -p ansible
-    
-    # Check for playbook
-    if [ -f "ansible/check-os-updates.yml" ]; then
-        print_info "Found existing Ansible playbook"
-    else
-        print_info "Looking for your Ansible playbook..."
-        
-        # Common locations
-        local common_locations=(
-            "$HOME/check-os-updates.yml"
-            "$HOME/Scripts/check-os-updates.yml"
-            "$HOME/ansible/check-os-updates.yml"
-        )
-        
-        local found_playbook=""
-        for location in "${common_locations[@]}"; do
-            if [ -f "$location" ]; then
-                found_playbook="$location"
-                break
-            fi
-        done
-        
-        if [ -n "$found_playbook" ]; then
-            print_success "Found playbook at: $found_playbook"
-            cp "$found_playbook" ansible/check-os-updates.yml
-        else
-            echo ""
-            read -p "Enter path to your Ansible playbook: " playbook_path
-            if [ -f "$playbook_path" ]; then
-                cp "$playbook_path" ansible/check-os-updates.yml
-                print_success "Copied Ansible playbook"
-            else
-                print_error "Playbook not found at: $playbook_path"
-                exit 1
-            fi
-        fi
-    fi
-    
-    # Check for inventory
-    if [ -f "ansible/hosts" ]; then
-        print_info "Found existing Ansible inventory"
-    else
-        print_info "Looking for your Ansible inventory..."
-        
-        local common_locations=(
-            "$HOME/hosts"
-            "$HOME/ansible/hosts"
-            "$HOME/Scripts/hosts"
-        )
-        
-        local found_inventory=""
-        for location in "${common_locations[@]}"; do
-            if [ -f "$location" ]; then
-                found_inventory="$location"
-                break
-            fi
-        done
-        
-        if [ -n "$found_inventory" ]; then
-            print_success "Found inventory at: $found_inventory"
-            cp "$found_inventory" ansible/hosts
-        else
-            echo ""
-            read -p "Enter path to your Ansible inventory (hosts file): " inventory_path
-            if [ -f "$inventory_path" ]; then
-                cp "$inventory_path" ansible/hosts
-                print_success "Copied Ansible inventory"
-            else
-                print_error "Inventory not found at: $inventory_path"
-                exit 1
-            fi
-        fi
-    fi
-    
-    print_success "Ansible configuration ready"
+docker_start_services() {
+  step "Starting PatchPilot (Docker Compose)"
+  info "Building images..."
+  $DOCKER_COMPOSE_CMD build
+  info "Starting services..."
+  $DOCKER_COMPOSE_CMD up -d
+  info "Waiting for services to initialise..."
+  sleep 12
+  curl -sf http://localhost:8000/health >/dev/null 2>&1 && ok "Backend healthy" \
+    || warn "Backend still starting — check: ${DOCKER_COMPOSE_CMD} logs backend"
+  curl -sf http://localhost:8080/ >/dev/null 2>&1 && ok "Frontend healthy" \
+    || warn "Frontend still starting — check: ${DOCKER_COMPOSE_CMD} logs frontend"
 }
 
-# Build and start services
-start_services() {
-    print_step "Starting PatchPilot"
-    
-    print_info "Building Docker images..."
-    $DOCKER_COMPOSE_CMD build
-    
-    print_info "Starting services..."
-    $DOCKER_COMPOSE_CMD up -d
-    
-    print_info "Waiting for services to be ready..."
-    sleep 10
-    
-    # Health check
-    if curl -s -f http://localhost:8000/ > /dev/null 2>&1; then
-        print_success "Backend is healthy"
-    else
-        print_warning "Backend might still be starting up..."
-    fi
-    
-    if curl -s -f http://localhost:8080/ > /dev/null 2>&1; then
-        print_success "Frontend is healthy"
-    else
-        print_warning "Frontend might still be starting up..."
-    fi
+docker_show_completion() {
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo -e "${GREEN}🎉  PatchPilot v0.9.4-alpha ready (Docker)!${NC}"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  echo -e "${BLUE}📊 Dashboard:${NC}  http://localhost:8080"
+  echo -e "${BLUE}🔌 API:${NC}        http://localhost:8000"
+  echo ""
+  echo -e "${PURPLE}Commands:${NC}  ${DOCKER_COMPOSE_CMD} [logs -f | down | restart]"
+  echo ""
+  command -v open &>/dev/null && sleep 1 && open http://localhost:8080 &
+  command -v xdg-open &>/dev/null && sleep 1 && xdg-open http://localhost:8080 &
 }
 
-# Show completion message
-show_completion() {
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo -e "${GREEN}🎉 PatchPilot Installation Complete!${NC}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    echo -e "${BLUE}📊 Dashboard:${NC}  http://localhost:8080"
-    echo -e "${BLUE}🔌 API:${NC}        http://localhost:8000"
-    echo ""
-    echo -e "${PURPLE}Useful Commands:${NC}"
-    echo "  View logs:      $DOCKER_COMPOSE_CMD logs -f"
-    echo "  Stop services:  $DOCKER_COMPOSE_CMD down"
-    echo "  Restart:        $DOCKER_COMPOSE_CMD restart"
-    echo "  Update:         git pull && $DOCKER_COMPOSE_CMD up -d --build"
-    echo ""
-    echo -e "${YELLOW}Next Steps:${NC}"
-    echo "  1. Open the dashboard (opening in browser...)"
-    echo "  2. Wait 30 seconds for initial system check"
-    echo "  3. Start managing your patches!"
-    echo ""
-    
-    # Try to open in browser
-    if command -v open &> /dev/null; then
-        sleep 2
-        open http://localhost:8080
-    elif command -v xdg-open &> /dev/null; then
-        sleep 2
-        xdg-open http://localhost:8080
-    fi
+install_docker() {
+  docker_check_prerequisites
+  docker_setup_env
+  docker_setup_ansible
+  docker_start_services
+  docker_show_completion
 }
 
-# Main installation flow
+# ═════════════════════════════════════════════════════════════════════════════
+# K3S INSTALL
+# ═════════════════════════════════════════════════════════════════════════════
+install_k3s() {
+  step "Launching K3s installer"
+  local k3s_script="${SCRIPT_DIR}/k8s/install-k3s.sh"
+  [[ -f "${k3s_script}" ]] || { err "K3s installer not found: ${k3s_script}"; exit 1; }
+  chmod +x "${k3s_script}"
+
+  local config_file="${SCRIPT_DIR}/k8s/install-config.yaml"
+  if [[ ! -f "${config_file}" ]]; then
+    err "K3s config not found: ${config_file}"
+    echo ""
+    echo "Run the web wizard first:  ./install.sh --web"
+    echo "Or create the config:      edit k8s/install-config.yaml"
+    exit 1
+  fi
+
+  if [[ "${NO_INTERACTIVE}" != "true" ]]; then
+    echo ""; info "Config: ${config_file}"
+    echo -en "${CYAN}Continue with K3s install? [y/N]: ${NC}"; read -r confirm
+    [[ "${confirm}" =~ ^[Yy]$ ]] || { info "Aborted."; exit 0; }
+  fi
+
+  local flags=""
+  [[ "${NO_INTERACTIVE}" == "true" ]] && flags="--no-interactive"
+  exec "${k3s_script}" ${flags}
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Main
+# ═════════════════════════════════════════════════════════════════════════════
 main() {
-    print_banner
-    check_root
-    check_prerequisites
-    setup_ansible
-    start_services
-    show_completion
+  print_banner
+  check_not_root
+  select_mode
+  case "${MODE}" in
+    docker) install_docker ;;
+    k3s)    install_k3s ;;
+    web)    install_web ;;
+    *)      err "Unknown mode: ${MODE}"; exit 1 ;;
+  esac
 }
 
-# Run installer
-main
+main "$@"

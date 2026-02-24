@@ -11,12 +11,6 @@
 #   2. Edit the Secret below with real values    (or use ESO / Vault)
 #   3. kubectl rollout status -n patchpilot deploy/patchpilot-backend
 #
-# DNS requirements (your setup):
-#   • External (Cloudflare → example.com):
-#       patchpilot.example.com  →  your cluster LB / node IP
-#   • Internal (.lan via PiHole):
-#       patchpilot.lan              →  your cluster LB / node IP
-#     Add both hosts in the Ingress rules section below.
 # ─────────────────────────────────────────────────────────────────────────────
 
 ---
@@ -51,10 +45,10 @@ stringData:
 
   # ── Network / HTTPS settings ──────────────────────────────────────────────
   # The public URL users will reach (used for CORS + cookie SameSite)
-  APP_BASE_URL: "https://patchpilot.example.com"
+  APP_BASE_URL: ""
   # Comma-separated extra origins allowed for CORS (add .lan URL if needed)
-  # Example: "https://patchpilot.example.com,https://patchpilot.lan"
-  ALLOWED_ORIGINS: "https://patchpilot.example.com,https://patchpilot.lan"
+  # Example: "https://patchpilot.blah.com,https://patchpilot.lan"
+  ALLOWED_ORIGINS: ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PersistentVolumeClaims
@@ -63,14 +57,14 @@ stringData:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: postgres-data
+  name: patchpilot-postgres-data
   namespace: patchpilot
 spec:
   accessModes: [ReadWriteOnce]
+  storageClassName: app-data
   resources:
     requests:
       storage: 5Gi
-  # storageClassName: longhorn   # uncomment if using Longhorn / specify your SC
 
 ---
 apiVersion: v1
@@ -80,6 +74,7 @@ metadata:
   namespace: patchpilot
 spec:
   accessModes: [ReadWriteOnce]
+  storageClassName: app-data
   resources:
     requests:
       storage: 10Gi
@@ -88,10 +83,11 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: ansible-data
+  name: patchpilot-ansible-data
   namespace: patchpilot
 spec:
   accessModes: [ReadWriteOnce]
+  storageClassName: app-data
   resources:
     requests:
       storage: 1Gi
@@ -158,7 +154,7 @@ spec:
       volumes:
       - name: postgres-data
         persistentVolumeClaim:
-          claimName: postgres-data
+          claimName: patchpilot-postgres-data
 
 ---
 apiVersion: v1
@@ -201,6 +197,12 @@ spec:
         image: busybox:1.36
         command: ['sh', '-c',
           'until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done']
+      - name: seed-ansible                          # ← ADD THIS BLOCK
+        image: your-registry/patchpilot-backend:latest   # same image as backend
+        command: ['sh', '-c', 'cp -rn /ansible-src/. /ansible/ && echo "Ansible seeded"']
+        volumeMounts:
+        - name: ansible-data
+          mountPath: /ansible
       containers:
       - name: backend
         image: your-registry/patchpilot-backend:latest   # ← change to your image
@@ -283,7 +285,7 @@ spec:
       volumes:
       - name: ansible-data
         persistentVolumeClaim:
-          claimName: ansible-data
+          claimName: patchpilot-ansible-data
       - name: backups
         persistentVolumeClaim:
           claimName: patchpilot-backups
@@ -384,7 +386,6 @@ spec:
     name: letsencrypt-prod            # ClusterIssuer name (see below)
     kind: ClusterIssuer
   dnsNames:
-    - patchpilot.example.com      # ← external domain (Cloudflare)
     - patchpilot.lan                  # ← internal .lan domain (PiHole)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -412,11 +413,11 @@ spec:
   ingressClassName: traefik           # ← K3s default ingress class
   tls:
   - hosts:
-    - patchpilot.example.com
+    - patchpilot.blah.com
     - patchpilot.lan
     secretName: patchpilot-tls-secret
   rules:
-  - host: patchpilot.example.com
+  - host: patchpilot.blah.com
     http:
       paths:
       - path: /
@@ -480,7 +481,6 @@ spec:
 #
 # Steps:
 #   1. Create a Cloudflare API token with Zone:DNS:Edit permission
-#      (scoped to example.com only for least-privilege)
 #   2. kubectl create secret generic cloudflare-api-token-secret \
 #        --from-literal=api-token=YOUR_CF_TOKEN -n cert-manager
 #   3. kubectl apply -f deployment.yaml

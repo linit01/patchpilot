@@ -541,7 +541,7 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
     import tempfile
     
     # v4.8 — unmistakable debug output
-    print(f"=== TEST CONNECTION v4.8 ===")
+    print(f"=== TEST CONNECTION v4.9 ===")
     print(f"  hostname={request.hostname}, user={request.ssh_user}, port={request.ssh_port}")
     print(f"  key_type='{request.ssh_key_type}'")
     print(f"  has_private_key={bool(request.ssh_private_key)}, key_len={len(request.ssh_private_key) if request.ssh_private_key else 0}")
@@ -549,7 +549,27 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
     tmp_key_file = None
     ssh_key_content = request.ssh_private_key
     effective_key_type = request.ssh_key_type
-    
+
+    # Handle 'default' key type — resolve to the saved default key
+    if request.ssh_key_type == 'default':
+        print(f"  Resolving 'default' key type to saved default key...")
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE LIMIT 1"
+                )
+                if row and row['ssh_key_encrypted']:
+                    ssh_key_content = decrypt_credential(row['ssh_key_encrypted'])
+                    effective_key_type = 'pasted'
+                    print(f"  Resolved default key, length={len(ssh_key_content)}")
+                else:
+                    print(f"  No default saved key found in database")
+                    return TestConnectionResponse(success=False,
+                        message="No default SSH key configured. Add one in Settings → SSH Keys.")
+        except Exception as e:
+            print(f"  Failed to resolve default key: {e}")
+            return TestConnectionResponse(success=False, message=f"Failed to load default SSH key: {str(e)}")
+
     # Handle saved: key types - fetch from database directly
     if request.ssh_key_type and request.ssh_key_type.startswith('saved:'):
         key_id = request.ssh_key_type.replace('saved:', '')
@@ -612,11 +632,16 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
         if effective_key_type in ["pasted", "file"] and ssh_key_content:
             # Write key to temp file
             tmp_key_file = tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False)
-            tmp_key_file.write(ssh_key_content)
+            # Normalize line endings (browser textareas may submit CRLF) then
+            # ensure trailing newline — OpenSSH requires it or throws "error in libcrypto"
+            key_data = ssh_key_content.replace('\r\n', '\n').replace('\r', '\n')
+            if not key_data.endswith('\n'):
+                key_data += '\n'
+            tmp_key_file.write(key_data)
             tmp_key_file.close()
             os.chmod(tmp_key_file.name, 0o600)
             ssh_cmd.extend(["-i", tmp_key_file.name])
-            print(f"  Using key file: {tmp_key_file.name}")
+            print(f"  Using key file: {tmp_key_file.name} ({len(key_data)} bytes written)")
         elif effective_key_type == "password" and request.ssh_password:
             return await _test_connection_password(request)
         else:

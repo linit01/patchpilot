@@ -1,325 +1,93 @@
-# PatchPilot - Project Summary
+# PatchPilot — Project Summary
 
-## What We Built
+**Version:** 0.9.4-alpha  
+**Status:** Active development — public release candidate
 
-**PatchPilot** is a modern, production-ready system update management platform that:
+---
 
-- ✅ Monitors patch status across all your Linux and macOS systems
-- ✅ Uses your existing Ansible playbook and inventory
-- ✅ Provides a beautiful, responsive web dashboard
-- ✅ Enables one-click patching of multiple hosts
-- ✅ Tracks complete history in Supabase
-- ✅ Deploys easily via Docker Compose OR Kubernetes
+## What It Is
 
-## Why "PatchPilot"?
+PatchPilot is a self-hosted patch management dashboard for Linux and macOS systems. It monitors update status across your fleet, runs patching via Ansible, and provides a dark-themed web UI with real-time progress streaming.
 
-- **Modern & Professional**: Sounds like a real product
-- **Clear Purpose**: Immediately tells you what it does
-- **Memorable**: Easy to remember and recommend
-- **Commercial Potential**: Perfect if you decide to package/sell it
+## Deployment Modes
 
-## Key Improvements from Original Concept
+| Mode | Command | Access |
+|------|---------|--------|
+| Docker Compose | `./install.sh --docker` | `http://<host>:8080` |
+| K3s / Kubernetes | `./install.sh --k3s` | `https://<hostname>` (TLS via cert-manager) |
 
-### 1. Docker-First Approach
-- Most users (80%) will use Docker Compose
-- One command installation: `./install.sh`
-- No Kubernetes knowledge required
-- Perfect for homelabs and small deployments
+## Technology Stack
 
-### 2. Better User Experience
-- Interactive installer with colored output
-- Automatic browser opening
-- Clear error messages
-- Health checks and validation
+| Layer | Technology |
+|-------|-----------|
+| Frontend | HTML5 · Vanilla JS · WebSocket API |
+| Backend | Python 3.11 · FastAPI · Uvicorn |
+| Database | PostgreSQL 15 (asyncpg) |
+| Remote execution | Ansible (inside backend container) |
+| Encryption | cryptography (Fernet / AES-256) |
+| Web server | Nginx (Alpine) |
+| Container runtime | Docker / containerd (k3s) |
+| Ingress (k3s) | Traefik v3 |
+| TLS (k3s) | cert-manager + Let's Encrypt |
 
-### 3. Production-Ready
-- Proper error handling
-- Health checks in Docker
-- Kubernetes manifests for scaling
-- Security best practices
+## Key Features
 
-### 4. Complete Documentation
-- Quick Start (5 minutes)
-- Full README
-- Kubernetes deployment guide
-- API documentation
+- **Multi-platform** — Debian/Ubuntu (`apt`), RHEL/CentOS (`dnf`/`yum`), macOS (`brew` + `softwareupdate` + `mas`)
+- **Encrypted credentials** — SSH keys and sudo passwords encrypted with Fernet (AES-256) before PostgreSQL storage
+- **Saved SSH Keys Library** — store, reuse, upload, set defaults; auto-assigned to new hosts
+- **Real-time patching** — WebSocket streaming of live Ansible output
+- **Background checks** — configurable interval (default 5 min) with countdown timer
+- **Scheduled patching** — time-based patch windows
+- **Setup wizard** — first-run wizard covering admin account, settings, backup storage, and default SSH key (with file upload)
+- **Control node protection** — detects when a managed host is also running PatchPilot; never auto-reboots it
 
 ## Project Structure
 
 ```
 patchpilot/
-├── backend/                     # FastAPI Python backend
-│   ├── app.py                  # Main API (FastAPI)
-│   ├── database.py             # Supabase integration
-│   ├── ansible_runner.py       # Ansible execution
-│   └── requirements.txt        # Python dependencies
-│
-├── frontend/                    # Web dashboard
-│   ├── index.html              # Main page
-│   ├── styles.css              # Modern styling
-│   └── app.js                  # Dashboard logic
-│
-├── k8s/                        # Kubernetes deployment
-│   └── deployment.yaml         # Full k8s manifests
-│
-├── ansible/                    # Your Ansible files
-│   ├── check-os-updates.yml    # (copy yours here)
-│   └── hosts                   # (copy yours here)
-│
-├── database-schema.sql         # Supabase setup
-├── docker-compose.yml          # Docker deployment
-├── Dockerfile                  # Container image
-├── nginx.conf                  # Web server config
-├── install.sh                  # One-command installer
-├── README.md                   # Main documentation
-├── QUICKSTART.md               # 5-minute guide
-├── KUBERNETES.md               # K8s deployment guide
-└── .env.example                # Configuration template
+├── backend/
+│   ├── app.py                  # FastAPI app + startup migrations
+│   ├── ansible_runner.py       # Ansible execution + dynamic inventory
+│   ├── database.py             # PostgreSQL (asyncpg) client
+│   ├── auth.py                 # Session authentication
+│   ├── settings_api.py         # Hosts, SSH keys, test connection, general settings
+│   ├── setup_api.py            # First-run setup wizard API
+│   ├── schedules_api.py        # Scheduled patch windows
+│   ├── backup_restore.py       # Backup / restore logic
+│   ├── encryption_utils.py     # Fernet encrypt/decrypt helpers
+│   └── requirements.txt
+├── frontend/
+│   ├── index.html              # Main dashboard
+│   ├── login.html              # Login page
+│   ├── setup.html              # First-run setup wizard
+│   ├── settings.html           # Settings (hosts, keys, general, backup)
+│   ├── app.js                  # Dashboard logic + WebSocket client
+│   └── styles.css
+├── k8s/
+│   ├── install-config.yaml     # ← Edit before k3s install
+│   ├── install-k3s.sh          # K3s installer
+│   ├── build-push.sh           # Build + push images to Docker Hub
+│   ├── nuke-data.sh            # Wipe data + image cache for clean reinstall
+│   └── templates/              # Kubernetes manifest templates (00–09)
+├── ansible/
+│   ├── check-os-updates.yml    # Ansible playbook
+│   ├── hosts                   # Ansible inventory (managed by PatchPilot)
+│   └── ansible.cfg
+├── Dockerfile                  # Backend image (includes ansible-src)
+├── Dockerfile.frontend         # Frontend image (nginx + static files)
+├── docker-compose.yml
+├── nginx.conf                  # Nginx config for Docker Compose mode
+├── install.sh                  # Main installer (Docker or K3s)
+├── database-schema.sql
+└── .env.example
 ```
 
-## Technology Stack
+## Roadmap
 
-**Backend:**
-- FastAPI (Python) - Modern, fast API framework
-- Supabase - PostgreSQL database (free tier available)
-- Ansible - Your existing automation tool
-
-**Frontend:**
-- Vanilla HTML/CSS/JavaScript - No framework overhead
-- Modern, responsive design
-- Real-time updates
-
-**Deployment:**
-- Docker & Docker Compose - Primary deployment method
-- Kubernetes - Optional for production/scale
-
-## Deployment Options
-
-### Option 1: Docker Compose (Recommended for Most)
-
-**Best for:**
-- Homelabs
-- 1-50 hosts
-- Quick testing
-- Users new to containers
-
-**Deploy:**
-```bash
-./install.sh
-```
-
-**Pros:**
-- ✅ 5-minute setup
-- ✅ Works anywhere
-- ✅ Easy to update
-- ✅ No k8s knowledge needed
-
-### Option 2: Kubernetes
-
-**Best for:**
-- Production environments
-- 50+ hosts
-- High availability required
-- Existing k8s infrastructure
-- GitOps workflows (ArgoCD)
-
-**Deploy:**
-```bash
-kubectl apply -f k8s/
-```
-
-**Pros:**
-- ✅ Auto-healing
-- ✅ Scalability
-- ✅ Enterprise features
-- ✅ GitOps-ready
-
-## Your Next Steps
-
-### Immediate (This Week)
-
-1. **Test Locally**
-   ```bash
-   cd patchpilot
-   ./install.sh
-   ```
-   - Set up free Supabase account
-   - Run the installer
-   - Access at http://localhost:8080
-
-2. **Verify Functionality**
-   - Check that all your hosts appear
-   - Test the "Refresh Status" button
-   - Try patching one host
-   - View host details
-
-### Short Term (This Month)
-
-3. **Deploy to Your k3s Cluster**
-   - Follow KUBERNETES.md guide
-   - Use your existing ArgoCD setup
-   - Integrate with Vault for secrets
-   - Set up Ingress with your domain
-
-4. **Customize**
-   - Add your branding
-   - Adjust auto-refresh interval
-   - Add email/Slack notifications
-   - Create scheduled checks
-
-### Long Term (Future)
-
-5. **Enhance & Extend**
-   - Add more OS types (RHEL, Arch, Alpine)
-   - Package-level selection
-   - Rollback capability
-   - Prometheus metrics
-   - Mobile app (?)
-
-6. **Share or Commercialize** (Optional)
-   - Open source on GitHub
-   - Write blog post about it
-   - Package for sale to other homelabbers
-   - Create a SaaS offering
-
-## Features You Can Add
-
-### Easy Additions
-- Email notifications (SendGrid/Mailgun API)
-- Slack/Discord webhooks
-- More OS types in Ansible parser
-- Custom update schedules
-- Dashboard dark mode
-
-### Medium Complexity
-- Prometheus metrics endpoint
-- Grafana integration
-- Package-level patching
-- Update approval workflow
-- Multi-user support with Supabase RLS
-
-### Advanced Features
-- Rollback capability (snapshot integration)
-- Compliance reporting
-- Windows update support
-- Mobile app (React Native)
-- Multi-tenancy for MSPs
-
-## Monetization Potential
-
-If you wanted to commercialize this:
-
-1. **Open Source + Paid Support**
-   - Free for personal use
-   - Paid support/consulting
-   - Enterprise features
-
-2. **SaaS Offering**
-   - Host it for others
-   - $5-20/month per user
-   - Target homelabbers and small businesses
-
-3. **One-Time Purchase**
-   - Package as easy installer
-   - Sell on Gumroad/similar
-   - $49-99 one-time fee
-
-4. **Marketplace Listings**
-   - TrueNAS Scale app
-   - Unraid CA template
-   - Home Assistant addon
-
-## Why This is Valuable
-
-### For You
-- Solves your actual problem (patch tracking)
-- Portfolio piece showcasing full-stack skills
-- Uses technologies you're learning (Supabase, FastAPI)
-- Production-ready project for your homelab
-
-### For Others
-- Common pain point in homelabs
-- No good free alternatives exist
-- Easy to deploy
-- Actually useful
-
-### Potential Market
-- Homelab enthusiasts (100k+)
-- Small IT shops
-- MSPs managing client systems
-- DevOps teams
-
-## Getting Help
-
-If you run into issues:
-
-1. Check the documentation:
-   - QUICKSTART.md for basics
-   - KUBERNETES.md for k8s
-   - README.md for everything else
-
-2. Debug steps:
-   ```bash
-   # Check logs
-   docker-compose logs -f
-   
-   # Test Ansible
-   docker exec -it patchpilot-backend \
-     ansible all -i /ansible/hosts -m ping
-   
-   # Verify Supabase
-   docker exec -it patchpilot-backend env | grep SUPABASE
-   ```
-
-3. Common issues and solutions are in docs/TROUBLESHOOTING.md
-
-## Files You Can Customize
-
-### Easy Changes
-- `frontend/styles.css` - Colors, fonts, layout
-- `frontend/index.html` - Text, branding
-- `.env` - Configuration settings
-
-### Medium Changes
-- `backend/app.py` - Add endpoints, notifications
-- `frontend/app.js` - Dashboard behavior
-- `ansible_runner.py` - Support more OS types
-
-### Advanced Changes
-- `database.py` - Add new tables/features
-- `k8s/deployment.yaml` - Scaling, resources
-- Create Helm chart for easier k8s deployment
-
-## What Makes This Special
-
-1. **Actually Useful**: Solves a real problem you have
-2. **Production-Ready**: Not a toy project
-3. **Well-Documented**: Easy for others to use
-4. **Flexible Deployment**: Docker OR Kubernetes
-5. **Modern Stack**: FastAPI, Supabase, Docker
-6. **Room to Grow**: Many enhancement possibilities
-
-## Success Metrics
-
-After deploying, you'll have:
-- ✅ Visual dashboard of all system update status
-- ✅ One-click patching instead of manual Ansible runs
-- ✅ Historical tracking in database
-- ✅ 90% reduction in time spent on patch management
-- ✅ A portfolio project showing full-stack skills
-
-## Conclusion
-
-You now have **PatchPilot** - a complete, production-ready system update management platform. It's:
-- Ready to deploy today (Docker Compose)
-- Ready for your k3s cluster (Kubernetes)
-- Easy enough for beginners
-- Powerful enough for production
-
-The combination of solving your real problem + using modern tech + having commercial potential makes this a great project.
-
-**Start with: `./install.sh` and see it in action!**
-
----
-
-**Questions? Want to discuss enhancements?** I'm here to help!
+- [ ] Email / Slack / webhook notifications on patch completion or failures
+- [ ] Prometheus metrics endpoint + Grafana dashboard
+- [ ] Package-level selection (patch individual packages, not whole host)
+- [ ] Rollback support (snapshot integration)
+- [ ] RHEL subscription-manager support
+- [ ] Helm chart for easier k3s deployment
+- [ ] Multi-user RBAC

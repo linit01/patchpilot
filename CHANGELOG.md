@@ -2,83 +2,94 @@
 
 All notable changes to PatchPilot will be documented in this file.
 
+---
+
+## [0.9.4-alpha] - 2026-02-24
+
+### Added
+- **File upload for SSH keys in setup wizard** — Step 6 of `setup.html` now has a "📂 Upload Key File" button alongside the paste textarea. Uses `FileReader` to load the key directly from disk — no clipboard, no truncation. Auto-fills the key name from the filename.
+- **Hosts created during setup get default key** — `setup_api.py` now sets `ssh_key_type='default'` on all hosts created during the setup wizard so they automatically resolve the saved default key without manual assignment.
+- **`seed-ansible` init container** — `k8s/templates/04-backend.yaml` now includes a `seed-ansible` init container that copies playbooks from the image (`/ansible-src/`) to the PVC on first deploy using `cp -rn` (no-clobber, safe on redeploy).
+
+### Fixed
+- **Settings → Hosts 500 error on fresh install** — `settings_api.py` queried columns named `ssh_private_key_encrypted` / `ssh_password_encrypted` but the DB schema created them as `ssh_private_key` / `ssh_password`. Fixed `ensure_core_tables` to create correctly named BYTEA columns and added `ensure_hosts_columns` migration that renames old columns on existing installs.
+- **Ansible playbooks missing from PVC after install** — `Dockerfile` now copies `ansible/` into the image at `/ansible-src/` so the `seed-ansible` init container has playbooks to seed from.
+- **SSH key `error in libcrypto` on all key paths** — OpenSSH requires private key files to end with `\n`. All three temp-file write sites (test connection + two Ansible inventory paths) now normalize CRLF line endings and append `\n` if missing, fixing failures caused by browsers stripping the trailing newline from pasted keys.
+- **Default SSH key not resolved for Ansible checks** — Hosts with `ssh_key_type='default'` were connecting with no key, always showing `unreachable`. The Ansible inventory builder now pre-fetches the default key from `saved_ssh_keys WHERE is_default=TRUE` and injects it for any host using the default.
+- **Default SSH key not resolved for test connection** — `test_connection` in `settings_api.py` now resolves `key_type='default'` to the saved default key before attempting SSH.
+- **Frontend API calls broken on `localhost`** — `login.html`, `settings.html`, and `app.js` hardcoded `http://localhost:8000/api` when `window.location.hostname === 'localhost'`, bypassing nginx and causing "Connection error. Is the backend running?" on Docker Compose installs. All API references now use relative `/api` paths.
+- **WebSocket URL** — `app.js` now derives the WebSocket base URL from `window.location` and correctly upgrades to `wss://` when served over HTTPS.
+- **PVC `storageClassName` immutability error on reapply** — `kubectl apply` failed on existing installs because manifests omitted `storageClassName`. All three PVCs in `k8s/templates/02-pvcs.yaml` now include `storageClassName: app-data`.
+
+### Changed
+- `database-schema.sql` updated: `ssh_private_key_encrypted BYTEA` / `ssh_password_encrypted BYTEA` to match application code.
+- SSH key file upload added to Settings → SSH Keys UI.
+
+---
+
+## [0.9.3-alpha] - 2026-02-23
+
+### Fixed
+- **imagePullPolicy changed to `Always`** — prevents k3s containerd from serving stale cached images when namespace/PVs are wiped and app is redeployed with the same tag.
+
+### Added
+- `k8s/nuke-data.sh` — wipes all PatchPilot hostPath data dirs and purges containerd image cache on the k3s node before a clean reinstall.
+
+### Changed
+- Version bumped to `0.9.3-alpha` in `install-config.yaml`, `install-k3s.sh`, and all generated manifests.
+
+---
+
+## [0.9.2-alpha] - 2026-02-21
+
+### Added
+- **K3s / Kubernetes install path** — full native k3s deployment alongside existing Docker Compose option
+  - `install.sh` prompts for install method; `--docker` and `--k3s` flags for non-interactive use
+- **`k8s/install-config.yaml`** — single YAML config for all deployment settings
+- **`k8s/install-k3s.sh`** — fully automated k3s installer with `--interactive`, `--dry-run`, and `--uninstall` modes
+- **`Dockerfile.frontend`** — separate frontend image (nginx + baked-in static assets)
+- **Kubernetes manifest templates** (`k8s/templates/00–09`) — namespace, secrets, PVCs, Postgres, backend, frontend, Traefik middlewares, cert-manager Certificate, Ingress, ClusterIssuers
+- **HSTS and security headers** — applied at Traefik middleware layer
+
+### Changed
+- `install.sh` refactored with install-method selection menu
+- Docker Compose path now auto-generates Fernet key
+- Nginx config updated: backend proxied to `patchpilot-backend` service name
+
+### Fixed
+- PostgreSQL readiness probe includes `-d <dbname>` to avoid false negatives on first start
+- Frontend image in k3s uses correct `imagePullPolicy` for local strategy
+
+---
+
 ## [2.0.0] - 2026-02-11
 
 ### Added
-- **Saved SSH Keys Library**: Store and reuse SSH keys across multiple hosts
-  - Encrypted storage with AES-256
-  - Default key support
-  - File upload interface
-  - Edit/Delete functionality
-- **Real-Time WebSocket Patching Progress**: Live streaming of Ansible task output
-  - Progress modal with timestamps
-  - Auto-close on completion
-  - Connection management
-- **Single-Host Check API**: Fast targeted checks (~30 seconds)
-  - `/api/check/{hostname}` endpoint
-  - Auto-triggers on host creation
-- **Auto-Reboot Management**: Per-host configurable automatic reboots
-  - Database tracking of reboot requirements
-  - Control node protection (never auto-reboots)
-  - Conditional execution based on host settings
-- **Auto-Check Countdown Timer**: Visual feedback showing next scheduled check
-  - 2-minute countdown display
-  - Resets on manual refresh
-- **SSH Key File Upload**: Upload keys instead of copy/paste
-  - Validation of key format
-  - Success/error feedback
-- **Smart Refresh Polling**: 3-minute timeout with 5-second updates
-  - Button stays disabled during poll
-  - Prevents multiple concurrent checks
-- **macOS System Update Detection**: Apple OS updates via `softwareupdate`
-- **App Store Update Detection**: Mac App Store (mas) updates
+- Saved SSH Keys Library — store, reuse, upload, and set defaults; AES-256 encrypted at rest
+- Real-time WebSocket patching progress — live Ansible task output with per-task timestamps
+- Single-host check API — `/api/check/{hostname}`, auto-triggered on host creation
+- Auto-reboot management — per-host configurable; control node always protected
+- macOS system update and App Store detection
 
 ### Changed
-- **Background Check Interval**: Reduced from 5 minutes to 2 minutes
-- **SSH ControlMaster**: Disabled to prevent connection pooling conflicts
-- **Cache-Busting**: Added cache headers and query params for real-time updates
-- **Ubuntu Phased Updates**: Force install deferred packages with `APT::Get::Always-Include-Phased-Updates=true`
-- **Debug Logging**: Converted print statements to `logger.debug()` for production-ready logging
+- Background check interval reduced to 2 minutes
+- SSH ControlMaster disabled
 
 ### Fixed
-- **macOS Package Detection**: Fixed packages showing 'apt' instead of 'brew' label
-  - Root cause: `data.get("update_type")` instead of `package.get("update_type")` in app.py
-- **SSH Key Encryption**: Fixed BYTEA vs TEXT column type mismatch in saved_ssh_keys table
-- **Package Parsing**: Handle complex version formats with epochs, tildes, commas
-- **Control Node Detection**: Added warning badge and confirmation dialogs
-- **Ansible Output Streaming**: Real-time progress with selective filtering
-- **Browser Caching**: Fixed NULL status display issues with cache-busting
-- **Logging Errors**: Added missing `logging` imports to app.py and database.py
-- **Inventory Configuration**: Removed `ansible_connection=local` for control node
+- macOS package type label, SSH key BYTEA/TEXT mismatch, package version parsing
 
 ### Security
-- All SSH keys encrypted with AES-256 (Fernet)
-- Temporary key files use 0600 permissions
-- Keys cleaned up after use
-- No credentials logged or exposed in UI
+- Temporary SSH key files created with `0600` permissions and deleted after use
 
-**macOS Update Types Now Supported:**
-- `brew`: Homebrew packages
-- `macos-system`: Apple OS system updates
-- `mas`: Mac App Store applications
+---
 
 ## [1.0.0] - 2026-01-15
 
 ### Added
 - Initial release
-- Multi-platform support (Debian/Ubuntu, macOS, RHEL)
-- Basic host management
-- Package-level update details
-- Encrypted SSH credential storage
-- Dashboard with statistics
-- Settings interface
+- Multi-platform support: Debian/Ubuntu, RHEL/CentOS, macOS
+- Host management, encrypted SSH credential storage, dashboard, settings
 
 ---
 
-**Legend:**
-- **Added**: New features
-- **Changed**: Changes in existing functionality
-- **Deprecated**: Soon-to-be removed features
-- **Removed**: Removed features
-- **Fixed**: Bug fixes
-- **Security**: Security improvements
+**Legend:** Added · Changed · Deprecated · Removed · Fixed · Security
