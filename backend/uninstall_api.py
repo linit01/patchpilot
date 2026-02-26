@@ -175,6 +175,139 @@ def _own_container_id() -> str | None:
     return None
 
 
+def _k8s_cleanup_background(kc: list[str], namespace: str) -> None:
+    """
+    Runs AFTER the HTTP response has been delivered.
+
+    Steps:
+      1. Run privileged busybox Job to wipe /app-data/patchpilot-* on the node
+      2. Delete namespace (takes pods, services, PVCs, Delete-policy PVs with it)
+      3. Delete ClusterIssuer (cert-manager)
+      4. Remove generated manifests from disk
+    """
+    global _bg_result
+
+    completed: list[str] = []
+    failed:    list[str] = []
+
+    # Get node IP once for fallback manual commands
+    rc, node_ip, _ = _run(
+        kc + ["get", "nodes", "-o", _NODE_IP_JSONPATH]
+    )
+    ssh_host = node_ip.strip() if (rc == 0 and node_ip.strip()) else "<k3s-node-ip>"
+
+    # ── Step 1: hostPath cleanup Job ──────────────────────────────────────────
+    step = "Run hostPath cleanup Job on node"
+    job_name = "patchpilot-hostpath-cleanup"
+    job_manifest = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": job_name, "namespace": namespace},
+        "spec": {
+            "backoffLimit": 0,
+            "ttlSecondsAfterFinished": 30,
+            "template": {
+                "spec": {
+                    "restartPolicy": "Never",
+                    "tolerations": [{"operator": "Exists"}],
+                    "containers": [{
+                        "name": "cleanup",
+                        "image": "busybox:1.36",
+                        "command": [
+                            "sh", "-c",
+                            "find /app-data -maxdepth 1 -name 'patchpilot-*' "
+                            "-exec rm -rf {} + 2>/dev/null; "
+                            "echo 'hostPath cleanup complete'"
+                        ],
+                        "securityContext": {"privileged": True, "runAsUser": 0},
+                        "volumeMounts": [{"name": "app-data", "mountPath": "/app-data"}],
+                    }],
+                    "volumes": [{
+                        "name": "app-data",
+                        "hostPath": {"path": "/app-data", "type": "DirectoryOrCreate"},
+                    }],
+                },
+            },
+        },
+    }
+
+    job_succeeded = False
+    jf_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as jf:
+            json.dump(job_manifest, jf)
+            jf_path = jf.name
+
+        _run(kc + ["delete", "job", job_name, "-n", namespace,
+                   "--ignore-not-found=true"], timeout=15)
+
+        rc, _, err = _run(kc + ["apply", "-f", jf_path], timeout=15)
+        if rc != 0:
+            raise RuntimeError(f"kubectl apply job failed: {err}")
+
+        rc, _, err = _run(
+            kc + ["wait", "--for=condition=complete",
+                  f"job/{job_name}", "-n", namespace, "--timeout=60s"],
+            timeout=75,
+        )
+        if rc == 0:
+            job_succeeded = True
+            completed.append(f"{step}: success")
+        else:
+            rc2, phase, _ = _run(
+                kc + ["get", "job", job_name, "-n", namespace,
+                      "-o", "jsonpath={.status.conditions[0].type}"],
+                timeout=10,
+            )
+            phase = phase.strip() if rc2 == 0 else "unknown"
+            raise RuntimeError(
+                f"Job did not complete in 60s (phase={phase}). "
+                f"Run manually: ssh {ssh_host} 'sudo rm -rf /app-data/patchpilot-*'"
+            )
+    except RuntimeError as e:
+        failed.append(f"{step}: {e}")
+        logger.warning("hostPath cleanup Job failed: %s", e)
+    except Exception as e:
+        failed.append(f"{step}: unexpected error: {e}")
+        logger.exception("Unexpected error during cleanup Job")
+    finally:
+        if jf_path:
+            Path(jf_path).unlink(missing_ok=True)
+
+    # ── Step 2: Delete namespace ───────────────────────────────────────────────
+    step = "Delete PatchPilot namespace (pods, services, PVCs, ConfigMaps)"
+    rc, _, err = _run(
+        kc + ["delete", "namespace", namespace, "--ignore-not-found=true"],
+        timeout=120,
+    )
+    if rc == 0:
+        completed.append(step)
+    else:
+        failed.append(f"{step}: {err}")
+
+    # ── Step 3: Delete ClusterIssuer ───────────────────────────────────────────
+    step = "Delete ClusterIssuer (cert-manager)"
+    rc, _, err = _run(
+        kc + ["delete", "clusterissuer", "letsencrypt-prod", "--ignore-not-found=true"]
+    )
+    completed.append(step if rc == 0 else f"{step}: skipped (not present)")
+
+    # ── Step 4: Remove generated manifests ────────────────────────────────────
+    for gen_dir in [Path("/app/k8s/.generated"), Path("/k8s/.generated")]:
+        if gen_dir.exists():
+            shutil.rmtree(gen_dir, ignore_errors=True)
+            completed.append(f"Removed generated manifests: {gen_dir}")
+            break
+
+    _bg_result["completed"].extend(completed)
+    _bg_result["failed"].extend(failed)
+    _bg_result["status"] = "done"
+    logger.info(
+        "K3s cleanup complete — completed=%d failed=%d",
+        len(completed), len(failed),
+    )
+
+
 def _docker_cleanup_background(dk: list[str], project: str, own_id: str | None) -> None:
     """
     Runs AFTER the HTTP response has been delivered.
@@ -545,7 +678,6 @@ async def execute_uninstall(
 
     # ── K3s ────────────────────────────────────────────────────────────────────
     elif install_type == "k3s":
-        # Resolve kubectl once — fail early with a clear message if not found
         try:
             kc = _kubectl()
         except RuntimeError as exc:
@@ -556,10 +688,9 @@ async def execute_uninstall(
                 steps_completed=completed,
                 steps_failed=failed,
                 manual_commands=[
-                    "# kubectl not found in the container — run these on the node directly:",
+                    "# kubectl not found — run these on the node directly:",
                     "kubectl delete namespace patchpilot --ignore-not-found=true",
                     "kubectl delete clusterissuer letsencrypt-prod --ignore-not-found=true",
-                    "# Then clean hostPath data on the k3s node:",
                     "ssh <k3s-node-ip> \'sudo rm -rf /app-data/patchpilot-*\'",
                 ],
                 message=str(exc),
@@ -567,7 +698,15 @@ async def execute_uninstall(
 
         namespace = os.environ.get("PATCHPILOT_NAMESPACE", "patchpilot")
 
-        # ── Step 1: Revoke sessions ────────────────────────────────────────
+        # Get node IP now — before the namespace is gone
+        rc, node_ip, _ = _run(kc + ["get", "nodes", "-o", _NODE_IP_JSONPATH])
+        ssh_host = node_ip.strip() if (rc == 0 and node_ip.strip()) else "<k3s-node-ip>"
+
+        # ── Step 1: Revoke sessions (only safe inline step) ────────────────
+        # All destructive work runs in _k8s_cleanup_background AFTER this
+        # response is delivered.  Deleting the namespace inline kills the
+        # backend pod mid-response — nginx returns HTML, JS gets
+        # "Unexpected token '<'" instead of JSON.
         step = "Revoke all active login sessions"
         try:
             async with pool.acquire() as conn:
@@ -576,170 +715,30 @@ async def execute_uninstall(
         except Exception as e:
             completed.append(f"{step}: skipped ({e})")
 
-        # ── Step 2: Privileged Job to clean hostPath dirs ──────────────────
-        # Runs a busybox container inside the cluster that mounts /app-data
-        # directly from the node via hostPath and removes patchpilot-* dirs.
-        # This eliminates the SSH dependency entirely — the Job runs with node
-        # filesystem access natively via Kubernetes privileged security context.
-        step = "Run hostPath cleanup Job on node"
-        job_name = "patchpilot-hostpath-cleanup"
-        job_manifest = {
-            "apiVersion": "batch/v1",
-            "kind": "Job",
-            "metadata": {
-                "name": job_name,
-                "namespace": namespace,
-            },
-            "spec": {
-                "backoffLimit": 0,
-                "ttlSecondsAfterFinished": 30,
-                "template": {
-                    "spec": {
-                        "restartPolicy": "Never",
-                        "tolerations": [{"operator": "Exists"}],
-                        "containers": [{
-                            "name": "cleanup",
-                            "image": "busybox:1.36",
-                            "command": [
-                                "sh", "-c",
-                                "find /app-data -maxdepth 1 -name 'patchpilot-*' "
-                                "-exec rm -rf {} + 2>/dev/null; "
-                                "echo 'hostPath cleanup complete'"
-                            ],
-                            "securityContext": {
-                                "privileged": True,
-                                "runAsUser": 0,
-                            },
-                            "volumeMounts": [{
-                                "name": "app-data",
-                                "mountPath": "/app-data",
-                            }],
-                        }],
-                        "volumes": [{
-                            "name": "app-data",
-                            "hostPath": {
-                                "path": "/app-data",
-                                "type": "DirectoryOrCreate",
-                            },
-                        }],
-                    },
-                },
-            },
-        }
+        _bg_result.clear()
+        _bg_result.update({"status": "running", "completed": list(completed), "failed": []})
+        background_tasks.add_task(_k8s_cleanup_background, kc, namespace)
 
-        # Get node IP for fallback manual command
-        rc, node_ip, _ = _run(
-            kc + ["get", "nodes",
-                  "-o", _NODE_IP_JSONPATH]
-        )
-        ssh_host = node_ip.strip() if (rc == 0 and node_ip.strip()) else "<k3s-node-ip>"
-
-        job_succeeded = False
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False
-            ) as jf:
-                json.dump(job_manifest, jf)
-                jf_path = jf.name
-
-            # Delete any leftover job from a prior run first
-            _run(kc + ["delete", "job", job_name, "-n", namespace,
-                        "--ignore-not-found=true"], timeout=15)
-
-            rc, out, err = _run(kc + ["apply", "-f", jf_path], timeout=15)
-            Path(jf_path).unlink(missing_ok=True)
-
-            if rc != 0:
-                raise RuntimeError(f"kubectl apply job failed: {err}")
-
-            # Wait up to 60s for the Job to complete
-            rc, _, err = _run(
-                kc + ["wait", "--for=condition=complete",
-                      f"job/{job_name}", "-n", namespace, "--timeout=60s"],
-                timeout=75,
-            )
-            if rc == 0:
-                job_succeeded = True
-                completed.append(f"{step}: success")
-            else:
-                # Check if it failed vs timed out
-                rc2, phase, _ = _run(
-                    kc + ["get", "job", job_name, "-n", namespace,
-                          "-o", "jsonpath={.status.conditions[0].type}"],
-                    timeout=10,
-                )
-                phase = phase.strip() if rc2 == 0 else "unknown"
-                raise RuntimeError(
-                    f"Job did not complete in 60s (phase={phase}). "
-                    f"Run manually: ssh {ssh_host} 'sudo rm -rf /app-data/patchpilot-*'"
-                )
-
-        except RuntimeError as e:
-            failed.append(f"{step}: {e}")
-            logger.warning("hostPath cleanup Job failed — will surface SSH fallback: %s", e)
-        except Exception as e:
-            failed.append(f"{step}: unexpected error: {e}")
-            logger.exception("Unexpected error during cleanup Job")
-        finally:
-            try:
-                Path(jf_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        # ── Step 3: Delete namespace ───────────────────────────────────────
-        # Done AFTER the cleanup Job so /app-data is wiped before the PVCs
-        # and PVs are removed (avoids k8s leaving orphaned hostPath dirs).
-        step = "Delete PatchPilot namespace (pods, services, PVCs, ConfigMaps)"
-        rc, _, err = _run(
-            kc + ["delete", "namespace", namespace, "--ignore-not-found=true"],
-            timeout=120,
-        )
-        if rc == 0:
-            completed.append(step)
-        else:
-            failed.append(f"{step}: {err}")
-
-        # ── Step 4: Delete ClusterIssuer ───────────────────────────────────
-        # NOTE: PVs no longer need explicit deletion — reclaimPolicy: Delete
-        # means Kubernetes removes the PV and its hostPath data automatically
-        # when the PVC is deleted (which happens with the namespace above).
-        step = "Delete ClusterIssuer (cert-manager)"
-        rc, _, err = _run(
-            kc + ["delete", "clusterissuer", "letsencrypt-prod",
-                  "--ignore-not-found=true"]
-        )
-        if rc == 0:
-            completed.append(step)
-        else:
-            completed.append(f"{step}: skipped (not present)")
-
-        # ── Step 6: Remove generated manifests ────────────────────────────
-        for gen_dir in [Path("/app/k8s/.generated"), Path("/k8s/.generated")]:
-            if gen_dir.exists():
-                shutil.rmtree(gen_dir, ignore_errors=True)
-                completed.append(f"Removed generated manifests: {gen_dir}")
-                break
-
-        # ── Build manual commands ──────────────────────────────────────────
-        # NOTE: containerd image removal requires crictl on the node itself —
-        # the backend pod cannot reach the k3s containerd socket.
-        manual_cmds = []
-        if not job_succeeded:
-            manual_cmds += [
-                "# hostPath cleanup Job did not complete — run on the k3s node:",
-                f"ssh {ssh_host} 'sudo rm -rf /app-data/patchpilot-*'",
+        return UninstallResult(
+            success=True,
+            install_type=install_type,
+            steps_completed=completed,
+            steps_failed=[],
+            manual_commands=[
+                "# Remove PatchPilot images from k3s containerd cache (run on node):",
+                f"ssh {ssh_host} \"sudo k3s crictl rmi \\$(sudo k3s crictl images | grep patchpilot | awk '{{print $3}}') 2>/dev/null || true\"",
                 "",
-            ]
-        manual_cmds += [
-            "# Remove PatchPilot images from k3s containerd cache (run on node):",
-            f"ssh {ssh_host} \"sudo k3s crictl rmi \\$(sudo k3s crictl images | grep patchpilot | awk '{{print \\$3}}') 2>/dev/null || true\"",
-            "",
-            "# Remove the installation directory (on your deploy machine):",
-            "# cd /path/to && rm -rf patchpilot",
-            "",
-            "# Optional: remove k3s entirely from the node:",
-            f"# ssh {ssh_host} '/usr/local/bin/k3s-uninstall.sh'",
-        ]
+                "# Remove the installation directory (on your deploy machine):",
+                "# cd /path/to && rm -rf patchpilot",
+                "",
+                f"# Optional: remove k3s entirely from the node:",
+                f"# ssh {ssh_host} \'/usr/local/bin/k3s-uninstall.sh\'",
+            ],
+            message=(
+                "Sessions revoked. Cleanup Job, namespace deletion, and resource cleanup "
+                "are running in the background — poll GET /api/uninstall/result for status."
+            ),
+        )
 
     else:
         raise HTTPException(
@@ -750,22 +749,6 @@ async def execute_uninstall(
                 "to your .env and restart the backend."
             ),
         )
-
-    success = len(failed) == 0
-    message = (
-        "Automated steps complete. Run the manual commands below to finish cleanup."
-        if success
-        else f"Completed with {len(failed)} error(s). Review and run manual commands."
-    )
-
-    return UninstallResult(
-        success=success,
-        install_type=install_type,
-        steps_completed=completed,
-        steps_failed=failed,
-        manual_commands=manual_cmds,
-        message=message,
-    )
 
 
 @router.get("/result")
