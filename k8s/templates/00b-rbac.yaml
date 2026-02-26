@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — RBAC
+#
+# Grants the backend pod a dedicated ServiceAccount with the minimum permissions
+# it needs at runtime:
+#
+#   secrets/patch  — update PATCHPILOT_ENCRYPTION_KEY during a fresh-install
+#                    restore (setup wizard writes the backup key back into the
+#                    patchpilot-secrets Secret via the in-cluster REST API)
+#
+# No cluster-scoped permissions are granted.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: patchpilot-backend
+  namespace: ${PP_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: patchpilot
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/managed-by: patchpilot-installer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: patchpilot-backend
+  namespace: ${PP_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: patchpilot
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/managed-by: patchpilot-installer
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["patchpilot-secrets"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["patchpilot-backend"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patchpilot-backend
+  namespace: ${PP_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: patchpilot
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/managed-by: patchpilot-installer
+subjects:
+  - kind: ServiceAccount
+    name: patchpilot-backend
+    namespace: ${PP_NAMESPACE}
+roleRef:
+  kind: Role
+  name: patchpilot-backend
+  apiGroup: rbac.authorization.k8s.io
