@@ -34,6 +34,9 @@ from dependencies import get_db_pool
 
 logger = logging.getLogger("patchpilot.uninstall")
 
+# jsonpath for k3s node InternalIP — single-quoted to avoid f-string escaping issues
+_NODE_IP_JSONPATH = '{.items[0].status.addresses[?(@.type=="InternalIP")].address}'
+
 router = APIRouter(prefix="/api/uninstall", tags=["uninstall"])
 
 # ── Background task state ──────────────────────────────────────────────────────
@@ -395,7 +398,7 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
             kc = _kubectl()
             rc, node_ip, _ = _run(
                 kc + ["get", "nodes",
-                      "-o", "jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}"]
+                      "-o", _NODE_IP_JSONPATH]
             )
             ssh_host = node_ip.strip() if (rc == 0 and node_ip.strip()) else "<k3s-node-ip>"
         except RuntimeError:
@@ -403,7 +406,8 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
         automated = [
             "Revoke all active login sessions",
             "Run a privileged Kubernetes Job to remove /app-data/patchpilot-* on the node (no SSH required)",
-            "Delete the PatchPilot namespace — PVCs, PVs, and hostPath data removed automatically (reclaimPolicy: Delete)",
+            "Delete the PatchPilot namespace — postgres-data and ansible-data PVs auto-deleted (reclaimPolicy: Delete)",
+            "backups PV is RETAINED — /app-data/patchpilot-backups survives for post-uninstall restore",
             "Delete the cert-manager ClusterIssuer resource",
             "Remove generated k8s manifests from k8s/.generated/",
         ]
@@ -422,8 +426,9 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
         ]
         desc = (
             "Kubernetes / k3s installation detected. "
-            "All steps run automatically — PVs use reclaimPolicy: Delete so hostPath data "
-            "is cleaned up by Kubernetes when the namespace is removed. "
+            "postgres-data and ansible-data PVs use reclaimPolicy: Delete and are removed with the namespace. "
+            "The backups PV uses reclaimPolicy: Retain — your backup archives survive uninstall "
+            "and can be restored on a fresh install. "
             "containerd image removal requires crictl on the node and is provided as a manual command."
         )
         can_auto = True
@@ -625,7 +630,7 @@ async def execute_uninstall(
         # Get node IP for fallback manual command
         rc, node_ip, _ = _run(
             kc + ["get", "nodes",
-                  "-o", "jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}"]
+                  "-o", _NODE_IP_JSONPATH]
         )
         ssh_host = node_ip.strip() if (rc == 0 and node_ip.strip()) else "<k3s-node-ip>"
 
