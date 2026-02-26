@@ -214,8 +214,9 @@ JOBEOF
   fi
 
   # ── Step 2: Delete namespace ───────────────────────────────────────────────
-  # reclaimPolicy: Delete means Kubernetes automatically removes the PVs and
-  # their hostPath data when PVCs are deleted with the namespace.
+  # postgres-data and ansible-data PVs use reclaimPolicy: Delete — removed automatically.
+  # patchpilot-backups PV uses reclaimPolicy: Retain — backup archives survive uninstall
+  # and remain at /app-data/patchpilot-backups for post-uninstall restore.
   info "Deleting namespace ${ns}..."
   kubectl delete namespace "${ns}" --ignore-not-found=true
 
