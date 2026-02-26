@@ -434,71 +434,168 @@ async def restore_from_backup(file: UploadFile = File(...)):
         else:
             warnings.append("No Ansible files in backup — skipped.")
 
-        # ── 5b. Restore encryption key to .env ────────────────────────────
+        # ── 5b. Restore encryption key ────────────────────────────────────
+        # Docker: key lives in .env — write it back there.
+        # K8s:    key lives in the patchpilot-secrets Secret — patch it via
+        #         kubectl.  If kubectl isn't available, surface the exact
+        #         patch command so the user can run it manually.
         enc_key_file = staging / "encryption_key.json"
-        env_file_path = Path("/install/.env")
-        if not env_file_path.exists() and os.getenv("INSTALL_DIR"):
-            env_file_path = Path(os.getenv("INSTALL_DIR")) / ".env"
-
         if enc_key_file.exists():
             try:
                 enc_key_data = json.loads(enc_key_file.read_text())
                 backup_enc_key = enc_key_data.get("PATCHPILOT_ENCRYPTION_KEY", "")
                 current_enc_key = os.getenv("PATCHPILOT_ENCRYPTION_KEY", "")
+
                 if backup_enc_key and backup_enc_key != current_enc_key:
-                    if env_file_path.exists():
-                        import re as _re
-                        env_text = env_file_path.read_text()
-                        if "PATCHPILOT_ENCRYPTION_KEY=" in env_text:
-                            env_text = _re.sub(
-                                r"^PATCHPILOT_ENCRYPTION_KEY=.*$",
-                                f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}",
-                                env_text, flags=_re.MULTILINE,
+                    install_mode = os.getenv("PATCHPILOT_INSTALL_MODE", "").lower()
+                    is_k8s = (
+                        install_mode == "k8s"
+                        or Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
+                    )
+
+                    if is_k8s:
+                        # ── K8s path: patch the Secret ────────────────────
+                        import shutil as _shutil
+                        namespace = os.getenv("PATCHPILOT_NAMESPACE", "patchpilot")
+                        secret_name = "patchpilot-secrets"
+
+                        # Build kubectl patch payload
+                        patch_json = json.dumps({
+                            "stringData": {"PATCHPILOT_ENCRYPTION_KEY": backup_enc_key}
+                        })
+                        kubectl_cmd = [
+                            "kubectl", "patch", "secret", secret_name,
+                            "-n", namespace,
+                            "--type", "merge",
+                            "-p", patch_json,
+                        ]
+                        # Try kubectl from PATH, then k3s kubectl
+                        kubectl_bin = _shutil.which("kubectl")
+                        if not kubectl_bin and _shutil.which("k3s"):
+                            kubectl_bin = "k3s"
+                            kubectl_cmd = ["k3s", "kubectl", "patch", "secret",
+                                           secret_name, "-n", namespace,
+                                           "--type", "merge", "-p", patch_json]
+
+                        patched = False
+                        if kubectl_bin:
+                            r = subprocess.run(
+                                kubectl_cmd,
+                                capture_output=True, text=True, timeout=15,
+                            )
+                            patched = r.returncode == 0
+                            if patched:
+                                logger.info("Encryption key patched into %s/%s", namespace, secret_name)
+                            else:
+                                logger.warning("kubectl patch secret failed: %s", r.stderr.strip())
+
+                        if not patched:
+                            # Surface the exact manual command
+                            manual_cmd = (
+                                f"kubectl patch secret {secret_name} -n {namespace} "
+                                f"--type merge -p "
+                                f"'{{\"stringData\":{{\"PATCHPILOT_ENCRYPTION_KEY\":\"{backup_enc_key}\"}}}}'"
+                            )
+                            restart_cmd = (
+                                f"kubectl rollout restart deployment/patchpilot-backend -n {namespace}"
+                            )
+                            # Also write to hint file on the backups PVC so it's findable
+                            hint = Path(os.getenv("BACKUP_DIR", "/backups")) / "RESTORE_ENCRYPTION_KEY.txt"
+                            hint.write_text(
+                                f"# Run these two commands on your kubectl machine to complete the restore:\n\n"
+                                f"{manual_cmd}\n\n"
+                                f"{restart_cmd}\n"
+                            )
+                            warnings.append(
+                                f"Encryption key mismatch — could not patch Secret automatically. "
+                                f"Run on your kubectl machine: {manual_cmd} "
+                                f"then: {restart_cmd}"
                             )
                         else:
-                            env_text += f"\nPATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n"
-                        env_file_path.write_text(env_text)
+                            # Secret patched — backend needs a rollout restart to pick it up
+                            warnings.append(
+                                "Encryption key updated in cluster Secret. "
+                                "Run to apply: kubectl rollout restart deployment/patchpilot-backend "
+                                f"-n {namespace}"
+                            )
+
                     else:
-                        hint = Path(os.getenv("BACKUP_DIR", "/backups")) / "RESTORE_ENCRYPTION_KEY.txt"
-                        hint.write_text(
-                            f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n\n"
-                            "Add this to your .env and restart the backend.\n"
-                        )
-                        warnings.append(
-                            f"Encryption key mismatch — .env not writable. "
-                            f"Key written to {hint}. Add it to .env and restart."
-                        )
+                        # ── Docker path: write back to .env ───────────────
+                        import re as _re
+                        env_file_path = Path("/install/.env")
+                        if not env_file_path.exists() and os.getenv("INSTALL_DIR"):
+                            env_file_path = Path(os.getenv("INSTALL_DIR")) / ".env"
+
+                        if env_file_path.exists():
+                            env_text = env_file_path.read_text()
+                            if "PATCHPILOT_ENCRYPTION_KEY=" in env_text:
+                                env_text = _re.sub(
+                                    r"^PATCHPILOT_ENCRYPTION_KEY=.*$",
+                                    f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}",
+                                    env_text, flags=_re.MULTILINE,
+                                )
+                            else:
+                                env_text += f"\nPATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n"
+                            env_file_path.write_text(env_text)
+                        else:
+                            hint = Path(os.getenv("BACKUP_DIR", "/backups")) / "RESTORE_ENCRYPTION_KEY.txt"
+                            hint.write_text(
+                                f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n\n"
+                                "Add this to your .env and restart the backend:\n"
+                                "  docker restart patchpilot-backend-1\n"
+                            )
+                            warnings.append(
+                                f"Encryption key mismatch — .env not writable. "
+                                f"Key written to {hint}. "
+                                "Add it to .env and run: docker restart patchpilot-backend-1"
+                            )
             except Exception as e:
                 warnings.append(f"Could not restore encryption key: {e}")
 
         # ── 6. Schedule self-restart ───────────────────────────────────────
         restarting = False
-        own_id = os.environ.get("HOSTNAME", "")
-        if own_id and Path("/var/run/docker.sock").exists():
-            r = subprocess.run(
-                ["docker", "run", "--rm", "-d",
-                 "-v", "/var/run/docker.sock:/var/run/docker.sock",
-                 "docker:cli", "sh", "-c",
-                 f"sleep 5 && docker restart {own_id}"],
-                capture_output=True, text=True, timeout=15,
-            )
-            restarting = r.returncode == 0
-            if not restarting:
-                warnings.append(
-                    "Could not schedule auto-restart. Run manually: "
-                    "docker restart patchpilot-backend-1"
+        install_mode = os.getenv("PATCHPILOT_INSTALL_MODE", "").lower()
+        is_k8s = (
+            install_mode == "k8s"
+            or Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
+        )
+        namespace = os.getenv("PATCHPILOT_NAMESPACE", "patchpilot")
+
+        if not is_k8s:
+            own_id = os.environ.get("HOSTNAME", "")
+            if own_id and Path("/var/run/docker.sock").exists():
+                r = subprocess.run(
+                    ["docker", "run", "--rm", "-d",
+                     "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                     "docker:cli", "sh", "-c",
+                     f"sleep 5 && docker restart {own_id}"],
+                    capture_output=True, text=True, timeout=15,
                 )
+                restarting = r.returncode == 0
+                if not restarting:
+                    warnings.append(
+                        "Could not schedule auto-restart. Run manually: "
+                        "docker restart patchpilot-backend-1"
+                    )
+
+    restart_command = (
+        f"kubectl rollout restart deployment/patchpilot-backend -n {namespace}"
+        if is_k8s else
+        "docker restart patchpilot-backend-1"
+    )
+
+    if is_k8s:
+        message = f"Restore complete. Run to apply: {restart_command}"
+    elif restarting:
+        message = "Restore complete — backend restarting in 5 s. The login page will be ready in ~15 seconds."
+    else:
+        message = f"Restore complete. Restart the backend to finish: {restart_command}"
 
     return {
         "status": "restored",
-        "message": (
-            "Restore complete — backend restarting in 5 s. "
-            "The login page will be ready in ~15 seconds."
-            if restarting else
-            "Restore complete. Restart the backend container to finish: "
-            "docker restart patchpilot-backend-1"
-        ),
+        "message": message,
         "restarting": restarting,
+        "restart_command": restart_command,
         "source_version": meta.get("app_version", "unknown"),
         "source_date": meta.get("created_at", "unknown"),
         "warnings": warnings,
