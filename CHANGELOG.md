@@ -4,6 +4,21 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.9.6-alpha] - 2026-02-26
+
+### Fixed
+- **Delete-policy PVs stuck in `Failed` after uninstall** — Static hostPath PVs use `kubernetes.io/no-provisioner`; there is no provisioner to answer the Delete reclaim callback, so Kubernetes immediately marks them `Failed`. The uninstall now explicitly runs `kubectl delete pv` on all `Delete`-policy PVs after namespace teardown — exactly what `kubectl delete pv <name>` does manually — instead of waiting 90 s for a provisioner callback that will never arrive (`uninstall_api.py`, `install-k3s.sh`).
+- **Reinstall falsely pausing for node cleanup when only `patchpilot-backups` dir exists** — The stale-data SSH check used `find patchpilot-*` which matched the intentionally retained `patchpilot-backups` directory, causing the web installer to pause and demand manual cleanup on every reinstall. Check and cleanup commands now use `! -name 'patchpilot-backups'` to exclude it (`install-k3s.sh`).
+- **Uninstall cleanup Job deleting backup archives** — The busybox hostPath cleanup Job ran `find patchpilot-* -exec rm -rf` which also removed `/app-data/patchpilot-backups`. Job command updated with `! -name 'patchpilot-backups'` exclusion so backup files survive uninstall as intended (`install-k3s.sh`).
+- **Cleanup `rm` commands nuking backup dir** — Both `cleanup_cmd` assignments (initial and SSH-target-resolved) used `sudo rm -rf /app-data/patchpilot-*`. Changed to explicitly name `patchpilot-postgres-data` and `patchpilot-ansible-data` (`install-k3s.sh`).
+- **`patchpilot-backups` PV stuck `Released` blocking reinstall** — A `Released` PV retains its old `claimRef` (including PVC UID); a new PVC with `volumeName:` set will not bind until `claimRef` is cleared. `apply_manifests()` now detects a `Released` backups PV before applying manifests and patches out `claimRef`, transitioning it to `Available` so the new install binds cleanly with existing backup data intact (`install-k3s.sh`).
+- **crictl image cleanup only warned, never ran** — Uninstall printed the crictl command as a manual step but never executed it. Uninstall now SSHes to the node and runs `k3s crictl rmi` automatically; falls back to a `__NOTE_CLEANUP__` message only if SSH is unreachable (`install-k3s.sh`).
+
+### Changed
+- Uninstall background task ordering in `_k8s_cleanup_background` tightened: workloads scaled to zero → PVCs deleted → namespace deleted → Delete-policy PV objects explicitly removed → ClusterIssuer removed.
+
+---
+
 ## [0.9.5-alpha] - 2026-02-26
 
 ### Added

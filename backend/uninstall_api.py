@@ -274,8 +274,50 @@ def _k8s_cleanup_background(kc: list[str], namespace: str) -> None:
         if jf_path:
             Path(jf_path).unlink(missing_ok=True)
 
-    # ── Step 2: Delete namespace ───────────────────────────────────────────────
-    step = "Delete PatchPilot namespace (pods, services, PVCs, ConfigMaps)"
+    # ── Step 2a: Delete Deployments/StatefulSets first ────────────────────────
+    # Scale everything to zero so pods release volume mounts before PVCs are
+    # deleted.  This prevents the CSI driver from racing with pod teardown.
+    step = "Scale down workloads (release volume mounts)"
+    for kind in ("deployment", "statefulset"):
+        rc, names_out, _ = _run(
+            kc + ["get", kind, "-n", namespace,
+                  "-o", "jsonpath={.items[*].metadata.name}"],
+            timeout=15,
+        )
+        if rc == 0 and names_out.strip():
+            for name in names_out.strip().split():
+                _run(
+                    kc + ["scale", kind, name, "--replicas=0", "-n", namespace],
+                    timeout=30,
+                )
+    # Wait up to 60 s for pods to terminate
+    _run(
+        kc + ["wait", "--for=delete", "pod", "--all",
+              "-n", namespace, "--timeout=60s"],
+        timeout=75,
+    )
+    completed.append(step)
+
+    # ── Step 2b: Collect Delete-policy PV names before namespace is gone ──────
+    # hostPath static PVs have no provisioner — the Delete reclaim callback
+    # will never succeed, leaving them Failed.  Collect them now and explicitly
+    # delete the objects after namespace teardown (step 2d), same as running
+    # `kubectl delete pv <name>` manually.
+    rc, pvs_out, _ = _run(
+        kc + ["get", "pv", "-o",
+              "jsonpath={range .items[*]}{.metadata.name}={.spec.persistentVolumeReclaimPolicy} {end}"],
+        timeout=15,
+    )
+    delete_policy_pvs: list[str] = []
+    if rc == 0:
+        for entry in pvs_out.strip().split():
+            if "=" in entry:
+                pv_name, policy = entry.split("=", 1)
+                if policy.strip() == "Delete" and pv_name.startswith(f"{namespace}-"):
+                    delete_policy_pvs.append(pv_name)
+
+    # ── Step 2c: Delete namespace (takes pods, PVCs, services with it) ────────
+    step = "Delete PatchPilot namespace"
     rc, _, err = _run(
         kc + ["delete", "namespace", namespace, "--ignore-not-found=true"],
         timeout=120,
@@ -284,6 +326,22 @@ def _k8s_cleanup_background(kc: list[str], namespace: str) -> None:
         completed.append(step)
     else:
         failed.append(f"{step}: {err}")
+
+    # ── Step 2d: Explicitly delete Delete-policy PV objects ───────────────────
+    # No provisioner handles these — just delete the objects directly.
+    step = "Delete remaining Delete-policy PV objects"
+    if delete_policy_pvs:
+        rc, _, err = _run(
+            kc + ["delete", "pv"] + delete_policy_pvs + ["--ignore-not-found=true"],
+            timeout=30,
+        )
+        if rc == 0:
+            completed.append(f"{step}: {delete_policy_pvs}")
+        else:
+            failed.append(f"{step}: {err}")
+    else:
+        completed.append(f"{step}: none found")
+
 
     # ── Step 3: Delete ClusterIssuer ───────────────────────────────────────────
     step = "Delete ClusterIssuer (cert-manager)"

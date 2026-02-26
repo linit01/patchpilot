@@ -27,6 +27,7 @@ spec:
       # The secret is created by install-k3s.sh during the push step.
       # When PP_PULL_SECRET_NAME is empty (local strategy) this block is omitted
       # by the installer via sed — the placeholder stays harmless if left in.
+      serviceAccountName: patchpilot-backend
       imagePullSecrets:
       - name: ${PP_PULL_SECRET_NAME}
       initContainers:
@@ -114,6 +115,10 @@ spec:
         # ── Application ───────────────────────────────────────────────────
         - name: APP_VERSION
           value: "${PP_VERSION}"
+        - name: PATCHPILOT_INSTALL_MODE
+          value: "k8s"
+        - name: PATCHPILOT_NAMESPACE
+          value: "${PP_NAMESPACE}"
         - name: AUTO_REFRESH_INTERVAL
           value: "${PP_AUTO_REFRESH_INTERVAL}"
         - name: DEFAULT_SSH_USER
