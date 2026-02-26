@@ -153,31 +153,92 @@ do_uninstall() {
   warn "This will delete namespace '${ns}' and ALL data within it."
 
   if [[ "${NO_PROMPTS}" == "true" ]]; then
-    # Web wizard already confirmed — proceed automatically
     info "Auto-confirmed via web installer"
   else
     echo -en "${RED}Type namespace to confirm [${ns}]: ${NC}"; read -r confirm
     [[ "${confirm}" != "${ns}" ]] && { info "Cancelled."; exit 0; }
   fi
 
+  # ── Step 1: Clean hostPath dirs via privileged in-cluster Job ─────────────
+  # Runs a busybox container that mounts /app-data from the node directly —
+  # no SSH required. Must run BEFORE namespace deletion so the Job has
+  # a namespace to live in.
+  step "Running hostPath cleanup Job (no SSH required)"
+  local job_name="patchpilot-hostpath-cleanup"
+  local job_json
+  job_json=$(cat <<JOBEOF
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": { "name": "${job_name}", "namespace": "${ns}" },
+  "spec": {
+    "backoffLimit": 0,
+    "ttlSecondsAfterFinished": 30,
+    "template": {
+      "spec": {
+        "restartPolicy": "Never",
+        "tolerations": [{ "operator": "Exists" }],
+        "containers": [{
+          "name": "cleanup",
+          "image": "busybox:1.36",
+          "command": ["sh", "-c",
+            "find /app-data -maxdepth 1 -name \"patchpilot-*\" -exec rm -rf {} + 2>/dev/null; echo done"],
+          "securityContext": { "privileged": true, "runAsUser": 0 },
+          "volumeMounts": [{ "name": "app-data", "mountPath": "/app-data" }]
+        }],
+        "volumes": [{
+          "name": "app-data",
+          "hostPath": { "path": "/app-data", "type": "DirectoryOrCreate" }
+        }]
+      }
+    }
+  }
+}
+JOBEOF
+)
+
+  local job_succeeded=false
+  # Delete any leftover job from a prior attempt
+  kubectl delete job "${job_name}" -n "${ns}" --ignore-not-found=true &>/dev/null
+
+  if echo "${job_json}" | kubectl apply -f - &>/dev/null; then
+    info "Cleanup Job created — waiting up to 60s..."
+    if kubectl wait --for=condition=complete "job/${job_name}"         -n "${ns}" --timeout=60s &>/dev/null; then
+      ok "hostPath cleanup complete"
+      job_succeeded=true
+    else
+      warn "Cleanup Job did not complete in 60s — data may remain on node"
+    fi
+  else
+    warn "Could not create cleanup Job — namespace may already be gone"
+  fi
+
+  # ── Step 2: Delete namespace ───────────────────────────────────────────────
+  # reclaimPolicy: Delete means Kubernetes automatically removes the PVs and
+  # their hostPath data when PVCs are deleted with the namespace.
   info "Deleting namespace ${ns}..."
   kubectl delete namespace "${ns}" --ignore-not-found=true
+
+  # ── Step 3: Delete ClusterIssuer ──────────────────────────────────────────
   local issuer; issuer="$(yaml_get patchpilot.network.tls.clusterIssuer letsencrypt-prod)"
   kubectl delete clusterissuer "${issuer}" --ignore-not-found=true 2>/dev/null || true
 
-  # Also clean up hostPath data on the node
-  local node node_ip
-  node="$(kubectl get nodes --field-selector='spec.unschedulable!=true' \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
-  node_ip="$(kubectl get node "${node}" \
-    -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)"
+  # ── Step 6: Surface fallback/manual commands ───────────────────────────────
+  local node_ip
+  node_ip="$(kubectl get nodes \
+    -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' \
+    2>/dev/null)"
+  local node_ref="${node_ip:-<k3s-node-ip>}"
 
-  if [[ -n "${node_ip}" ]]; then
-    warn "You may want to clean leftover hostPath data on the node:"
-    warn "  ssh ${node_ip} sudo rm -rf /app-data/patchpilot-*"
-    # Emit structured marker so web wizard can surface this as a post-uninstall note
-    echo "__NOTE_CLEANUP__ ssh ${node_ip} sudo rm -rf /app-data/patchpilot-*"
+  if [[ "${job_succeeded}" == "false" ]]; then
+    warn "hostPath cleanup Job did not complete — run on the k3s node:"
+    warn "  ssh ${node_ref} 'sudo rm -rf /app-data/patchpilot-*'"
+    echo "__NOTE_CLEANUP__ ssh ${node_ref} 'sudo rm -rf /app-data/patchpilot-*'"
   fi
+
+  # Image removal always requires crictl on the node
+  warn "Remove PatchPilot images from k3s containerd cache (run on node):"
+  warn "  ssh ${node_ref} \"sudo k3s crictl rmi \$(sudo k3s crictl images | grep patchpilot | awk '{print \$3}') 2>/dev/null || true\""
 
   ok "PatchPilot uninstalled."
   exit 0
