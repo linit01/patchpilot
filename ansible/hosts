@@ -1,5 +1,12 @@
 [homelab]
 10.0.1.101 ansible_user=sanborn
+192.168.1.50 ansible_user=sanborn
+10.0.1.111 ansible_user=sanborn
+10.0.1.226 ansible_user=admin
+10.0.1.88 ansible_user=sanborn ansible_port=2299
+johns-macmini.lan ansible_connection=local
+johns-mbp.lan ansible_user=johnsanborn
+printerd.lan ansible_user=sanborn
 
 [homelab:vars]
 ansible_user=root

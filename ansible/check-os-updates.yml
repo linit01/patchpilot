@@ -1,132 +1,139 @@
 ---
 - hosts: all
   gather_facts: yes
-  
+  serial: 1
+  vars:
+    ansible_python_interpreter: auto_silent
   tasks:
-    - name: Output host facts
+    # Emit structured host info for PatchPilot parser (OS, IP, Family)
+    - name: Emit host info
       debug:
-        msg: "HOSTINFO: {{ inventory_hostname }} | IP: {{ ansible_default_ipv4.address | default('N/A') }} | OS: {{ ansible_distribution | default('Unknown') }} | Family: {{ ansible_os_family }}"
-    
+        msg: "HOSTINFO: {{ inventory_hostname }} | IP: {{ ansible_default_ipv4.address | default('N/A') }} | OS: {{ ansible_distribution | default('Unknown') }} | Family: {{ ansible_os_family | default('Unknown') }}"
+
+    # Linux update checks
+    - name: Refresh apt cache (Debian/Ubuntu)
+      shell: apt-get update -qq 2>/dev/null
+      become: yes
+      when: ansible_facts['os_family'] == "Debian"
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    # Include phased updates in the list so dashboard reflects what *can* be installed
     - name: Check for updates (Debian/Ubuntu)
-      shell: "apt list --upgradable 2>/dev/null | tail -n +2"
+      shell: APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1 apt list --upgradable 2>/dev/null | tail -n +2
       register: apt_updates
       when: ansible_facts['os_family'] == "Debian"
       changed_when: false
-    
-    - name: Output apt package details
-      debug:
-        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ apt_updates.stdout_lines }}"
-      when: 
-        - ansible_facts['os_family'] == "Debian"
-        - apt_updates.stdout_lines | length > 0
-      
+
+    # macOS update checks
     - name: Check for Homebrew updates (macOS)
-      shell: "HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 /opt/homebrew/bin/brew outdated --verbose"
+      shell: /opt/homebrew/bin/brew outdated
       register: brew_updates
       when: ansible_facts['os_family'] == "Darwin"
       changed_when: false
       failed_when: false
-    
-    - name: Output brew package details
-      debug:
-        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ brew_updates.stdout_lines }}"
-      when: 
-        - ansible_facts['os_family'] == "Darwin"
-        - brew_updates.stdout_lines | default([]) | length > 0
-      
+
     - name: Check for macOS system updates
-      shell: "/usr/sbin/softwareupdate -l"
+      shell: /usr/sbin/softwareupdate -l
       register: macos_updates
       when: ansible_facts['os_family'] == "Darwin"
       changed_when: false
       failed_when: false
-      
-    - name: Output macOS system update details
+
+    - name: Check for App Store updates (requires mas)
+      shell: /opt/homebrew/bin/mas outdated
+      register: mas_updates
+      when: ansible_facts['os_family'] == "Darwin"
+      changed_when: false
+      failed_when: false
+
+    # Emit individual package details so PatchPilot can populate the packages table
+    - name: Emit Debian package details
       debug:
         msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ macos_updates.stdout_lines | default([]) | select('match', '^\\*') | list }}"
-      when:
-        - ansible_facts['os_family'] == "Darwin"
-        - macos_updates.stdout_lines | default([]) | select('match', '^\\*') | list | length > 0
+      loop: "{{ apt_updates.stdout_lines | default([]) }}"
+      when: ansible_facts['os_family'] == "Debian" and apt_updates.stdout_lines is defined and apt_updates.stdout_lines | length > 0
 
+    - name: Emit Homebrew package details
+      debug:
+        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ brew_updates.stdout_lines | default([]) }}"
+      when: ansible_facts['os_family'] == "Darwin" and brew_updates.stdout_lines is defined and brew_updates.stdout_lines | length > 0
+
+    - name: Emit macOS system update details
+      debug:
+        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ macos_updates.stdout_lines | default([]) }}"
+      when: ansible_facts['os_family'] == "Darwin" and macos_updates.stdout_lines is defined and macos_updates.stdout_lines | length > 0
+
+    - name: Emit App Store package details
+      debug:
+        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ mas_updates.stdout_lines | default([]) }}"
+      when: ansible_facts['os_family'] == "Darwin" and mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0
+
+    # Show status
+    - name: Show update status
+      debug:
+        msg: "{{ inventory_hostname }}: {% if apt_updates.stdout_lines is defined and apt_updates.stdout_lines | length > 0 %}{{ apt_updates.stdout_lines | length }} apt updates available{% elif brew_updates.stdout_lines is defined and brew_updates.stdout_lines | length > 0 %}{{ brew_updates.stdout_lines | length }} brew updates available{% elif macos_updates.stdout is defined and 'No new software available' not in macos_updates.stdout %}macOS system updates available{% elif mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}{{ mas_updates.stdout_lines | length }} App Store updates available{% else %}Up to date{% endif %}"
+      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or mas_updates.stdout_lines is defined
+
+    # Apply updates
+    - name: Starting updates on host
+      debug:
+        msg: "=== Applying updates to {{ inventory_hostname }} ==="
+      tags: ['never', 'apply-updates']
+
+    # Use shell instead of apt module so we can pass --allow-phased-updates.
+    # The apt module has no parameter for this flag — without it, Ubuntu silently
+    # defers phased packages (changed: false) even when the dashboard shows them pending.
+    - name: Apply updates (Debian/Ubuntu)
+      shell: |
+        DEBIAN_FRONTEND=noninteractive apt-get -y \
+          -o APT::Get::Always-Include-Phased-Updates=true \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" \
+          dist-upgrade
+      become: yes
+      when: ansible_facts['os_family'] == "Debian"
+      register: apt_upgrade_result
+      changed_when: "'0 upgraded' not in apt_upgrade_result.stdout"
+      tags: ['never', 'apply-updates']
+
+    - name: Apply Homebrew updates (macOS)
+      shell: HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 /opt/homebrew/bin/brew upgrade
+      when: ansible_facts['os_family'] == "Darwin"
+      register: brew_upgrade_result
+      failed_when: false
+      tags: ['never', 'apply-updates']
+
+    - name: Apply macOS system updates
+      shell: /usr/sbin/softwareupdate -i -a
+      when: ansible_facts['os_family'] == "Darwin"
+      register: macos_upgrade_result
+      tags: ['never', 'apply-updates']
+
+    - name: Apply App Store updates
+      shell: /opt/homebrew/bin/mas upgrade
+      when: ansible_facts['os_family'] == "Darwin"
+      register: mas_upgrade_result
+      failed_when: false
+      tags: ['never', 'apply-updates']
+
+    # Reboot handling
     - name: Check if reboot required (Linux)
       stat:
         path: /var/run/reboot-required
+      become: yes
       register: reboot_required
       when: ansible_facts['os_family'] == "Debian"
-      tags: [apply-updates]
+      tags: ['never', 'apply-updates']
 
-    - name: Reboot if required and allowed
+    - name: Reboot if needed (Linux)
       reboot:
-        msg: "Rebooting to complete updates"
-        pre_reboot_delay: 5
-        post_reboot_delay: 30
+        msg: "Rebooting for system updates"
         reboot_timeout: 300
-      when:
-        - ansible_facts['os_family'] == "Debian"
-        - reboot_required.stat.exists
-        - allow_auto_reboot | default(false)
-        - not is_control_node | default(false)
       become: yes
-      tags: [apply-updates]
-    
-    - name: Show update status
-      debug:
-        msg: >-
-          {% if ansible_facts['os_family'] == "Debian" %}
-          {{ inventory_hostname }}: {% if apt_updates.stdout_lines | length > 0 %}{{ apt_updates.stdout_lines | length }} apt updates available{% else %}Up to date{% endif %}
-          {% elif ansible_facts['os_family'] == "Darwin" %}
-          {{ inventory_hostname }}: {% set brew_count = brew_updates.stdout_lines | default([]) | length %}{% set macos_count = macos_updates.stdout_lines | default([]) | select('match', '^\\*') | list | length %}{% set total = brew_count + macos_count %}{% if total > 0 %}{{ total }} updates available ({{ brew_count }} brew{% if macos_count > 0 %}, {{ macos_count }} system{% endif %}){% else %}Up to date{% endif %}
-          {% endif %}
-
-- hosts: all
-  gather_facts: no
-  tags: [apply-updates, never]
-  tasks:
-    - name: Apply updates (Debian/Ubuntu)
-      shell: |
-        export APT_GET_ASSUME_YES=yes
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y </dev/null
-      when: ansible_facts['os_family'] == "Debian"
-      become: yes
-      register: apt_upgrade_result
-      changed_when: "'0 upgraded' not in apt_upgrade_result.stdout"
-      
-    - name: Apply Homebrew updates (macOS)
-      shell: "/opt/homebrew/bin/brew upgrade"
-      when: ansible_facts['os_family'] == "Darwin"
-      register: brew_upgrade_result
-      changed_when: "'Already up-to-date' not in brew_upgrade_result.stdout"
-
-    - name: Apply macOS system updates (non-control nodes with auto-reboot)
-      shell: "/usr/sbin/softwareupdate -iaR --agree-to-license"
-      become: yes
-      when:
-        - ansible_facts['os_family'] == "Darwin"
-        - allow_auto_reboot | default(false) | bool
-        - not is_control_node | default(false) | bool
-      register: macos_upgrade_result
-      tags: [apply-updates]
-
-    - name: Download macOS system updates (control nodes only)
-      shell: "/usr/sbin/softwareupdate -d -a"
-      become: yes
-      when:
-        - ansible_facts['os_family'] == "Darwin"
-        - is_control_node | default(false) | bool
-      register: macos_download_result
-      async: 3600
-      poll: 30
-      tags: [apply-updates]
-
-    - name: Notify control node user about pending macOS updates
-      debug:
-        msg: "⚠️ macOS updates downloaded to control node {{ inventory_hostname }}. Please restart manually to complete installation."
-      when:
-        - ansible_facts['os_family'] == "Darwin"
-        - is_control_node | default(false) | bool
-        - macos_download_result.changed
+      when: ansible_facts['os_family'] == "Debian" and reboot_required.stat.exists
+      tags: ['never', 'apply-updates', 'reboot']

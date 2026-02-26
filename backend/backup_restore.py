@@ -54,6 +54,10 @@ BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 ANSIBLE_DIR = Path(os.getenv("ANSIBLE_DIR", "/ansible"))
 
+# Absolute path to the install directory on the host (contains .env).
+# Set via INSTALL_DIR in .env — used to bundle .env into uninstall backups.
+INSTALL_DIR = Path(os.getenv("INSTALL_DIR", "")).expanduser() if os.getenv("INSTALL_DIR") else None
+
 PG_HOST = os.getenv("POSTGRES_HOST", "postgres")
 PG_PORT = os.getenv("POSTGRES_PORT", "5432")
 PG_USER = os.getenv("POSTGRES_USER", "patchpilot")
@@ -79,11 +83,24 @@ operation_progress: dict = {}
 # Connection pool reference — set by app.py on startup via set_pool()
 _db_pool: Optional[asyncpg.Pool] = None
 
+# DatabaseClient reference — set by app.py on startup via set_db_client()
+# Used to close/reconnect the legacy db.pool after a restore so it doesn't
+# hold stale connections to the dropped-and-recreated database.
+_db_client = None
+
 
 def set_pool(pool: asyncpg.Pool):
     """Called from app.py after pool creation so backup module can manage it."""
     global _db_pool
     _db_pool = pool
+
+
+def set_db_client(db_client):
+    """Called from app.py so the backup module can rebuild the DatabaseClient
+    pool after a restore (it has its own separate asyncpg pool that also needs
+    reconnecting when the database is dropped and recreated)."""
+    global _db_client
+    _db_client = db_client
 
 
 def get_pool() -> asyncpg.Pool:
@@ -273,14 +290,26 @@ async def _wait_for_postgres(timeout: int = 60):
 # Connection pool rebuild after restore
 # ---------------------------------------------------------------------------
 async def _rebuild_pool():
-    """Close and recreate the asyncpg connection pool after restore."""
-    global _db_pool
-    logger.info("Rebuilding database connection pool...")
+    """Close and recreate both connection pools after restore.
+
+    Two pools exist:
+      _db_pool   — used by settings API, auth, backup module (asyncpg.Pool)
+      _db_client — DatabaseClient used by host/package/patch-history routes
+
+    Both are connected to the database that was just dropped and recreated.
+    asyncpg won't proactively reconnect invalidated pool connections; the first
+    request to use a stale connection would throw an error.  Explicitly closing
+    and recreating both pools gives callers a clean slate immediately.
+    """
+    global _db_pool, _db_client
+
+    # ── Rebuild _db_pool (settings / auth / backup module) ────────────────
+    logger.info("Rebuilding asyncpg connection pool (_db_pool)...")
     try:
         if _db_pool:
             await _db_pool.close()
     except Exception as e:
-        logger.warning(f"Error closing pool: {e}")
+        logger.warning(f"Error closing _db_pool: {e}")
 
     _db_pool = await asyncpg.create_pool(
         host=PG_HOST,
@@ -291,21 +320,56 @@ async def _rebuild_pool():
         min_size=1,
         max_size=10,
     )
-    logger.info("Database connection pool rebuilt successfully")
+    logger.info("_db_pool rebuilt successfully")
+
+    # ── Rebuild DatabaseClient pool (host / package / patch-history) ──────
+    if _db_client is not None:
+        logger.info("Rebuilding DatabaseClient pool (_db_client.pool)...")
+        try:
+            if getattr(_db_client, 'pool', None):
+                await _db_client.pool.close()
+                _db_client.pool = None
+        except Exception as e:
+            logger.warning(f"Error closing DatabaseClient pool: {e}")
+
+        # Re-use the client's own connect() method so it applies its own params
+        try:
+            await _db_client.connect()
+            logger.info("DatabaseClient pool rebuilt successfully")
+        except Exception as e:
+            logger.error(f"Failed to rebuild DatabaseClient pool: {e}")
+    else:
+        logger.warning(
+            "DatabaseClient reference not set — call set_db_client(db) in "
+            "startup_event(). Host/package routes may get connection errors "
+            "until the backend container is restarted."
+        )
 
 
 # ---------------------------------------------------------------------------
 # BACKUP
 # ---------------------------------------------------------------------------
-async def _run_backup(description: str, include_encryption_key: bool) -> str:
+async def _run_backup(description: str, include_encryption_key: bool,
+                      uninstall_mode: bool = False) -> str:
     """
     Core backup routine. Returns the filename of the created backup archive.
     Caller is responsible for entering/exiting maintenance mode.
+
+    uninstall_mode=True:
+      - Forces include_encryption_key=True (non-negotiable for a restore to work)
+      - Bundles the .env file from INSTALL_DIR if configured
+      - Tags the archive filename with '_uninstall' for easy identification
     """
     _check_pg_client_tools()
 
+    # Uninstall backups must always carry the encryption key — without it the
+    # restored DB's SSH credentials are permanently unreadable.
+    if uninstall_mode:
+        include_encryption_key = True
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    backup_name = f"patchpilot_backup_{timestamp}"
+    suffix = "_uninstall" if uninstall_mode else ""
+    backup_name = f"patchpilot_backup_{timestamp}{suffix}"
     archive_path = BACKUP_DIR / f"{backup_name}.tar.gz"
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -401,7 +465,42 @@ async def _run_backup(description: str, include_encryption_key: bool) -> str:
             else:
                 logger.warning("Encryption key not found in environment")
 
-        # ── Step 5: Write backup metadata ──────────────────────────────────
+        # ── Step 4b: Reconstruct .env from container environment ──────────
+        # INSTALL_DIR is a host path — it doesn't exist as a filesystem path
+        # inside the container.  However, docker-compose already loaded every
+        # variable from .env into the container environment via env_file:.env.
+        # We write those values back out so the archive contains a complete,
+        # working .env for the restore target.
+        includes_env = False
+        if uninstall_mode:
+            known_vars = [
+                # Database
+                "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
+                "POSTGRES_HOST", "POSTGRES_PORT",
+                # Encryption
+                "PATCHPILOT_ENCRYPTION_KEY",
+                # Application
+                "AUTO_REFRESH_INTERVAL", "DEFAULT_SSH_USER", "DEFAULT_SSH_PORT",
+                "APP_BASE_URL", "ALLOWED_ORIGINS",
+                # Backup
+                "BACKUP_RETAIN_COUNT", "MAX_BACKUP_SIZE_MB",
+                # Install
+                "PATCHPILOT_INSTALL_MODE", "INSTALL_DIR",
+            ]
+            env_lines = [
+                "# PatchPilot environment — reconstructed from running container",
+                f"# Generated: {datetime.now(timezone.utc).isoformat()}",
+                "",
+                "# ── Database ──────────────────────────────────────────────",
+            ]
+            for var in known_vars:
+                val = os.environ.get(var)
+                if val is not None:
+                    env_lines.append(f"{var}={val}")
+            env_content = "\n".join(env_lines) + "\n"
+            (backup_staging / ".env").write_text(env_content)
+            includes_env = True
+            logger.info("Reconstructed .env from container environment")
         _set_progress("metadata", 75, "Writing backup metadata...")
         meta = {
             "backup_name": backup_name,
@@ -411,6 +510,8 @@ async def _run_backup(description: str, include_encryption_key: bool) -> str:
             "app_version": _get_app_version(),
             "includes_ansible": includes_ansible,
             "includes_encryption_key": includes_key,
+            "includes_env": includes_env,
+            "uninstall_backup": uninstall_mode,
             "pg_host": PG_HOST,
             "pg_db": PG_DB,
             "format": "pg_custom",
@@ -570,33 +671,120 @@ async def _run_restore(archive_path: Path) -> dict:
         summary["database_restored"] = True
         logger.info("Database restore complete")
 
-        # ── Step 5: Rebuild connection pool ───────────────────────────────
-        _set_progress("reconnect", 75, "Reconnecting to database...")
-        await _rebuild_pool()
-
-        # ── Step 6: Restore Ansible files ─────────────────────────────────
-        _set_progress("ansible", 85, "Restoring Ansible configuration...")
+        # ── Step 5: Restore Ansible files ─────────────────────────────────
+        _set_progress("ansible", 80, "Restoring Ansible configuration...")
         ansible_backup = staging / "ansible"
         if ansible_backup.exists() and any(ansible_backup.iterdir()):
             try:
                 if ANSIBLE_DIR.exists():
-                    # Backup current ansible files first
+                    # Snapshot current ansible files before overwriting
                     ansible_current_backup = BACKUP_DIR / f"ansible_pre_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     shutil.copytree(ANSIBLE_DIR, ansible_current_backup)
-                    logger.info(f"Pre-restore ansible backup: {ansible_current_backup}")
+                    logger.info(f"Pre-restore ansible snapshot: {ansible_current_backup}")
 
-                shutil.rmtree(ANSIBLE_DIR, ignore_errors=True)
-                shutil.copytree(ansible_backup, ANSIBLE_DIR)
+                # Copy using dirs_exist_ok so we don't depend on rmtree succeeding.
+                # This merges/overwrites individual files rather than replacing the
+                # whole directory, which avoids FileExistsError if the dir persists.
+                shutil.copytree(ansible_backup, ANSIBLE_DIR, dirs_exist_ok=True)
                 summary["ansible_restored"] = True
                 logger.info("Ansible configuration restored")
+
+                # Always overwrite the playbook with the image-bundled version.
+                # The playbook is app code not user data — an old backup version
+                # would lose fixes/features added since. Only the hosts file is
+                # user data worth restoring from backup.
+                ansible_src = Path("/ansible-src/check-os-updates.yml")
+                ansible_dst = ANSIBLE_DIR / "check-os-updates.yml"
+                if ansible_src.exists():
+                    shutil.copy2(ansible_src, ansible_dst)
+                    logger.info("Playbook overwritten with current image version")
+                else:
+                    logger.warning("ansible-src playbook not found — backup version kept")
             except Exception as e:
                 summary["warnings"].append(f"Ansible restore partial: {e}")
                 logger.warning(f"Ansible restore warning: {e}")
         else:
             summary["warnings"].append("No Ansible files found in backup")
 
-        # ── Step 7: Verify settings post-restore ──────────────────────────
-        _set_progress("verify", 95, "Verifying restored settings...")
+        # ── Step 5b: Restore encryption key to .env ───────────────────────
+        # Critical: if the backup was made with a different encryption key than
+        # the one currently running, all restored SSH credentials will be
+        # unreadable.  Read encryption_key.json from the archive and rewrite
+        # the PATCHPILOT_ENCRYPTION_KEY line in the on-disk .env so the
+        # subsequent self-restart picks up the correct key.
+        #
+        # The install directory is mounted at /install in the container via
+        # docker-compose (- .:/install:rw).  This is the only reliable path
+        # to reach .env from inside the container.
+        _set_progress("encryption_key", 87, "Restoring encryption key...")
+        enc_key_file = staging / "encryption_key.json"
+
+        # Primary: fixed container mount path (docker-compose: - .:/install:rw)
+        # Fallback: INSTALL_DIR env var (for custom deployments)
+        env_file_path = Path("/install/.env")
+        if not env_file_path.exists() and INSTALL_DIR:
+            env_file_path = INSTALL_DIR / ".env"
+
+        if enc_key_file.exists():
+            try:
+                enc_key_data = json.loads(enc_key_file.read_text())
+                backup_enc_key = enc_key_data.get("PATCHPILOT_ENCRYPTION_KEY", "")
+                current_enc_key = os.getenv("PATCHPILOT_ENCRYPTION_KEY", "")
+
+                if backup_enc_key and backup_enc_key != current_enc_key:
+                    logger.warning(
+                        "Backup encryption key differs from running key — "
+                        "updating .env to match backup key"
+                    )
+                    if env_file_path.exists():
+                        env_text = env_file_path.read_text()
+                        if "PATCHPILOT_ENCRYPTION_KEY=" in env_text:
+                            import re as _re
+                            env_text = _re.sub(
+                                r"^PATCHPILOT_ENCRYPTION_KEY=.*$",
+                                f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}",
+                                env_text,
+                                flags=_re.MULTILINE,
+                            )
+                        else:
+                            env_text += f"\nPATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n"
+                        env_file_path.write_text(env_text)
+                        logger.info(f"Updated encryption key in {env_file_path}")
+                        summary["encryption_key_updated"] = True
+                    else:
+                        # .env not accessible — write the key to /backups as a fallback
+                        key_hint_path = BACKUP_DIR / "RESTORE_ENCRYPTION_KEY.txt"
+                        key_hint_path.write_text(
+                            f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n\n"
+                            "Add the above line to your .env file and restart the backend.\n"
+                            "Without this, restored SSH credentials will be unreadable.\n"
+                        )
+                        summary["warnings"].append(
+                            f"Encryption key mismatch but .env not writable. "
+                            f"Key written to {key_hint_path}. "
+                            "Add it to your .env and restart the backend."
+                        )
+                        logger.warning(
+                            f"Could not find writable .env (tried /install/.env and "
+                            f"{INSTALL_DIR / '.env' if INSTALL_DIR else 'N/A'}) — "
+                            f"key hint written to {key_hint_path}"
+                        )
+                elif backup_enc_key == current_enc_key:
+                    logger.info("Encryption key matches backup — no update needed")
+                    summary["encryption_key_updated"] = False
+            except Exception as e:
+                summary["warnings"].append(f"Could not restore encryption key: {e}")
+                logger.warning(f"Encryption key restore warning: {e}")
+        else:
+            summary["warnings"].append(
+                "No encryption_key.json in backup — SSH credentials may be unreadable "
+                "if this backup was created on a different install. "
+                "If hosts show unreachable after restore, re-enter SSH keys in Settings."
+            )
+            logger.warning("encryption_key.json not found in backup archive")
+
+        # ── Step 6: Verify settings post-restore ──────────────────────────
+        _set_progress("verify", 92, "Verifying restored settings...")
         try:
             pool = get_pool()
             async with pool.acquire() as conn:
@@ -762,7 +950,35 @@ async def upload_backup(file: UploadFile = File(...)):
 
 
 @router.post("/restore")
-async def restore_backup(request: RestoreRequest, background_tasks: BackgroundTasks):
+def _schedule_self_restart(delay_seconds: int = 3) -> bool:
+    """
+    Spawn a detached docker:cli janitor that restarts the backend container
+    after a short delay, giving the current request time to return a response.
+
+    Returns True if the janitor was launched, False if docker.sock is not
+    available (non-Docker deployment — caller should log a warning instead).
+    """
+    if not _docker_available():
+        return False
+
+    own_id = os.environ.get("HOSTNAME", "")
+    if not own_id:
+        logger.warning("HOSTNAME env var not set — cannot self-restart")
+        return False
+
+    script = f"sleep {delay_seconds} && docker restart {own_id}"
+    result = subprocess.run(
+        ["docker", "run", "--rm", "-d",
+         "-v", "/var/run/docker.sock:/var/run/docker.sock",
+         "docker:cli",
+         "sh", "-c", script],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode == 0:
+        logger.info(f"Self-restart janitor launched (delay={delay_seconds}s, target={own_id[:12]})")
+        return True
+    logger.warning(f"Self-restart janitor failed to launch: {result.stderr.strip()}")
+    return False
     """
     Restore from a named backup archive.
     ⚠️  DESTRUCTIVE: drops and recreates the database.
@@ -788,10 +1004,28 @@ async def restore_backup(request: RestoreRequest, background_tasks: BackgroundTa
             await _enter_maintenance("Restore in progress — system temporarily unavailable")
             summary = await _run_restore(archive_path)
             logger.info(f"Restore completed: {json.dumps(summary, indent=2)}")
+
+            # Schedule a self-restart so all in-process state (scheduler tasks,
+            # cached settings, connection pools) is cleanly reinitialized.
+            # The restart fires after a short delay so the progress poller can
+            # collect the "complete" status before the container goes away.
+            restarting = _schedule_self_restart(delay_seconds=5)
+            if restarting:
+                _set_progress(
+                    "restarting", 100,
+                    "Restore complete — restarting backend in 5 s… "
+                    "The login page will be ready in ~15 seconds."
+                )
+            else:
+                _set_progress(
+                    "complete", 100,
+                    "Restore complete. Restart the backend container to apply all changes: "
+                    "docker restart patchpilot-backend-1"
+                )
+
         except Exception as e:
             logger.error(f"Restore failed: {e}", exc_info=True)
             _set_progress("error", 0, f"Restore failed: {str(e)}")
-            # Attempt to rebuild pool even on failure
             try:
                 await _rebuild_pool()
             except Exception:
@@ -835,4 +1069,112 @@ async def backup_health():
             for t in ("pg_dump", "pg_restore")
         ),
         "docker_socket": _docker_available(),
+        "install_dir_configured": bool(os.environ.get("INSTALL_DIR")),
+        "install_dir": os.environ.get("INSTALL_DIR"),
+        "env_file_found": True,   # always reconstructable from container environment
+    }
+
+
+@router.post("/uninstall-backup")
+async def create_uninstall_backup(
+    background_tasks: BackgroundTasks,
+    description: str = "Pre-uninstall backup",
+):
+    """
+    Create a complete pre-uninstall backup.
+
+    Differences from /create:
+      - Encryption key is ALWAYS included (required for credentials to be
+        recoverable after restore — SSH keys in the DB are useless without it)
+      - .env file is bundled from INSTALL_DIR if configured
+      - Archive is tagged '_uninstall' in the filename for easy identification
+      - Returns the filename immediately after the background task completes
+        so the uninstall modal can offer a direct download link
+
+    On a fresh install, restore procedure:
+      1. Copy .env from the archive to the new install directory
+      2. Run docker compose up -d
+      3. Use Settings → Backup & Restore → Upload & Restore to load the archive
+    """
+    global current_operation
+
+    if maintenance_mode:
+        raise HTTPException(503, detail=f"System is busy: {maintenance_reason}")
+
+    current_operation = "backup"
+    result: dict = {}
+
+    async def _do_uninstall_backup():
+        nonlocal result
+        try:
+            await _enter_maintenance("Pre-uninstall backup in progress")
+            filename = await _run_backup(
+                description=description,
+                include_encryption_key=True,   # always forced in uninstall mode
+                uninstall_mode=True,
+            )
+            result["filename"] = filename
+            result["status"] = "complete"
+            logger.info(f"Uninstall backup completed: {filename}")
+        except Exception as e:
+            result["status"] = "error"
+            result["error"] = str(e)
+            logger.error(f"Uninstall backup failed: {e}", exc_info=True)
+            _set_progress("error", 0, f"Backup failed: {str(e)}")
+        finally:
+            await _exit_maintenance()
+
+    # Run synchronously so the caller gets the filename back immediately
+    # (the uninstall modal needs it for the download link before proceeding)
+    await _do_uninstall_backup()
+
+    if result.get("status") == "error":
+        raise HTTPException(500, detail=result.get("error", "Backup failed"))
+
+    filename = result["filename"]
+    archive_path = BACKUP_DIR / filename
+    size = archive_path.stat().st_size if archive_path.exists() else 0
+
+    # Read metadata to report what was actually included
+    included = {
+        "database": True,
+        "ansible": False,
+        "encryption_key": False,
+        "env_file": False,
+    }
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.endswith("backup_metadata.json"):
+                    f = tar.extractfile(member)
+                    if f:
+                        m = json.loads(f.read().decode())
+                        included["ansible"] = m.get("includes_ansible", False)
+                        included["encryption_key"] = m.get("includes_encryption_key", False)
+                        included["env_file"] = m.get("includes_env", False)
+                    break
+    except Exception:
+        pass
+
+    warnings = []
+    if not included["env_file"]:
+        warnings.append(
+            "INSTALL_DIR not configured — .env was NOT included. "
+            "Add INSTALL_DIR=/path/to/patchpilot to your .env and recreate the backup, "
+            "or manually copy your .env to the new install before restoring."
+        )
+
+    return {
+        "status": "complete",
+        "filename": filename,
+        "size_human": _human_size(size),
+        "download_url": f"/api/backup/download/{filename}",
+        "included": included,
+        "warnings": warnings,
+        "restore_instructions": [
+            "1. On your fresh install: copy .env from this archive to the install directory",
+            "2. Run: docker compose up -d",
+            "3. Go to Settings → Backup & Restore → Upload & Restore",
+            "4. Upload this archive and confirm restore",
+        ],
     }

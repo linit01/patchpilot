@@ -444,6 +444,12 @@ load_config() {
   PP_APP_PV_SOURCE="$(_build_pv_source "${PP_APP_STORAGE_CLASS}" "patchpilot-backups")"
   PP_APP_PV_SOURCE_ANSIBLE="$(_build_pv_source "${PP_ANSIBLE_STORAGE_CLASS}" "patchpilot-ansible-data")"
 
+  # ── kubectl path — baked into the deployment so the backend pod can run
+  #    kubectl without relying on PATH inside the slim Python image.
+  #    We resolve it NOW on the install host where kubectl is guaranteed present.
+  PP_KUBECTL_BIN="$(which kubectl)"
+  ok "kubectl resolved: ${PP_KUBECTL_BIN}"
+
   # ── Ansible ────────────────────────────────────────────────────────────────
   PP_ANSIBLE_PLAYBOOK_PATH="$(yaml_get patchpilot.ansible.playbookPath)"
   PP_ANSIBLE_INVENTORY_PATH="$(yaml_get patchpilot.ansible.inventoryPath)"
@@ -560,7 +566,8 @@ generate_manifests() {
            PP_ANSIBLE_STORAGE_CLASS PP_ANSIBLE_STORAGE_CLASS_SPEC \
            PP_NFS_SERVER PP_NFS_SHARE PP_BACKUP_STORAGE_TYPE \
            PP_CLUSTER_ISSUER PP_TLS_SECRET_NAME PP_INGRESS_CLASS \
-           PP_LE_EMAIL PP_CF_EMAIL PP_CF_API_TOKEN_SECRET
+           PP_LE_EMAIL PP_CF_EMAIL PP_CF_API_TOKEN_SECRET \
+           PP_KUBECTL_BIN
     envsubst '$PP_NAMESPACE:$PP_VERSION:$PP_BACKEND_IMAGE:$PP_FRONTEND_IMAGE:'\
 '$PP_IMAGE_PULL_POLICY:$PP_PULL_SECRET_NAME:$PP_DB_USER:$PP_DB_PASSWORD:'\
 '$PP_DB_NAME:$PP_ENCRYPTION_KEY:$PP_BASE_URL:$PP_ALLOWED_ORIGINS:'\
@@ -575,7 +582,7 @@ generate_manifests() {
 '$PP_AUTO_REFRESH_INTERVAL:$PP_DEFAULT_SSH_USER:$PP_DEFAULT_SSH_PORT:'\
 '$PP_BACKUP_RETAIN_COUNT:$PP_MAX_BACKUP_SIZE_MB:'\
 '$PP_INGRESS_RULES:$PP_TLS_HOSTS:$PP_TLS_DNS_NAMES:'\
-'$PP_INGRESS_MIDDLEWARE_ANNOTATION:$PP_HOSTNAME' \
+'$PP_INGRESS_MIDDLEWARE_ANNOTATION:$PP_HOSTNAME:$PP_KUBECTL_BIN' \
       < "$1" > "$2"
   }
 

@@ -552,20 +552,102 @@
                     <p>This wizard will walk you through the initial configuration. It only runs once — afterwards you'll manage everything from the Settings page.</p>
                 </div>
                 <div class="card-body">
-                    <div class="alert info show">
-                        <strong>Fresh Install Detected</strong><br>
-                        No users exist yet. This setup creates your admin account and configures the core settings. The entire process takes about 2 minutes.
+                    <!-- Fresh install path -->
+                    <div id="welcome-fresh">
+                        <div class="alert info show">
+                            <strong>Fresh Install Detected</strong><br>
+                            No users exist yet. This setup creates your admin account and configures the core settings. The entire process takes about 2 minutes.
+                        </div>
+                        <div style="color: var(--text-secondary); font-size: 14px; line-height: 1.8;">
+                            <div style="margin-bottom: 8px;">✅ &nbsp;Create your admin account</div>
+                            <div style="margin-bottom: 8px;">✅ &nbsp;Set your timezone and preferences</div>
+                            <div style="margin-bottom: 8px;">✅ &nbsp;Configure backup storage (local or NFS)</div>
+                            <div style="margin-bottom: 8px;">✅ &nbsp;Optionally add your first hosts</div>
+                        </div>
+                        <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
+                            <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 10px;">
+                                Migrating from an existing PatchPilot install?
+                            </div>
+                            <button class="btn btn-secondary" onclick="showRestorePanel()"
+                                    style="font-size: 13px;">
+                                📦 Restore from Backup Instead
+                            </button>
+                        </div>
                     </div>
-                    <div style="color: var(--text-secondary); font-size: 14px; line-height: 1.8;">
-                        <div style="margin-bottom: 8px;">✅ &nbsp;Create your admin account</div>
-                        <div style="margin-bottom: 8px;">✅ &nbsp;Set your timezone and preferences</div>
-                        <div style="margin-bottom: 8px;">✅ &nbsp;Configure backup storage (local or NFS)</div>
-                        <div style="margin-bottom: 8px;">✅ &nbsp;Optionally add your first hosts</div>
+
+                    <!-- Restore path -->
+                    <div id="welcome-restore" style="display:none;">
+                        <div class="alert info show">
+                            <strong>Restore from Backup</strong><br>
+                            Upload a PatchPilot backup archive to restore all hosts, credentials, history, and settings. The setup wizard will be skipped entirely.
+                        </div>
+
+                        <!-- Drop zone -->
+                        <div id="restore-drop-zone"
+                             onclick="document.getElementById('restore-file-input').click()"
+                             ondragover="event.preventDefault(); this.style.borderColor='var(--primary)'"
+                             ondragleave="this.style.borderColor='var(--border)'"
+                             ondrop="handleRestoreDrop(event)"
+                             style="border: 2px dashed var(--border); border-radius: 10px; padding: 32px 20px;
+                                    text-align: center; cursor: pointer; transition: border-color 0.2s;
+                                    background: var(--bg-secondary); margin-bottom: 14px;">
+                            <div style="font-size: 28px; margin-bottom: 8px;">📦</div>
+                            <div style="font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px;">
+                                Drop backup archive here
+                            </div>
+                            <div style="font-size: 12px; color: var(--text-muted);">
+                                or click to browse &nbsp;·&nbsp; patchpilot_backup_*.tar.gz
+                            </div>
+                        </div>
+                        <input type="file" id="restore-file-input" accept=".tar.gz,.tgz"
+                               style="display:none;" onchange="handleRestoreFile(this.files[0])">
+
+                        <!-- Selected file info -->
+                        <div id="restore-file-info" style="display:none; background: var(--bg-panel);
+                             border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+                             margin-bottom: 14px; font-size: 13px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div>
+                                    <span style="font-weight:600; color:var(--text-primary);" id="restore-file-name"></span>
+                                    <span style="color:var(--text-muted); margin-left:8px;" id="restore-file-size"></span>
+                                </div>
+                                <button onclick="clearRestoreFile()"
+                                        style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:16px;">×</button>
+                            </div>
+                        </div>
+
+                        <!-- Progress -->
+                        <div id="restore-progress" style="display:none; margin-bottom:14px;">
+                            <div style="display:flex; justify-content:space-between; font-size:12px;
+                                        color:var(--text-muted); margin-bottom:6px;">
+                                <span id="restore-progress-msg">Uploading…</span>
+                                <span id="restore-progress-pct"></span>
+                            </div>
+                            <div style="background:var(--bg-secondary); border-radius:6px; height:6px; overflow:hidden;">
+                                <div id="restore-progress-bar"
+                                     style="height:100%; background:var(--primary); width:0%; transition:width 0.4s;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Error -->
+                        <div id="restore-error" class="alert error" style="display:none; margin-bottom:14px;"></div>
+
+                        <button onclick="showFreshPanel()" class="btn btn-secondary"
+                                style="font-size:13px;">← Fresh Install Instead</button>
                     </div>
                 </div>
                 <div class="card-footer">
                     <span></span>
-                    <button class="btn btn-primary" onclick="nextStep()">Get Started →</button>
+                    <div id="welcome-fresh-btns">
+                        <button class="btn btn-primary" onclick="nextStep()">Get Started →</button>
+                    </div>
+                    <div id="welcome-restore-btns" style="display:none;">
+                        <button id="restore-submit-btn" class="btn btn-primary"
+                                onclick="submitRestore()" disabled
+                                style="opacity:0.4; cursor:not-allowed;">
+                            Restore &amp; Launch →
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -836,6 +918,186 @@
         };
 
         // ── Guard + pre-populate from install-time defaults ───
+        // ── Restore from backup ───────────────────────────────────────────
+        let _restoreFile = null;
+
+        function showRestorePanel() {
+            document.getElementById('welcome-fresh').style.display   = 'none';
+            document.getElementById('welcome-restore').style.display = '';
+            document.getElementById('welcome-fresh-btns').style.display   = 'none';
+            document.getElementById('welcome-restore-btns').style.display = '';
+        }
+
+        function showFreshPanel() {
+            document.getElementById('welcome-restore').style.display = 'none';
+            document.getElementById('welcome-fresh').style.display   = '';
+            document.getElementById('welcome-restore-btns').style.display = 'none';
+            document.getElementById('welcome-fresh-btns').style.display   = '';
+            clearRestoreFile();
+        }
+
+        function handleRestoreDrop(e) {
+            e.preventDefault();
+            document.getElementById('restore-drop-zone').style.borderColor = 'var(--border)';
+            const file = e.dataTransfer.files[0];
+            if (file) handleRestoreFile(file);
+        }
+
+        function handleRestoreFile(file) {
+            if (!file) return;
+            if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
+                showRestoreError('File must be a .tar.gz PatchPilot backup archive.');
+                return;
+            }
+            _restoreFile = file;
+            document.getElementById('restore-error').style.display = 'none';
+            document.getElementById('restore-file-name').textContent = file.name;
+            document.getElementById('restore-file-size').textContent =
+                (file.size / 1024 / 1024).toFixed(1) + ' MB';
+            document.getElementById('restore-file-info').style.display = '';
+            const btn = document.getElementById('restore-submit-btn');
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.cursor  = 'pointer';
+        }
+
+        function clearRestoreFile() {
+            _restoreFile = null;
+            document.getElementById('restore-file-info').style.display = 'none';
+            document.getElementById('restore-file-input').value = '';
+            document.getElementById('restore-error').style.display = 'none';
+            const btn = document.getElementById('restore-submit-btn');
+            btn.disabled = true;
+            btn.style.opacity = '0.4';
+            btn.style.cursor  = 'not-allowed';
+        }
+
+        function showRestoreError(msg) {
+            const el = document.getElementById('restore-error');
+            el.textContent = msg;
+            el.style.display = '';
+        }
+
+        async function submitRestore() {
+            if (!_restoreFile) return;
+
+            const btn      = document.getElementById('restore-submit-btn');
+            const progress = document.getElementById('restore-progress');
+            const bar      = document.getElementById('restore-progress-bar');
+            const msg      = document.getElementById('restore-progress-msg');
+            const pct      = document.getElementById('restore-progress-pct');
+
+            btn.disabled = true;
+            btn.style.opacity = '0.4';
+            btn.style.cursor  = 'not-allowed';
+            document.getElementById('restore-error').style.display = 'none';
+            progress.style.display = '';
+
+            // Animate progress bar while uploading/restoring
+            let fakePct = 0;
+            const ticker = setInterval(() => {
+                fakePct = Math.min(fakePct + (fakePct < 40 ? 5 : fakePct < 75 ? 2 : 0.5), 90);
+                bar.style.width = fakePct + '%';
+                if      (fakePct < 20)  { msg.textContent = 'Uploading archive…';          pct.textContent = Math.round(fakePct) + '%'; }
+                else if (fakePct < 50)  { msg.textContent = 'Restoring database…';         pct.textContent = Math.round(fakePct) + '%'; }
+                else if (fakePct < 75)  { msg.textContent = 'Restoring configuration…';    pct.textContent = Math.round(fakePct) + '%'; }
+                else                    { msg.textContent = 'Finalising…';                  pct.textContent = Math.round(fakePct) + '%'; }
+            }, 300);
+
+            try {
+                const form = new FormData();
+                form.append('file', _restoreFile);
+
+                const res = await fetch(`${API_BASE}/setup/restore`, {
+                    method: 'POST',
+                    body: form,
+                });
+
+                clearInterval(ticker);
+                bar.style.width = '100%';
+                pct.textContent = '100%';
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    progress.style.display = 'none';
+                    showRestoreError(data.detail || 'Restore failed — check backend logs.');
+                    btn.disabled = false;
+                    btn.style.opacity = '1';
+                    btn.style.cursor  = 'pointer';
+                    return;
+                }
+
+                // Success — go directly to done screen (skip all wizard steps)
+                msg.textContent = data.message;
+                currentStep = 7;
+                showStep(7);
+                buildRestoreDoneScreen(data);
+
+                if (data.restarting) {
+                    // Backend is about to restart — auto-redirect after ~18s
+                    startRestoreCountdown(18);
+                }
+
+            } catch (e) {
+                clearInterval(ticker);
+                progress.style.display = 'none';
+                showRestoreError('Connection error — is the backend running?');
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.style.cursor  = 'pointer';
+            }
+        }
+
+        function buildRestoreDoneScreen(data) {
+            const grid = document.getElementById('summary-grid');
+            const warnings = (data.warnings || []);
+            grid.innerHTML = `
+                <div class="summary-item">
+                    <div class="si-label">Restore Status</div>
+                    <div class="si-value" style="color:var(--success);">✅ Complete</div>
+                </div>
+                <div class="summary-item">
+                    <div class="si-label">Source Version</div>
+                    <div class="si-value">${data.source_version || 'unknown'}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="si-label">Backup Date</div>
+                    <div class="si-value">${data.source_date ? data.source_date.split('T')[0] : 'unknown'}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="si-label">Backend</div>
+                    <div class="si-value">${data.restarting ? '⟳ Restarting…' : '⚠️ Manual restart needed'}</div>
+                </div>
+                ${warnings.length ? `
+                <div class="summary-item" style="grid-column:1/-1">
+                    <div class="si-label">Warnings</div>
+                    <div class="si-value" style="color:var(--warning); font-size:12px; line-height:1.7;">
+                        ${warnings.map(w => '⚠️ ' + w).join('<br>')}
+                    </div>
+                </div>` : ''}
+            `;
+
+            // Replace the countdown label
+            const doneH2 = document.querySelector('.done-screen h2');
+            if (doneH2) doneH2.textContent = '🎉 Restore Complete!';
+            const doneP = document.querySelector('.done-screen > p');
+            if (doneP) doneP.textContent = data.restarting
+                ? 'The backend is restarting. You will be redirected to the login page automatically.'
+                : 'Restore is complete. Restart the backend container, then log in with your existing credentials.';
+        }
+
+        function startRestoreCountdown(seconds) {
+            const countdownEl = document.getElementById('countdown');
+            let n = seconds;
+            if (countdownEl) countdownEl.textContent = n;
+            const t = setInterval(() => {
+                n--;
+                if (countdownEl) countdownEl.textContent = n;
+                if (n <= 0) { clearInterval(t); goToLogin(); }
+            }, 1000);
+        }
+
         async function checkSetupRequired() {
             try {
                 // /api/setup/status returns both setup_required and install_defaults

@@ -3,15 +3,18 @@ uninstall_api.py — PatchPilot v0.9.5-alpha
 Admin-only endpoints for uninstalling PatchPilot.
 
 Design constraints:
-  - The backend runs INSIDE a container and has NO access to the Docker daemon
-    (socket is not mounted by default) and NO knowledge of where the user
-    installed the repo on the host filesystem.
-  - Therefore Docker uninstall is ALWAYS manual — we generate the exact commands
-    the operator needs to run on the host, clearly explained.
-  - We NEVER generate `rm -rf` with auto-detected paths. The operator knows
-    where they installed the software.
-  - K3s uninstall CAN be partially automated because kubectl is available
-    inside the k3s pod network.
+  - Docker uninstall drives the Docker CLI (docker binary) via the mounted
+    socket (/var/run/docker.sock).  It stops and removes all Compose-project
+    containers, named volumes, built images, the project network, and the
+    build cache.  The installation directory is left untouched — that is
+    the operator's decision.
+  - We NEVER generate `rm -rf` with auto-detected paths.
+  - K3s uninstall runs kubectl against the cluster directly.
+  - The backend container itself cannot remove its own container while it is
+    still running and serving the response.  It is excluded from the stop/rm
+    step; Docker will clean it up automatically once the process exits (the
+    Compose service has restart:unless-stopped, so a normal exit after
+    uninstall will not restart it).
 """
 
 import logging
@@ -21,7 +24,7 @@ import subprocess
 from pathlib import Path
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import require_admin
@@ -30,6 +33,11 @@ from dependencies import get_db_pool
 logger = logging.getLogger("patchpilot.uninstall")
 
 router = APIRouter(prefix="/api/uninstall", tags=["uninstall"])
+
+# ── Background task state ──────────────────────────────────────────────────────
+# Keyed by install_type; holds the result of the post-response cleanup steps.
+# Simple in-memory store — only one uninstall can run at a time.
+_bg_result: dict = {}   # {"status": "running"|"done", "completed": [], "failed": []}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -76,6 +84,257 @@ def _run(cmd: list[str], timeout: int = 90) -> tuple[int, str, str]:
         return 1, "", str(e)
 
 
+def _kubectl() -> list[str]:
+    """
+    Resolve the kubectl binary to use inside a k3s pod.
+
+    For k3s installs, KUBECTL_BIN is baked into the deployment by install-k3s.sh
+    at install time via $(which kubectl) on the deploy host — so this will
+    ordinarily resolve on the first check. The remaining candidates are a safety
+    net for manual deploys or upgrades that predate this feature.
+
+    Search order:
+      1. KUBECTL_BIN env var  — set automatically by install-k3s.sh
+      2. shutil.which("kubectl") — standard PATH lookup
+      3. Common hard-coded paths
+      4. k3s kubectl          — k3s bundles kubectl as a sub-command
+
+    Raises RuntimeError if nothing is found so callers can surface a clear error.
+    """
+    # 1. Explicit override
+    env_bin = os.environ.get("KUBECTL_BIN", "").strip()
+    if env_bin and Path(env_bin).is_file():
+        return [env_bin]
+
+    # 2. PATH lookup
+    found = shutil.which("kubectl")
+    if found:
+        return [found]
+
+    # 3. Hard-coded common paths
+    for candidate in (
+        "/usr/local/bin/kubectl",
+        "/usr/bin/kubectl",
+        "/snap/bin/kubectl",
+        "/opt/bin/kubectl",
+    ):
+        if Path(candidate).is_file():
+            return [candidate]
+
+    # 4. k3s bundles kubectl
+    k3s_bin = shutil.which("k3s") or "/usr/local/bin/k3s"
+    if Path(k3s_bin).is_file():
+        return [k3s_bin, "kubectl"]
+
+    raise RuntimeError(
+        "kubectl not found. Install kubectl on the node, add it to PATH, "
+        "or set the KUBECTL_BIN env var in your deployment manifest."
+    )
+
+
+def _docker() -> list[str]:
+    """
+    Resolve the docker CLI binary inside the container.
+    Raises RuntimeError if not found — callers surface a clear error.
+    """
+    found = shutil.which("docker")
+    if found:
+        return [found]
+    for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
+        if Path(candidate).is_file():
+            return [candidate]
+    raise RuntimeError(
+        "docker CLI not found in container. "
+        "Ensure docker-ce-cli is installed in the backend image (see Dockerfile)."
+    )
+
+
+def _compose_project() -> str:
+    """
+    Return the Compose project name for this deployment.
+    Docker Compose sets COMPOSE_PROJECT_NAME in the container's environment;
+    fall back to 'patchpilot' if it is absent (manual / non-Compose starts).
+    """
+    return os.environ.get("COMPOSE_PROJECT_NAME", "patchpilot")
+
+
+def _own_container_id() -> str | None:
+    """
+    Return this container's short ID so we can exclude ourselves from
+    the stop/rm step (can't remove our own container while still running).
+    Docker sets the hostname to the full container ID by default.
+    """
+    hostname = os.environ.get("HOSTNAME", "")
+    if len(hostname) >= 12 and all(c in "0123456789abcdef" for c in hostname.lower()):
+        return hostname[:12]
+    return None
+
+
+def _docker_cleanup_background(dk: list[str], project: str, own_id: str | None) -> None:
+    """
+    Runs AFTER the HTTP response has been delivered.
+
+    Phase A (steps 2-4): remove everything that isn't the backend itself.
+      Step 2 - Collect ALL image IDs used by project containers (including
+               pulled images like postgres:15-alpine and nginx:alpine that
+               carry no project label), then stop and remove those containers.
+      Step 3 - Remove volumes not held open by the backend.
+      Step 4 - Remove the project network.
+
+    Phase B (step 5): spawn a detached janitor container.
+      The backend container, its mounted volumes, and its image cannot be
+      removed while this process is still running.  We spawn a tiny
+      docker:cli container (with socket access) that sleeps 5 s, then
+      removes the backend container, remaining volumes, ALL collected image
+      IDs (postgres, nginx, patchpilot-backend, etc.), and the build cache.
+      The janitor is independent of the Compose project and survives us.
+
+    Phase C (step 6): stop this container.
+      docker stop sends SIGTERM to uvicorn for a clean exit.
+      Docker will NOT restart it (restart:unless-stopped only fires on
+      non-zero exits; SIGTERM = exit 0).
+    """
+    global _bg_result
+    completed: list[str] = []
+    failed:    list[str] = []
+
+    # -- 2. Collect image IDs, then stop & remove other project containers --
+    # We harvest image IDs NOW, before containers are gone, because pulled
+    # images (postgres, nginx) carry no compose project label -- the only
+    # reliable way to find them is from the containers themselves.
+    step = "Stop and remove project containers"
+    rc, ids_out, err = _run(
+        dk + ["ps", "-a", "-q",
+              "--filter", f"label=com.docker.compose.project={project}"],
+        timeout=15,
+    )
+    all_image_ids: list[str] = []
+    if rc != 0:
+        failed.append(f"{step} (list): {err}")
+    else:
+        container_ids = [c for c in ids_out.splitlines() if c]
+
+        # Harvest image ID from every project container before removal
+        for cid in container_ids:
+            rc2, img_id, _ = _run(
+                dk + ["inspect", "--format", "{{.Image}}", cid],
+                timeout=10,
+            )
+            if rc2 == 0 and img_id.strip():
+                all_image_ids.append(img_id.strip())
+        all_image_ids = list(set(all_image_ids))
+
+        # Remove all containers except ourselves
+        others = [
+            c for c in container_ids
+            if not own_id or (not c.startswith(own_id) and not own_id.startswith(c))
+        ]
+        if others:
+            rc, _, err = _run(dk + ["rm", "-f"] + others, timeout=60)
+            if rc == 0:
+                completed.append(f"{step}: {len(others)} removed")
+            else:
+                failed.append(f"{step}: {err}")
+        else:
+            completed.append(f"{step}: none found")
+
+    # -- 3. Remove volumes not held open by the backend ---------------------
+    step = "Remove project volumes"
+    rc, vols_out, _ = _run(
+        dk + ["volume", "ls", "-q",
+              "--filter", f"label=com.docker.compose.project={project}"],
+        timeout=15,
+    )
+    all_vols = [v for v in vols_out.splitlines() if v] if rc == 0 else []
+    remaining_vols: list[str] = []
+    removed_vols:   list[str] = []
+    for vol in all_vols:
+        rc, _, _ = _run(dk + ["volume", "rm", vol], timeout=15)
+        if rc == 0:
+            removed_vols.append(vol)
+        else:
+            remaining_vols.append(vol)   # still mounted -- janitor handles it
+    if removed_vols:
+        completed.append(f"{step}: {', '.join(removed_vols)}")
+    if remaining_vols:
+        completed.append(f"{step}: deferred to janitor (in use): {', '.join(remaining_vols)}")
+    if not removed_vols and not remaining_vols:
+        completed.append(f"{step}: none found")
+
+    # -- 4. Remove project network ------------------------------------------
+    step = "Remove project network"
+    rc, nets_out, _ = _run(
+        dk + ["network", "ls", "-q",
+              "--filter", f"label=com.docker.compose.project={project}"],
+        timeout=15,
+    )
+    if rc != 0:
+        failed.append(f"{step} (list): could not list networks")
+    else:
+        net_ids = [n for n in nets_out.splitlines() if n]
+        if net_ids:
+            rc, _, err = _run(dk + ["network", "rm"] + net_ids, timeout=30)
+            if rc == 0:
+                completed.append(f"{step}: {len(net_ids)} removed")
+            else:
+                completed.append(f"{step}: deferred (backend still attached)")
+        else:
+            completed.append(f"{step}: none found")
+
+    # -- 5. Spawn janitor container -----------------------------------------
+    # Removes: backend container, remaining volumes, ALL project image IDs
+    # (postgres:15-alpine, nginx:alpine, patchpilot-backend, etc.),
+    # and the build cache.
+    step = "Spawn cleanup janitor"
+    backend_container = own_id or f"{project}-backend-1"
+
+    vol_rm_cmd = (
+        "docker volume rm -f " + " ".join(f"'{v}'" for v in remaining_vols)
+        if remaining_vols else "true"
+    )
+    img_rm_cmd = (
+        "docker rmi -f " + " ".join(all_image_ids)
+        if all_image_ids else "true"
+    )
+
+    janitor_script = (
+        f"sleep 5"
+        f" && docker rm -f '{backend_container}' 2>/dev/null || true"
+        f" && {vol_rm_cmd} 2>/dev/null || true"
+        f" && {img_rm_cmd} 2>/dev/null || true"
+        f" && docker builder prune -f 2>/dev/null || true"
+    )
+
+    rc, janitor_id, err = _run(
+        dk + ["run", "--rm", "-d",
+              "-v", "/var/run/docker.sock:/var/run/docker.sock",
+              "docker:cli",
+              "sh", "-c", janitor_script],
+        timeout=30,
+    )
+    if rc == 0:
+        completed.append(f"{step}: started ({janitor_id[:12] if janitor_id else 'ok'})")
+    else:
+        leftover = [f"container {backend_container}"] + remaining_vols + all_image_ids
+        failed.append(
+            f"{step}: could not start janitor ({err}). "
+            f"Remove manually: {', '.join(leftover)}"
+        )
+
+    _bg_result["completed"].extend(completed)
+    _bg_result["failed"].extend(failed)
+    _bg_result["status"] = "done"
+    logger.info(
+        "Docker cleanup complete -- completed=%d failed=%d; stopping self",
+        len(completed), len(failed),
+    )
+
+    # -- 6. Stop this container (phase C) -----------------------------------
+    # SIGTERM -> uvicorn exits 0 -> Docker does NOT restart (unless-stopped).
+    if own_id:
+        _run(dk + ["stop", own_id], timeout=30)
+
+
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 class UninstallStatus(BaseModel):
@@ -106,35 +365,28 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
     install_type = _detect_install_type()
 
     if install_type == "docker":
+        project = _compose_project()
         automated = [
             "Revoke all active login sessions",
-            "Note: container/volume teardown runs on the host (Docker CLI not available inside the container)",
+            f"Stop and remove all containers in Compose project '{project}' (except this backend — it exits after responding)",
+            f"Remove named volumes: {project}_postgres_data, {project}_backups",
+            f"Remove Compose network: {project}_{project}",
+            f"Remove built backend image (tagged {project}-backend / patchpilot-backend)",
+            "Prune dangling build cache",
         ]
         manual = [
-            "# Run these commands on the HOST where PatchPilot is installed",
-            "",
-            "# 1. Go to your PatchPilot installation directory",
-            "cd /path/to/patchpilot",
-            "",
-            "# 2. Stop all containers and remove named volumes",
-            "docker compose down --volumes --remove-orphans",
-            "",
-            "# 3. Remove PatchPilot Docker images",
-            "docker rmi $(docker images --filter 'reference=patchpilot*' -q) 2>/dev/null || true",
-            "",
-            "# 4. Remove the installation directory",
-            "cd .. && rm -rf patchpilot",
+            "# The installation directory is NOT removed — delete it yourself when ready:",
+            "# rm -rf /path/to/patchpilot",
             "",
             "# Optional: remove Docker itself",
             "# sudo apt-get remove --purge docker-ce docker-ce-cli containerd.io docker-compose-plugin",
-            "# sudo rm -rf /var/lib/docker /etc/docker",
         ]
         desc = (
-            "Docker Compose installation detected. "
-            "Because the backend runs inside Docker, container teardown must be "
-            "run directly on your host using the commands shown below."
+            f"Docker Compose installation detected (project: {project}). "
+            "All containers, volumes, images, and build cache will be removed automatically. "
+            "The installation directory is left in place."
         )
-        can_auto = False
+        can_auto = True
 
     elif install_type == "k3s":
         automated = [
@@ -142,11 +394,15 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
             "Delete the cert-manager ClusterIssuer resource",
             "Remove generated k8s manifests from k8s/.generated/",
         ]
-        rc, node_ip, _ = _run([
-            "kubectl", "get", "nodes",
-            "-o", "jsonpath={.items[0].status.addresses[?(@.type==\"InternalIP\")].address}"
-        ])
-        ssh_host = node_ip if (rc == 0 and node_ip) else "<k3s-node-ip>"
+        try:
+            kc = _kubectl()
+            rc, node_ip, _ = _run(
+                kc + ["get", "nodes",
+                      "-o", "jsonpath={.items[0].status.addresses[?(@.type==\"InternalIP\")].address}"]
+            )
+            ssh_host = node_ip if (rc == 0 and node_ip) else "<k3s-node-ip>"
+        except RuntimeError:
+            ssh_host = "<k3s-node-ip>"
         manual = [
             "# Remove hostPath data on the k3s node",
             f"ssh {ssh_host} 'sudo rm -rf /app-data/patchpilot-*'",
@@ -194,13 +450,19 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
 
 @router.post("/execute", response_model=UninstallResult)
 async def execute_uninstall(
+    background_tasks: BackgroundTasks,
     user: dict = Depends(require_admin),
     pool: asyncpg.Pool = Depends(get_db_pool),
 ):
     """
     Execute automated uninstall steps.
-    Docker: revokes sessions, returns host commands for operator to run.
-    K3s: deletes namespace and cluster resources via kubectl.
+
+    Docker: runs steps 1–3 synchronously (sessions, containers, volumes),
+            returns the response, then completes steps 4–6 (network, images,
+            build cache) in a background task so the network teardown does not
+            kill the HTTP connection mid-response.
+            Poll GET /api/uninstall/result for final background status.
+    K3s:    deletes namespace and cluster resources via kubectl.
     """
     install_type = _detect_install_type()
     completed: list[str] = []
@@ -215,53 +477,82 @@ async def execute_uninstall(
 
     # ── Docker ─────────────────────────────────────────────────────────────────
     if install_type == "docker":
-        # The backend has no Docker socket — cannot run docker commands from here.
-        # What we CAN do: revoke all sessions so no stale logins remain.
+        try:
+            dk = _docker()
+        except RuntimeError as exc:
+            return UninstallResult(
+                success=False,
+                install_type=install_type,
+                steps_completed=[],
+                steps_failed=[str(exc)],
+                manual_commands=[],
+                message=str(exc),
+            )
+
+        project = _compose_project()
+        own_id  = _own_container_id()
+
+        _bg_result.clear()
+        _bg_result.update({"status": "running", "completed": [], "failed": []})
+
+        # ── 1. Revoke sessions — only safe inline step ──────────────────────
+        # Everything else (containers, volumes, network, images) runs in the
+        # background task AFTER this response is delivered.  Removing any
+        # other container inline would kill the nginx frontend that's proxying
+        # this very request, dropping the connection before the client sees
+        # the response.
+        step = "Revoke all active login sessions"
         try:
             async with pool.acquire() as conn:
                 await conn.execute("DELETE FROM sessions")
-            completed.append("All active login sessions revoked")
+            completed.append(step)
         except Exception as e:
-            # sessions table may not exist in all schema versions — non-fatal
-            completed.append(f"Session revocation skipped: {e}")
+            completed.append(f"{step}: skipped ({e})")
 
-        manual_cmds = [
-            "# Run these commands on the HOST where PatchPilot is installed",
-            "",
-            "# 1. Go to your PatchPilot installation directory",
-            "cd /path/to/patchpilot",
-            "",
-            "# 2. Stop all containers and remove named volumes",
-            "docker compose down --volumes --remove-orphans",
-            "",
-            "# 3. Remove PatchPilot Docker images",
-            "docker rmi $(docker images --filter 'reference=patchpilot*' -q) 2>/dev/null || true",
-            "",
-            "# 4. Remove the installation directory",
-            "cd .. && rm -rf patchpilot",
-            "",
-            "# Optional: remove Docker itself",
-            "# sudo apt-get remove --purge docker-ce docker-ce-cli containerd.io docker-compose-plugin",
-            "# sudo rm -rf /var/lib/docker /etc/docker",
-        ]
+        _bg_result["completed"].extend(completed)
+        background_tasks.add_task(_docker_cleanup_background, dk, project, own_id)
 
         return UninstallResult(
             success=True,
             install_type=install_type,
             steps_completed=completed,
             steps_failed=[],
-            manual_commands=manual_cmds,
+            manual_commands=[
+                "# Installation directory NOT removed — delete when ready:",
+                "# rm -rf /path/to/patchpilot",
+                "",
+                "# Optional: remove Docker itself",
+                "# sudo apt-get remove --purge docker-ce docker-ce-cli containerd.io docker-compose-plugin",
+            ],
             message=(
-                "Sessions cleared. Run the host commands below to remove "
-                "all containers, volumes, images, and files."
+                "Sessions revoked. Containers, volumes, network, and images are being "
+                "removed in the background — poll GET /api/uninstall/result for status."
             ),
         )
 
     # ── K3s ────────────────────────────────────────────────────────────────────
     elif install_type == "k3s":
+        # Resolve kubectl once — fail early with a clear message if not found
+        try:
+            kc = _kubectl()
+        except RuntimeError as exc:
+            failed.append(str(exc))
+            return UninstallResult(
+                success=False,
+                install_type=install_type,
+                steps_completed=completed,
+                steps_failed=failed,
+                manual_commands=[
+                    "# kubectl not found in the container — run these on the node directly:",
+                    "kubectl delete namespace patchpilot --ignore-not-found=true",
+                    "kubectl delete clusterissuer letsencrypt-prod --ignore-not-found=true",
+                ],
+                message=str(exc),
+            )
+
         step = "Delete PatchPilot namespace (pods, services, PVCs, ConfigMaps)"
         rc, _, err = _run(
-            ["kubectl", "delete", "namespace", "patchpilot", "--ignore-not-found=true"],
+            kc + ["delete", "namespace", "patchpilot", "--ignore-not-found=true"],
             timeout=120,
         )
         if rc == 0:
@@ -271,7 +562,7 @@ async def execute_uninstall(
 
         step = "Delete ClusterIssuer (cert-manager)"
         rc, _, err = _run(
-            ["kubectl", "delete", "clusterissuer", "letsencrypt-prod", "--ignore-not-found=true"]
+            kc + ["delete", "clusterissuer", "letsencrypt-prod", "--ignore-not-found=true"]
         )
         if rc == 0:
             completed.append(step)
@@ -284,10 +575,10 @@ async def execute_uninstall(
                 completed.append(f"Removed generated manifests: {gen_dir}")
                 break
 
-        rc, node_ip, _ = _run([
-            "kubectl", "get", "nodes",
-            "-o", "jsonpath={.items[0].status.addresses[?(@.type==\"InternalIP\")].address}"
-        ])
+        rc, node_ip, _ = _run(
+            kc + ["get", "nodes",
+                  "-o", "jsonpath={.items[0].status.addresses[?(@.type==\"InternalIP\")].address}"]
+        )
         ssh_host = node_ip if (rc == 0 and node_ip) else "<k3s-node-ip>"
 
         manual_cmds = [
@@ -326,3 +617,26 @@ async def execute_uninstall(
         manual_commands=manual_cmds,
         message=message,
     )
+
+
+@router.get("/result")
+async def get_uninstall_result(user: dict = Depends(require_admin)):
+    """
+    Poll for the result of the Docker background cleanup steps (network,
+    images, build cache) that run after /execute returns.
+
+    Returns:
+      { "status": "running" | "done" | "idle",
+        "completed": [...],
+        "failed":    [...] }
+
+    "idle" means /execute has not been called yet in this process lifetime.
+    The frontend should poll every 2 s until status == "done".
+    """
+    if not _bg_result:
+        return {"status": "idle", "completed": [], "failed": []}
+    return {
+        "status":    _bg_result.get("status", "idle"),
+        "completed": _bg_result.get("completed", []),
+        "failed":    _bg_result.get("failed", []),
+    }

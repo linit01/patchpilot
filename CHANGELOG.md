@@ -4,7 +4,7 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
-## [0.9.5-alpha] - 2026-02-24
+## [0.9.5-alpha] - 2026-02-26
 
 ### Added
 - **Web-based Uninstaller (Settings → Advanced → Danger Zone)** — Admin users can now initiate a full PatchPilot uninstall directly from the UI. The system auto-detects the install type (Docker Compose or Kubernetes/k3s) and presents a two-phase workflow:
@@ -14,9 +14,20 @@ All notable changes to PatchPilot will be documented in this file.
   - **Manual commands panel** — any steps the backend cannot perform (hostPath cleanup, removing the repo directory, optional full k3s/Docker removal) are displayed in a copyable code block.
 - **`backend/uninstall_api.py`** — New FastAPI router (`/api/uninstall/status`, `/api/uninstall/execute`). Admin-only. Detects install type via env var `PATCHPILOT_INSTALL_MODE`, k3s kubeconfig presence, or Docker socket. Docker uninstall runs `docker compose down -v`, prunes patchpilot images/volumes. K3s uninstall delegates to existing `k8s/install-k3s.sh --uninstall` (with `NO_INTERACTIVE=true`) or direct `kubectl delete namespace` fallback.
 - **Docker uninstall script support** — Docker Compose installs previously had no equivalent to `k8s/install-k3s.sh --uninstall`. The new API handles Docker teardown natively.
+- **`PACKAGE:` output in check playbook** — `ansible/check-os-updates.yml` now emits `PACKAGE: hostname | <pkg_line>` debug entries for all package managers (apt, brew, softwareupdate, mas) after update discovery. This populates the `packages` table so the **Update Types** dashboard chart and host **Details** package list are no longer always empty.
+- **Phased update support** — Hosts running Ubuntu with phased package rollouts showed pending updates on the dashboard but patching silently did nothing. The check playbook now includes `APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1` and the patch task uses `apt-get -o APT::Get::Always-Include-Phased-Updates=true` to force phased packages through.
+
+### Fixed
+- **`become_password` with special characters** — `ansible_runner.py` passed the sudo password as a raw `--extra-vars key=value` string which Ansible parses as YAML. Passwords containing `!`, `#`, `{`, `:`, `@` and other YAML-significant characters were silently corrupted, causing `become` authentication to fail and apt upgrades to be skipped. Fixed by passing `--extra-vars` as a JSON string.
+- **False-positive "patched" detection** — `_detect_hosts_actually_patched()` accepted Ansible `ok:` as confirmation of a successful patch. `ok:` from the apt module means the task ran but installed zero packages. Only `changed:` indicates packages were actually written to disk. Fixed to require `changed:` exclusively; the overly permissive PLAY RECAP fallback (which marked any host with `ok > 0` as patched) was removed.
+- **Stale apt cache causing check/patch disagreement** — The check playbook ran `apt list --upgradable` against the on-disk cache (potentially days old). The patch playbook ran `apt-get update` first, got a fresh view, and found nothing to do — so patching appeared to succeed while the dashboard still showed pending packages. Fixed by adding a cache refresh step at the start of the check playbook.
+- **Cache refresh task breaking host status** — The new `apt-get update` step in the check playbook uses `become: yes`. Check runs do not supply a sudo password, causing Ansible to mark `failed=1` in the PLAY RECAP and the backend to set host status to `failed`. Fixed with `failed_when: false` and `ignore_errors: true`.
+- **Update Types chart always empty** — Direct consequence of missing `PACKAGE:` output lines. The `packages` table was never populated so the donut chart always showed "No data available."
 
 ### Changed
-- `backend/app.py` — registers the new `uninstall_router`.
+- `ansible/check-os-updates.yml` — apt cache refresh added (non-fatal); `PACKAGE:` emit tasks added for all OS types; apt upgrade task replaced with shell invocation for phased update support and correct `changed_when` detection.
+- `backend/ansible_runner.py` — `--extra-vars` now uses JSON encoding for become password.
+- `backend/app.py` — `_detect_hosts_actually_patched()` now requires `changed:` only; PLAY RECAP fallback removed; `ok:` results emit a `[WARN]` log entry. Registers the new `uninstall_router`.
 - `frontend/settings.html` — Advanced tab now includes a **Danger Zone** section with the Uninstall PatchPilot button and a three-step modal (confirm → progress → results).
 
 ---

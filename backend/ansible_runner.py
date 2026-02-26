@@ -451,9 +451,13 @@ class AnsibleRunner:
             if limit_hosts:
                 cmd.extend(["--limit", ",".join(limit_hosts)])
             
-            # Add become password if specified via extra-vars
+            # Add become password if specified via extra-vars.
+            # MUST use JSON format — raw key=value is parsed as YAML by Ansible,
+            # which silently corrupts passwords containing special characters
+            # (!, #, :, {, }, @, etc.) causing become auth to fail.
             if become_password:
-                cmd.extend(["--extra-vars", f"ansible_become_password={become_password}"])
+                import json as _json
+                cmd.extend(["--extra-vars", _json.dumps({"ansible_become_password": become_password})])
             
             # Use async subprocess for non-blocking streaming output
             env = os.environ.copy()
