@@ -85,7 +85,8 @@ services:
     volumes:
       - ./ansible:/ansible
       - backups:/backups
-      # - /var/run/docker.sock:/var/run/docker.sock:ro   # ✚ optional
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # required — enables in-app uninstall
+      - .:/install:rw  # mount install dir so restore can update .env encryption key
 
     networks:
       - patchpilot

@@ -154,9 +154,10 @@ docker_setup_env() {
   fernet_key="$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || \
                 python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")"
   sed -i.bak "s|PATCHPILOT_ENCRYPTION_KEY=CHANGE_ME_FERNET_KEY|PATCHPILOT_ENCRYPTION_KEY=${fernet_key}|" .env
+  sed -i "s|INSTALL_DIR=/path/to/patchpilot|INSTALL_DIR=${SCRIPT_DIR}|" .env
   rm -f .env.bak
   warn "Auto-generated Fernet key — saved to .env — keep this safe"
-  ok "Environment configured"
+  ok "Environment configured — INSTALL_DIR set to ${SCRIPT_DIR}"
 }
 
 docker_setup_ansible() {

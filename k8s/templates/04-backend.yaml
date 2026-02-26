@@ -138,6 +138,11 @@ spec:
           value: "/ansible/check-os-updates.yml"
         - name: ANSIBLE_INVENTORY_PATH
           value: "/ansible/hosts"
+        # ── kubectl path — resolved at install time on the deploy host ────
+        # Lets the backend run kubectl for k3s uninstall without relying on
+        # PATH inside the slim Python container image.
+        - name: KUBECTL_BIN
+          value: "${PP_KUBECTL_BIN}"
 
         volumeMounts:
         - name: ansible-data

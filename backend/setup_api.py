@@ -288,3 +288,221 @@ spec:
         "docker_compose_snippet": docker_snippet,
         "k8s_pv_snippet": k8s_snippet,
     }
+
+
+# ── Restore-from-backup setup path ────────────────────────────────────────────
+import io
+import json
+import subprocess
+import tarfile
+import tempfile
+from pathlib import Path
+from fastapi import UploadFile, File
+
+
+@router.post("/restore")
+async def restore_from_backup(file: UploadFile = File(...)):
+    """
+    First-run restore path.  Upload a PatchPilot backup archive (.tar.gz) and
+    it will:
+      1. Verify the archive contains a valid pg_dump and metadata
+      2. Restore the database (drop + recreate + pg_restore)
+      3. Restore Ansible configuration files
+      4. Mark setup as complete (users already exist in the restored DB)
+      5. Schedule a self-restart so all connection pools reinitialise cleanly
+
+    Only available before setup is complete (no users exist yet).
+    Returns the same shape as /api/setup/complete so the frontend can reuse
+    the same done-screen.
+    """
+    pool = get_db_pool()
+
+    # Gate: only allowed before setup is complete
+    if await _setup_is_complete(pool):
+        raise HTTPException(
+            status_code=400,
+            detail="Setup is already complete. Use Settings → Backup & Restore to restore.",
+        )
+
+    if not file.filename.endswith(".tar.gz"):
+        raise HTTPException(400, detail="File must be a .tar.gz PatchPilot backup archive.")
+
+    content = await file.read()
+    if len(content) == 0:
+        raise HTTPException(400, detail="Uploaded file is empty.")
+
+    MAX_MB = int(os.getenv("MAX_BACKUP_SIZE_MB", "500"))
+    if len(content) > MAX_MB * 1024 * 1024:
+        raise HTTPException(413, detail=f"Archive exceeds {MAX_MB} MB limit.")
+
+    pg_host     = os.getenv("POSTGRES_HOST", "postgres")
+    pg_port     = os.getenv("POSTGRES_PORT", "5432")
+    pg_user     = os.getenv("POSTGRES_USER", "patchpilot")
+    pg_password = os.getenv("POSTGRES_PASSWORD", "patchpilot")
+    pg_db       = os.getenv("POSTGRES_DB", "patchpilot")
+    ansible_dir = Path(os.getenv("ANSIBLE_DIR", "/ansible"))
+
+    pg_env = {**os.environ, "PGPASSWORD": pg_password}
+
+    warnings: list[str] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        # ── 1. Extract archive ─────────────────────────────────────────────
+        try:
+            with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as tar:
+                tar.extractall(tmp_path)
+        except Exception as e:
+            raise HTTPException(400, detail=f"Could not extract archive: {e}")
+
+        dirs = [d for d in tmp_path.iterdir() if d.is_dir()]
+        if not dirs:
+            raise HTTPException(400, detail="Archive appears empty or corrupt.")
+        staging = dirs[0]
+
+        # ── 2. Validate required files ─────────────────────────────────────
+        dump_file = staging / "patchpilot.dump"
+        if not dump_file.exists():
+            raise HTTPException(400, detail="patchpilot.dump not found — invalid backup archive.")
+
+        meta: dict = {}
+        meta_file = staging / "backup_metadata.json"
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text())
+            except Exception:
+                warnings.append("backup_metadata.json unreadable — proceeding anyway.")
+        else:
+            warnings.append("backup_metadata.json missing — archive may be from an older version.")
+
+        # ── 3. Drop + recreate database ────────────────────────────────────
+        import asyncpg
+        try:
+            admin_conn = await asyncpg.connect(
+                host=pg_host, port=int(pg_port),
+                user=pg_user, password=pg_password,
+                database="postgres", timeout=10,
+            )
+            await admin_conn.execute(f"""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = '{pg_db}' AND pid <> pg_backend_pid()
+            """)
+            # Close app pool before dropping DB
+            try:
+                existing = get_db_pool()
+                if existing:
+                    await existing.close()
+            except Exception:
+                pass
+            await admin_conn.execute(f'DROP DATABASE IF EXISTS "{pg_db}"')
+            await admin_conn.execute(f'CREATE DATABASE "{pg_db}" OWNER "{pg_user}"')
+            await admin_conn.close()
+        except Exception as e:
+            raise HTTPException(500, detail=f"Failed to reset database: {e}")
+
+        # ── 4. pg_restore ──────────────────────────────────────────────────
+        result = subprocess.run(
+            ["pg_restore",
+             "-h", pg_host, "-p", pg_port, "-U", pg_user, "-d", pg_db,
+             "--no-password", "--exit-on-error", str(dump_file)],
+            capture_output=True, text=True, env=pg_env, timeout=300,
+        )
+        if result.returncode != 0:
+            errors = [l for l in result.stderr.splitlines() if "ERROR" in l]
+            if errors:
+                raise HTTPException(500, detail="pg_restore failed: " + "; ".join(errors[:3]))
+            warnings.append("pg_restore had warnings (non-fatal).")
+
+        # ── 5. Restore Ansible files ───────────────────────────────────────
+        ansible_src = staging / "ansible"
+        if ansible_src.exists() and any(ansible_src.iterdir()):
+            try:
+                import shutil
+                # dirs_exist_ok=True merges/overwrites files without requiring
+                # the destination to be absent first — avoids FileExistsError
+                # when /ansible already exists from the base image or a prior run.
+                shutil.copytree(ansible_src, ansible_dir, dirs_exist_ok=True)
+                # Always overwrite playbook with image-bundled version —
+                # it's app code, not user data.
+                image_playbook = Path("/ansible-src/check-os-updates.yml")
+                if image_playbook.exists():
+                    shutil.copy2(image_playbook, ansible_dir / "check-os-updates.yml")
+            except Exception as e:
+                warnings.append(f"Ansible restore partial: {e}")
+        else:
+            warnings.append("No Ansible files in backup — skipped.")
+
+        # ── 5b. Restore encryption key to .env ────────────────────────────
+        enc_key_file = staging / "encryption_key.json"
+        env_file_path = Path("/install/.env")
+        if not env_file_path.exists() and os.getenv("INSTALL_DIR"):
+            env_file_path = Path(os.getenv("INSTALL_DIR")) / ".env"
+
+        if enc_key_file.exists():
+            try:
+                enc_key_data = json.loads(enc_key_file.read_text())
+                backup_enc_key = enc_key_data.get("PATCHPILOT_ENCRYPTION_KEY", "")
+                current_enc_key = os.getenv("PATCHPILOT_ENCRYPTION_KEY", "")
+                if backup_enc_key and backup_enc_key != current_enc_key:
+                    if env_file_path.exists():
+                        import re as _re
+                        env_text = env_file_path.read_text()
+                        if "PATCHPILOT_ENCRYPTION_KEY=" in env_text:
+                            env_text = _re.sub(
+                                r"^PATCHPILOT_ENCRYPTION_KEY=.*$",
+                                f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}",
+                                env_text, flags=_re.MULTILINE,
+                            )
+                        else:
+                            env_text += f"\nPATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n"
+                        env_file_path.write_text(env_text)
+                    else:
+                        hint = Path(os.getenv("BACKUP_DIR", "/backups")) / "RESTORE_ENCRYPTION_KEY.txt"
+                        hint.write_text(
+                            f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n\n"
+                            "Add this to your .env and restart the backend.\n"
+                        )
+                        warnings.append(
+                            f"Encryption key mismatch — .env not writable. "
+                            f"Key written to {hint}. Add it to .env and restart."
+                        )
+            except Exception as e:
+                warnings.append(f"Could not restore encryption key: {e}")
+
+        # ── 6. Schedule self-restart ───────────────────────────────────────
+        restarting = False
+        own_id = os.environ.get("HOSTNAME", "")
+        if own_id and Path("/var/run/docker.sock").exists():
+            r = subprocess.run(
+                ["docker", "run", "--rm", "-d",
+                 "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                 "docker:cli", "sh", "-c",
+                 f"sleep 5 && docker restart {own_id}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            restarting = r.returncode == 0
+            if not restarting:
+                warnings.append(
+                    "Could not schedule auto-restart. Run manually: "
+                    "docker restart patchpilot-backend-1"
+                )
+
+    return {
+        "status": "restored",
+        "message": (
+            "Restore complete — backend restarting in 5 s. "
+            "The login page will be ready in ~15 seconds."
+            if restarting else
+            "Restore complete. Restart the backend container to finish: "
+            "docker restart patchpilot-backend-1"
+        ),
+        "restarting": restarting,
+        "source_version": meta.get("app_version", "unknown"),
+        "source_date": meta.get("created_at", "unknown"),
+        "warnings": warnings,
+        "users_created": 0,
+        "hosts_imported": 0,
+        "ssh_keys_imported": 0,
+    }

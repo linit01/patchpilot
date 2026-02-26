@@ -564,6 +564,27 @@ const BackupRestore = (() => {
         document.getElementById('restore-target-desc').textContent = backup.description || '(none)';
         document.getElementById('restore-confirm-checkbox').checked = false;
         document.getElementById('btn-restore-confirm').disabled = true;
+
+        // Warn if backup has no encryption key — SSH credentials won't be recoverable
+        let encWarn = document.getElementById('restore-enc-key-warning');
+        if (!encWarn) {
+            encWarn = document.createElement('div');
+            encWarn.id = 'restore-enc-key-warning';
+            encWarn.style.cssText = 'margin:10px 0;padding:10px 14px;border-radius:6px;' +
+                'background:rgba(231,76,60,0.1);border:1px solid rgba(231,76,60,0.4);' +
+                'color:#e74c3c;font-size:0.9em;';
+            document.getElementById('restore-target-info')?.after(encWarn);
+        }
+        if (!backup.includes_encryption_key) {
+            encWarn.innerHTML = '⚠️ <strong>This backup does not include the encryption key.</strong> ' +
+                'If this was created on a different install, SSH credentials will be unreadable after restore ' +
+                'and you will need to re-enter SSH keys for all hosts. ' +
+                'Use <em>Create Backup</em> with "Include encryption key" checked for portable backups.';
+            encWarn.style.display = 'block';
+        } else {
+            encWarn.style.display = 'none';
+        }
+
         panel.style.display = 'block';
         panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }

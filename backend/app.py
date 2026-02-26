@@ -80,7 +80,7 @@ from ansible_runner import AnsibleRunner
 from settings_api import router as settings_router
 from auth import router as auth_router, require_auth, log_audit, cleanup_expired_sessions
 from schedules_api import router as schedules_router
-from backup_restore import router as backup_router, set_pool as backup_set_pool
+from backup_restore import router as backup_router, set_pool as backup_set_pool, set_db_client as backup_set_db_client
 from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
 
@@ -178,6 +178,8 @@ async def startup_event():
     
     # Wire pool into backup/restore router
     backup_set_pool(pool)
+    # Wire DatabaseClient so restore can rebuild both pools after a DB drop/recreate
+    backup_set_db_client(db)
     
     # ── STEP 1: Core schema (hosts, packages, patch_history) ─────────────────
     # Must run BEFORE any column-check helpers that assume the tables exist.
@@ -808,33 +810,25 @@ def _detect_hosts_actually_patched(output: str, hostnames: list) -> set:
             continue
 
         if in_apply_task:
-            # changed: [hostname] or ok: [hostname] means apt/yum ran on that host
-            m = re.match(r'^(?:changed|ok):\s*\[([^\]]+)\]', stripped)
+            # ONLY count changed: — ok: means apt ran but installed nothing.
+            # This happens when the check playbook read a stale apt cache that showed
+            # packages pending, but the patch playbook runs apt-get update first and
+            # gets a fresh view where nothing needs upgrading.
+            # Accepting ok: here was the root cause of false-positive "patched" reports.
+            m = re.match(r'^changed:\s*\[([^\]]+)\]', stripped)
             if m:
                 ansible_host = m.group(1)
-                # Map back to the original hostname (Ansible uses ansible_host IP if set)
                 for h in hostnames:
                     if h == ansible_host or ansible_host == h:
                         patched.add(h)
                         break
                 else:
-                    # If not matched by name, accept whatever Ansible reported
                     patched.add(ansible_host)
-
-    # Also treat any host that was NOT unreachable per the PLAY RECAP as patched
-    # (covers the case where Ansible exits 0 cleanly)
-    for line in output.splitlines():
-        m = re.match(r'^([^\s:]+)\s*:\s*ok=(\d+).*unreachable=(\d+).*failed=(\d+)', line.strip())
-        if m:
-            hostname_recap = m.group(1)
-            ok_count = int(m.group(2))
-            unreachable = int(m.group(3))
-            failed = int(m.group(4))
-            if ok_count > 0 and unreachable == 0 and failed == 0:
-                for h in hostnames:
-                    if h == hostname_recap:
-                        patched.add(h)
-                        break
+            # Log ok: explicitly so the stale-cache condition is visible in logs
+            m_ok = re.match(r'^ok:\s*\[([^\]]+)\]', stripped)
+            if m_ok:
+                print(f"[WARN] apt task reported ok (no changes) for {m_ok.group(1)} — "
+                      f"host may have stale check cache or packages already current")
 
     return patched
 
