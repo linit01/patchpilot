@@ -1069,6 +1069,18 @@
                     <div class="si-label">Backend</div>
                     <div class="si-value">${data.restarting ? '⟳ Restarting…' : '⚠️ Manual restart needed'}</div>
                 </div>
+                ${!data.restarting && data.restart_command ? `
+                <div class="summary-item" style="grid-column:1/-1">
+                    <div class="si-label">Restart Command</div>
+                    <div class="si-value">
+                        <code style="display:block; background:var(--bg-secondary); border:1px solid var(--border);
+                                     border-radius:6px; padding:8px 10px; font-size:12px; word-break:break-all;
+                                     user-select:all;">${data.restart_command}</code>
+                        <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+                            Run this on your kubectl / Docker machine, then log in with your existing credentials.
+                        </div>
+                    </div>
+                </div>` : ''}
                 ${warnings.length ? `
                 <div class="summary-item" style="grid-column:1/-1">
                     <div class="si-label">Warnings</div>
@@ -1084,7 +1096,7 @@
             const doneP = document.querySelector('.done-screen > p');
             if (doneP) doneP.textContent = data.restarting
                 ? 'The backend is restarting. You will be redirected to the login page automatically.'
-                : 'Restore is complete. Restart the backend container, then log in with your existing credentials.';
+                : `Restore is complete. Run the restart command shown above, then log in with your existing credentials.`;
         }
 
         function startRestoreCountdown(seconds) {
