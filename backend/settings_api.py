@@ -286,6 +286,57 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
         return dict(row)
 
 
+@router.get("/hosts/export")
+async def export_hosts(format: str = "json", pool: asyncpg.Pool = Depends(get_db_pool)):
+    """
+    Export all hosts to specified format.
+    
+    Args:
+        format: Export format (json or csv)
+    """
+    import json as json_lib
+    import csv
+    import io
+    
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT hostname, ssh_user, ssh_port, tags, notes, 
+                   is_control_node, allow_auto_reboot, status, os_family, ip_address
+            FROM hosts ORDER BY hostname
+        """)
+        
+        hosts = [dict(r) for r in rows]
+    
+    if format == "json":
+        # Convert to JSON-safe format
+        for h in hosts:
+            h['is_control_node'] = bool(h.get('is_control_node', False))
+            h['allow_auto_reboot'] = bool(h.get('allow_auto_reboot', True))
+        
+        return {
+            "format": "json",
+            "data": json_lib.dumps(hosts, indent=2, default=str),
+            "count": len(hosts)
+        }
+    
+    elif format == "csv":
+        output = io.StringIO()
+        fieldnames = ["hostname", "ssh_user", "ssh_port", "tags", "notes", 
+                      "is_control_node", "allow_auto_reboot", "status", "os_family", "ip_address"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        for h in hosts:
+            writer.writerow({k: h.get(k, '') for k in fieldnames})
+        
+        return {
+            "format": "csv",
+            "data": output.getvalue(),
+            "count": len(hosts)
+        }
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}. Use 'json' or 'csv'.")
+
 @router.get("/hosts/{host_id}", response_model=HostResponse)
 async def get_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
     """
@@ -950,57 +1001,6 @@ async def import_hosts(request: BulkImportRequest, pool: asyncpg.Pool = Depends(
         "ssh_keys_applied": keys_applied
     }
 
-
-@router.get("/hosts/export")
-async def export_hosts(format: str = "json", pool: asyncpg.Pool = Depends(get_db_pool)):
-    """
-    Export all hosts to specified format.
-    
-    Args:
-        format: Export format (json or csv)
-    """
-    import json as json_lib
-    import csv
-    import io
-    
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT hostname, ssh_user, ssh_port, tags, notes, 
-                   is_control_node, allow_auto_reboot, status, os_family, ip_address
-            FROM hosts ORDER BY hostname
-        """)
-        
-        hosts = [dict(r) for r in rows]
-    
-    if format == "json":
-        # Convert to JSON-safe format
-        for h in hosts:
-            h['is_control_node'] = bool(h.get('is_control_node', False))
-            h['allow_auto_reboot'] = bool(h.get('allow_auto_reboot', True))
-        
-        return {
-            "format": "json",
-            "data": json_lib.dumps(hosts, indent=2, default=str),
-            "count": len(hosts)
-        }
-    
-    elif format == "csv":
-        output = io.StringIO()
-        fieldnames = ["hostname", "ssh_user", "ssh_port", "tags", "notes", 
-                      "is_control_node", "allow_auto_reboot", "status", "os_family", "ip_address"]
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
-        writer.writeheader()
-        for h in hosts:
-            writer.writerow({k: h.get(k, '') for k in fieldnames})
-        
-        return {
-            "format": "csv",
-            "data": output.getvalue(),
-            "count": len(hosts)
-        }
-    
-    else:
-        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}. Use 'json' or 'csv'.")
 
 
 # ============================================================================
