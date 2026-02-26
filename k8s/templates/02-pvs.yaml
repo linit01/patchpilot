@@ -8,7 +8,8 @@
 # Each PV has a claimRef that pre-binds it to the matching PVC — no other
 # workload can claim these volumes.
 #
-# Reclaim policy is Retain on all PVs so data survives accidental PVC deletion.
+# Reclaim policy is Delete — PVs are automatically removed when PVCs are deleted.
+# Data is protected by automated daily backups (Settings → Backup & Restore).
 # ─────────────────────────────────────────────────────────────────────────────
 
 # PostgreSQL data
@@ -25,7 +26,7 @@ spec:
   capacity:
     storage: ${PP_POSTGRES_STORAGE_SIZE}
   accessModes: [ReadWriteOnce]
-  persistentVolumeReclaimPolicy: Retain
+  persistentVolumeReclaimPolicy: Delete
   storageClassName: ${PP_POSTGRES_STORAGE_CLASS}
   claimRef:
     apiVersion: v1
@@ -48,7 +49,7 @@ spec:
   capacity:
     storage: ${PP_BACKUPS_STORAGE_SIZE}
   accessModes: [ReadWriteOnce]
-  persistentVolumeReclaimPolicy: Retain
+  persistentVolumeReclaimPolicy: Delete
   storageClassName: ${PP_APP_STORAGE_CLASS}
   claimRef:
     apiVersion: v1
@@ -71,7 +72,7 @@ spec:
   capacity:
     storage: ${PP_ANSIBLE_STORAGE_SIZE}
   accessModes: [ReadWriteOnce]
-  persistentVolumeReclaimPolicy: Retain
+  persistentVolumeReclaimPolicy: Delete
   storageClassName: ${PP_ANSIBLE_STORAGE_CLASS}
   claimRef:
     apiVersion: v1
