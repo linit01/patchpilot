@@ -345,6 +345,7 @@ async def restore_from_backup(file: UploadFile = File(...)):
     pg_env = {**os.environ, "PGPASSWORD": pg_password}
 
     warnings: list[str] = []
+    restarting: bool = False
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -454,43 +455,98 @@ async def restore_from_backup(file: UploadFile = File(...)):
                     )
 
                     if is_k8s:
-                        # ── K8s path: patch the Secret ────────────────────
-                        import shutil as _shutil
+                        # ── K8s path: patch the Secret via in-cluster REST API ─
+                        # The backend pod has a ServiceAccount with Role permission
+                        # to patch patchpilot-secrets. No kubectl needed.
                         namespace = os.getenv("PATCHPILOT_NAMESPACE", "patchpilot")
                         secret_name = "patchpilot-secrets"
-
-                        # Build kubectl patch payload
-                        patch_json = json.dumps({
-                            "stringData": {"PATCHPILOT_ENCRYPTION_KEY": backup_enc_key}
-                        })
-                        kubectl_cmd = [
-                            "kubectl", "patch", "secret", secret_name,
-                            "-n", namespace,
-                            "--type", "merge",
-                            "-p", patch_json,
-                        ]
-                        # Try kubectl from PATH, then k3s kubectl
-                        kubectl_bin = _shutil.which("kubectl")
-                        if not kubectl_bin and _shutil.which("k3s"):
-                            kubectl_bin = "k3s"
-                            kubectl_cmd = ["k3s", "kubectl", "patch", "secret",
-                                           secret_name, "-n", namespace,
-                                           "--type", "merge", "-p", patch_json]
+                        sa_token_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+                        sa_ca_path    = Path("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+                        k8s_host      = os.getenv("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+                        k8s_port      = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+                        api_url = (
+                            f"https://{k8s_host}:{k8s_port}"
+                            f"/api/v1/namespaces/{namespace}/secrets/{secret_name}"
+                        )
 
                         patched = False
-                        if kubectl_bin:
-                            r = subprocess.run(
-                                kubectl_cmd,
-                                capture_output=True, text=True, timeout=15,
-                            )
-                            patched = r.returncode == 0
-                            if patched:
-                                logger.info("Encryption key patched into %s/%s", namespace, secret_name)
-                            else:
-                                logger.warning("kubectl patch secret failed: %s", r.stderr.strip())
+                        if sa_token_path.exists():
+                            try:
+                                import httpx as _httpx
+                                import base64 as _b64
+                                token = sa_token_path.read_text().strip()
+                                # Secrets PATCH uses strategic-merge-patch or JSON merge patch.
+                                # The data field in a Secret is base64-encoded; using
+                                # stringData lets the API server handle encoding for us.
+                                patch_body = {
+                                    "stringData": {
+                                        "PATCHPILOT_ENCRYPTION_KEY": backup_enc_key
+                                    }
+                                }
+                                verify = str(sa_ca_path) if sa_ca_path.exists() else False
+                                resp = _httpx.patch(
+                                    api_url,
+                                    json=patch_body,
+                                    headers={
+                                        "Authorization": f"Bearer {token}",
+                                        "Content-Type": "application/strategic-merge-patch+json",
+                                    },
+                                    verify=verify,
+                                    timeout=10,
+                                )
+                                if resp.status_code in (200, 201):
+                                    patched = True
+                                    logger.info(
+                                        "Encryption key patched into secret %s/%s via in-cluster API",
+                                        namespace, secret_name,
+                                    )
+                                    # Trigger rollout restart so the pod picks up the new key.
+                                    # Equivalent to: kubectl rollout restart deployment/patchpilot-backend
+                                    # Done by patching the pod template annotation on the Deployment.
+                                    try:
+                                        from datetime import datetime, timezone as _tz
+                                        restart_ts = datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                        deploy_url = (
+                                            f"https://{k8s_host}:{k8s_port}"
+                                            f"/apis/apps/v1/namespaces/{namespace}"
+                                            f"/deployments/patchpilot-backend"
+                                        )
+                                        restart_patch = {
+                                            "spec": {
+                                                "template": {
+                                                    "metadata": {
+                                                        "annotations": {
+                                                            "kubectl.kubernetes.io/restartedAt": restart_ts
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _httpx.patch(
+                                            deploy_url,
+                                            json=restart_patch,
+                                            headers={
+                                                "Authorization": f"Bearer {token}",
+                                                "Content-Type": "application/strategic-merge-patch+json",
+                                            },
+                                            verify=verify,
+                                            timeout=10,
+                                        )
+                                        restarting = True
+                                        logger.info("Rollout restart triggered for patchpilot-backend")
+                                    except Exception as _re:
+                                        logger.warning("Rollout restart patch failed: %s", _re)
+                                else:
+                                    logger.warning(
+                                        "K8s API patch returned %s: %s",
+                                        resp.status_code, resp.text[:200],
+                                    )
+                            except Exception as _e:
+                                logger.warning("In-cluster secret patch failed: %s", _e)
+                        else:
+                            logger.warning("Service account token not found — cannot patch secret in-cluster")
 
                         if not patched:
-                            # Surface the exact manual command
                             manual_cmd = (
                                 f"kubectl patch secret {secret_name} -n {namespace} "
                                 f"--type merge -p "
@@ -499,7 +555,6 @@ async def restore_from_backup(file: UploadFile = File(...)):
                             restart_cmd = (
                                 f"kubectl rollout restart deployment/patchpilot-backend -n {namespace}"
                             )
-                            # Also write to hint file on the backups PVC so it's findable
                             hint = Path(os.getenv("BACKUP_DIR", "/backups")) / "RESTORE_ENCRYPTION_KEY.txt"
                             hint.write_text(
                                 f"# Run these two commands on your kubectl machine to complete the restore:\n\n"
@@ -512,12 +567,16 @@ async def restore_from_backup(file: UploadFile = File(...)):
                                 f"then: {restart_cmd}"
                             )
                         else:
-                            # Secret patched — backend needs a rollout restart to pick it up
-                            warnings.append(
-                                "Encryption key updated in cluster Secret. "
-                                "Run to apply: kubectl rollout restart deployment/patchpilot-backend "
-                                f"-n {namespace}"
-                            )
+                            if restarting:
+                                warnings.append(
+                                    "Encryption key updated in cluster Secret — backend restarting automatically."
+                                )
+                            else:
+                                warnings.append(
+                                    "Encryption key updated in cluster Secret. "
+                                    "Run to apply: kubectl rollout restart deployment/patchpilot-backend "
+                                    f"-n {namespace}"
+                                )
 
                     else:
                         # ── Docker path: write back to .env ───────────────
@@ -553,7 +612,6 @@ async def restore_from_backup(file: UploadFile = File(...)):
                 warnings.append(f"Could not restore encryption key: {e}")
 
         # ── 6. Schedule self-restart ───────────────────────────────────────
-        restarting = False
         install_mode = os.getenv("PATCHPILOT_INSTALL_MODE", "").lower()
         is_k8s = (
             install_mode == "k8s"
@@ -562,6 +620,7 @@ async def restore_from_backup(file: UploadFile = File(...)):
         namespace = os.getenv("PATCHPILOT_NAMESPACE", "patchpilot")
 
         if not is_k8s:
+            restarting = False
             own_id = os.environ.get("HOSTNAME", "")
             if own_id and Path("/var/run/docker.sock").exists():
                 r = subprocess.run(
@@ -577,6 +636,8 @@ async def restore_from_backup(file: UploadFile = File(...)):
                         "Could not schedule auto-restart. Run manually: "
                         "docker restart patchpilot-backend-1"
                     )
+        # For K8s, restarting was set inside the encryption key block above
+        # (True if the rollout restart API call succeeded, False otherwise)
 
     restart_command = (
         f"kubectl rollout restart deployment/patchpilot-backend -n {namespace}"
@@ -584,7 +645,9 @@ async def restore_from_backup(file: UploadFile = File(...)):
         "docker restart patchpilot-backend-1"
     )
 
-    if is_k8s:
+    if is_k8s and restarting:
+        message = "Restore complete — backend restarting. The login page will be ready in ~30 seconds."
+    elif is_k8s:
         message = f"Restore complete. Run to apply: {restart_command}"
     elif restarting:
         message = "Restore complete — backend restarting in 5 s. The login page will be ready in ~15 seconds."
@@ -595,7 +658,7 @@ async def restore_from_backup(file: UploadFile = File(...)):
         "status": "restored",
         "message": message,
         "restarting": restarting,
-        "restart_command": restart_command,
+        "restart_command": restart_command if not restarting else None,
         "source_version": meta.get("app_version", "unknown"),
         "source_date": meta.get("created_at", "unknown"),
         "warnings": warnings,
