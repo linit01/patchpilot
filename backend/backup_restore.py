@@ -411,7 +411,7 @@ async def _run_backup(description: str, include_encryption_key: bool,
 
                 # Also export host list (no credentials — those are in the dump)
                 hosts = await conn.fetch(
-                    "SELECT hostname, display_name, os_type, ssh_port, ssh_user, "
+                    "SELECT hostname, os_type, ssh_port, ssh_user, "
                     "notes, tags, is_control_node, allow_auto_reboot "
                     "FROM hosts ORDER BY hostname"
                 )
