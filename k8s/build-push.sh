@@ -129,7 +129,46 @@ if [[ "${CROSS_BUILD}" == "true" ]]; then
 fi
 
 [[ -n "${DH_USERNAME}" ]] || { err "dockerHub.username not set in install-config.yaml"; exit 1; }
-[[ -n "${DH_TOKEN}" ]]    || { err "dockerHub.token not set in install-config.yaml"; exit 1; }
+
+# ── DockerHub token — prompt if missing ───────────────────────────────────────
+if [[ -z "${DH_TOKEN}" ]]; then
+  echo ""
+  echo -e "${YELLOW}⚠  dockerHub.token is not set in install-config.yaml${NC}"
+  echo -e "   (This is normal after an uninstall — the config is wiped with the namespace.)"
+  echo ""
+  echo -en "${CYAN}Enter your Docker Hub access token: ${NC}"
+  read -rs DH_TOKEN
+  echo ""
+  [[ -n "${DH_TOKEN}" ]] || { err "No token entered — aborting."; exit 1; }
+
+  # Offer to save back into install-config.yaml so next run doesn't prompt
+  echo -en "${CYAN}Save token to install-config.yaml for future runs? [y/N]: ${NC}"
+  read -r save_choice
+  if [[ "${save_choice,,}" == "y" ]]; then
+    # Use python3 to do a safe yaml update if available, else sed
+    if command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null; then
+      python3 - "${DH_TOKEN}" "${CONFIG_FILE}" << 'PYEOF'
+import sys, yaml
+token, path = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = yaml.safe_load(f)
+data.setdefault("patchpilot", {}).setdefault("dockerHub", {})["token"] = token
+with open(path, "w") as f:
+    yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+PYEOF
+    else
+      # Fallback: sed replacement (handles simple cases)
+      if grep -q "token:" "${CONFIG_FILE}"; then
+        sed -i "s|token:.*|token: ${DH_TOKEN}|" "${CONFIG_FILE}"
+      else
+        echo "    token: ${DH_TOKEN}" >> "${CONFIG_FILE}"
+      fi
+    fi
+    ok "Token saved to install-config.yaml"
+  else
+    info "Token not saved — you will be prompted again next run."
+  fi
+fi
 
 # ── Docker Hub login ──────────────────────────────────────────────────────────
 step "Logging in to Docker Hub"

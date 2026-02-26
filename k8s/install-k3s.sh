@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# PatchPilot v0.9.5-alpha — K3s Installer
+# PatchPilot v0.9.6-alpha — K3s Installer
 #
 # Usage:
 #   ./k8s/install-k3s.sh                    # Uses k8s/install-config.yaml
@@ -65,7 +65,7 @@ print_banner() {
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/
 EOF
   echo -e "${NC}"
-  echo -e "${BLUE}K3s Installer — v0.9.5-alpha${NC}"
+  echo -e "${BLUE}K3s Installer — v0.9.6-alpha${NC}"
   echo ""
 }
 
@@ -182,7 +182,7 @@ do_uninstall() {
           "name": "cleanup",
           "image": "busybox:1.36",
           "command": ["sh", "-c",
-            "find /app-data -maxdepth 1 -name \"patchpilot-*\" -exec rm -rf {} + 2>/dev/null; echo done"],
+            "find /app-data -maxdepth 1 -name 'patchpilot-*' ! -name 'patchpilot-backups' -exec rm -rf {} + 2>/dev/null; echo done"],
           "securityContext": { "privileged": true, "runAsUser": 0 },
           "volumeMounts": [{ "name": "app-data", "mountPath": "/app-data" }]
         }],
@@ -237,9 +237,21 @@ JOBEOF
     echo "__NOTE_CLEANUP__ ssh ${node_ref} 'sudo rm -rf /app-data/patchpilot-*'"
   fi
 
-  # Image removal always requires crictl on the node
-  warn "Remove PatchPilot images from k3s containerd cache (run on node):"
-  warn "  ssh ${node_ref} \"sudo k3s crictl rmi \$(sudo k3s crictl images | grep patchpilot | awk '{print \$3}') 2>/dev/null || true\""
+  # ── Step 4: Remove PatchPilot images from containerd via SSH ─────────────
+  if [[ -n "${node_ip}" ]]; then
+    info "Removing PatchPilot images from k3s containerd cache..."
+    local crictl_cmd="sudo k3s crictl rmi \$(sudo k3s crictl images | grep patchpilot | awk '{print \$3}') 2>/dev/null || true"
+    if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes         "${node_ip}" "${crictl_cmd}" 2>/dev/null; then
+      ok "PatchPilot images removed from containerd"
+    else
+      warn "Could not remove images via SSH — run manually on node:"
+      warn "  ssh ${node_ref} \"${crictl_cmd}\""
+      echo "__NOTE_CLEANUP__ ssh ${node_ref} \"${crictl_cmd}\""
+    fi
+  else
+    warn "Could not determine node IP — remove images manually:"
+    warn "  ssh <k3s-node-ip> \"sudo k3s crictl rmi \$(sudo k3s crictl images | grep patchpilot | awk '{print \$3}') 2>/dev/null || true\""
+  fi
 
   ok "PatchPilot uninstalled."
   exit 0
@@ -295,7 +307,7 @@ detect_target_platform() {
 load_config() {
   step "Loading configuration"
 
-  PP_VERSION="$(yaml_get patchpilot.version 0.9.5-alpha)"
+  PP_VERSION="$(yaml_get patchpilot.version 0.9.6-alpha)"
   PP_NAMESPACE="$(yaml_get patchpilot.namespace patchpilot)"
   PP_NAMESPACE="$(prompt_value "Kubernetes namespace" "${PP_NAMESPACE}")"
 
@@ -305,13 +317,13 @@ load_config() {
   PP_DH_REPO="${PP_DH_REPO%/}"
 
   PP_IMAGE_STRATEGY="$(yaml_get patchpilot.image.strategy registry)"
-  PP_IMAGE_TAG="$(yaml_get patchpilot.image.tag 0.9.5-alpha)"
+  PP_IMAGE_TAG="$(yaml_get patchpilot.image.tag 0.9.6-alpha)"
   PP_IMAGE_PULL_POLICY="$(yaml_get patchpilot.image.pullPolicy Always)"
   PP_PULL_SECRET_NAME="$(yaml_get patchpilot.image.pullSecretName dockerhub-pull-secret)"
 
   # Detect arch NOW so we can bake it into the image tags
   # This prevents arm64 Docker builds from overwriting amd64 k3s images (and vice versa)
-  # Tags become: linit01/patchpilot:backend-0.9.5-alpha-amd64
+  # Tags become: linit01/patchpilot:backend-0.9.6-alpha-amd64
   local target_platform
   target_platform="$(detect_target_platform)"
   PP_TARGET_ARCH="$(echo "${target_platform}" | sed 's|linux/||;s|/|-|')"  # amd64, arm64, arm-v7
@@ -649,6 +661,7 @@ generate_manifests() {
   }
 
   render "${tmpl}/00-namespace.yaml"  "${GENERATED_DIR}/00-namespace.yaml";  ok "00-namespace.yaml"
+  render "${tmpl}/00b-rbac.yaml"      "${GENERATED_DIR}/00b-rbac.yaml";      ok "00b-rbac.yaml"
   render "${tmpl}/01-secrets.yaml"    "${GENERATED_DIR}/01-secrets.yaml";    ok "01-secrets.yaml"
   render "${tmpl}/02-pvs.yaml"        "${GENERATED_DIR}/02-pvs.yaml";        ok "02-pvs.yaml"
   render "${tmpl}/02b-pvcs.yaml"      "${GENERATED_DIR}/02b-pvcs.yaml";      ok "02b-pvcs.yaml"
@@ -846,7 +859,8 @@ clean_node_data_dirs() {
 
   step "Node data cleanup — ${node} (${node_ip})"
 
-  local cleanup_cmd="ssh ${node_ip} sudo rm -rf /app-data/patchpilot-*"
+  # Exclude patchpilot-backups — it is intentionally retained for post-uninstall restore
+  local cleanup_cmd="ssh ${node_ip} sudo rm -rf /app-data/patchpilot-postgres-data /app-data/patchpilot-ansible-data"
 
   # ── Check whether stale dirs actually exist before doing anything ──────────
   # Use BatchMode=yes (no password, no TTY) — we are only doing a read-only
@@ -860,7 +874,8 @@ clean_node_data_dirs() {
     if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes         "${_target}" "test -d /app-data" 2>/dev/null; then
       ssh_target="${_target}"
       # Count matching entries; exit 0 = found, exit 1 = none
-      if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes           "${_target}" "find /app-data -maxdepth 1 -name 'patchpilot-*' -print -quit 2>/dev/null | grep -q ." 2>/dev/null; then
+      if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes \
+          "${_target}" "find /app-data -maxdepth 1 -name 'patchpilot-*' ! -name 'patchpilot-backups' -print -quit 2>/dev/null | grep -q ." 2>/dev/null; then
         dirs_exist="yes"
       else
         dirs_exist="no"
@@ -884,7 +899,7 @@ clean_node_data_dirs() {
   fi
 
   # Update cleanup_cmd to use the reachable target if we found one
-  [[ "${dirs_exist}" == "yes" ]] && cleanup_cmd="ssh ${ssh_target} sudo rm -rf /app-data/patchpilot-*"
+  [[ "${dirs_exist}" == "yes" ]] && cleanup_cmd="ssh ${ssh_target} sudo rm -rf /app-data/patchpilot-postgres-data /app-data/patchpilot-ansible-data"
 
   if [[ "${NO_PROMPTS}" == "true" ]]; then
     # Web wizard path — emit structured pause marker and block on resume file
@@ -926,6 +941,23 @@ apply_manifests() {
     cat "${manifest}"
     echo ""
   done
+
+  # ── Re-adopt Released backups PV from a prior install ────────────────────
+  # After uninstall the backups PV is left Released (Retain policy).
+  # A Released PV won't bind to a new PVC until claimRef is cleared —
+  # patching it to Available lets the new install reclaim it with data intact.
+  local backups_pv="${PP_NAMESPACE}-backups"
+  local pv_phase
+  pv_phase="$(kubectl get pv "${backups_pv}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  if [[ "${pv_phase}" == "Released" ]]; then
+    info "Found existing ${backups_pv} PV in Released state — clearing claimRef so new install can bind to it..."
+    kubectl patch pv "${backups_pv}" --type=json \
+      -p='[{"op":"remove","path":"/spec/claimRef"}]' \
+      && ok "${backups_pv} PV is now Available (existing backup data preserved)" \
+      || warn "Could not patch ${backups_pv} PV — PVC may stay Pending"
+  elif [[ -n "${pv_phase}" ]]; then
+    info "${backups_pv} PV exists in phase '${pv_phase}' — no action needed"
+  fi
 
   # ── Apply each manifest, showing full kubectl output ─────────────────────
   step "Applying manifests"
