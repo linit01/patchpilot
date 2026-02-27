@@ -1,6 +1,9 @@
-<p align="center">
-  <img src="frontend/patchpilot-icon.jpeg" alt="PatchPilot" width="48" style="vertical-align:middle"> **PatchPilot**
-</p>
+<table border="0" cellpadding="0" cellspacing="0">
+  <tr>
+    <td><img src="frontend/patchpilot-icon.jpeg" alt="PatchPilot" width="48"></td>
+    <td><h1 style="margin:0 0 0 10px">PatchPilot</h1></td>
+  </tr>
+</table>
 
 # PatchPilot
 
