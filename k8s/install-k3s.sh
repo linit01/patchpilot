@@ -3,12 +3,13 @@
 # PatchPilot v0.9.6-alpha — K3s Installer
 #
 # Usage:
-#   ./k8s/install-k3s.sh                    # Uses k8s/install-config.yaml
+#   ./k8s/install-k3s.sh                    # Uses k8s/install-config.yaml (public image)
 #   ./k8s/install-k3s.sh --config my.yaml   # Custom config file
 #   ./k8s/install-k3s.sh --interactive      # Force interactive prompts
 #   ./k8s/install-k3s.sh --no-interactive   # Skip all prompts (web wizard mode)
 #   ./k8s/install-k3s.sh --dry-run          # Generate manifests, don't apply
 #   ./k8s/install-k3s.sh --uninstall        # Remove PatchPilot from cluster
+#   ./k8s/install-k3s.sh --developer        # Dev mode: build+push private image then install
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -25,6 +26,7 @@ DRY_RUN=false
 INTERACTIVE=false
 NO_PROMPTS=false
 UNINSTALL=false
+DEVELOPER=false
 PP_SC_WAIT_FOR_CONSUMER=false
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -46,7 +48,8 @@ while [[ $# -gt 0 ]]; do
     --interactive)    INTERACTIVE=true; NO_PROMPTS=false; shift ;;
     --no-interactive) NO_PROMPTS=true; INTERACTIVE=false; shift ;;
     --uninstall)      UNINSTALL=true; shift ;;
-    -h|--help)        sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --developer)      DEVELOPER=true; INTERACTIVE=true; NO_PROMPTS=false; shift ;;
+    -h|--help)        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
 done
@@ -338,17 +341,31 @@ load_config() {
   PP_DH_USERNAME="$(yaml_get patchpilot.dockerHub.username)"
   PP_DH_TOKEN="$(yaml_get patchpilot.dockerHub.token)"
 
-  if [[ -z "${PP_DH_USERNAME}" ]]; then
-    echo ""
-    echo -e "${CYAN}Docker Hub credentials${NC}"
-    echo -e "  Use an Access Token (not your password): hub.docker.com → Account Settings → Security"
-    echo ""
-    echo -en "${CYAN}  Docker Hub username${NC}: "; read -r PP_DH_USERNAME
+  if [[ "${DEVELOPER}" == "true" ]]; then
+    # Developer mode — credentials required for build+push to private repo
+    if [[ -z "${PP_DH_USERNAME}" ]]; then
+      echo ""
+      echo -e "${CYAN}Docker Hub credentials${NC}"
+      echo -e "  Use an Access Token (not your password): hub.docker.com → Account Settings → Security"
+      echo ""
+      echo -en "${CYAN}  Docker Hub username${NC}: "; read -r PP_DH_USERNAME
+    fi
+    if [[ -z "${PP_DH_TOKEN}" ]]; then
+      echo -en "${CYAN}  Docker Hub access token${NC}: "; read -rs PP_DH_TOKEN; echo ""
+    fi
+    [[ -z "${PP_DH_USERNAME}" || -z "${PP_DH_TOKEN}" ]] && die "Docker Hub credentials required in --developer mode."
+  else
+    # Standard mode — public image, no credentials needed for pull
+    # A pull secret is still created if credentials are present in install-config.yaml
+    # but installation proceeds without them for public images
+    if [[ -n "${PP_DH_USERNAME}" && -n "${PP_DH_TOKEN}" ]]; then
+      info "Docker Hub credentials found — will create pull secret."
+    else
+      info "No Docker Hub credentials — using public image (no pull secret needed)."
+      PP_DH_USERNAME=""
+      PP_DH_TOKEN=""
+    fi
   fi
-  if [[ -z "${PP_DH_TOKEN}" ]]; then
-    echo -en "${CYAN}  Docker Hub access token${NC}: "; read -rs PP_DH_TOKEN; echo ""
-  fi
-  [[ -z "${PP_DH_USERNAME}" || -z "${PP_DH_TOKEN}" ]] && die "Docker Hub credentials required."
 
   # ── Network ────────────────────────────────────────────────────────────────
   PP_HOSTNAME="$(yaml_get patchpilot.network.hostname)"
@@ -1095,6 +1112,16 @@ main() {
   [[ "${UNINSTALL}" == "true" ]] && do_uninstall
   check_prerequisites
   load_config
+
+  # ── Developer mode — build and push images before installing ─────────────
+  if [[ "${DEVELOPER}" == "true" ]]; then
+    step "Developer mode — building and pushing images"
+    local build_script="${SCRIPT_DIR}/build-push.sh"
+    [[ -f "${build_script}" ]] || die "build-push.sh not found at ${build_script}"
+    bash "${build_script}" --tag "${PP_IMAGE_TAG}"
+    ok "Images built and pushed successfully"
+    echo ""
+  fi
 
   if [[ "${DRY_RUN}" == "false" ]]; then
     confirm_proceed "Proceed with installation?" || { info "Aborted."; exit 0; }
