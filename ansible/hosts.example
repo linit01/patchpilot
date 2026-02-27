@@ -1,0 +1,16 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Ansible Inventory Example
+# Copy to ansible/hosts and edit to match your environment.
+#   cp ansible/hosts.example ansible/hosts
+#   ansible/hosts is gitignored — never commit your real inventory.
+# ──────────────────────────────────────────────────────────────────────────────
+
+[homelab]
+# Format: ip_or_hostname  [ansible_user=USERNAME]  [ansible_port=PORT]
+192.168.1.101 ansible_user=admin
+192.168.1.102 ansible_user=ubuntu
+myserver.lan  ansible_user=admin
+myserver.lan  ansible_user=admin ansible_port=2222   # non-standard SSH port
+
+[homelab:vars]
+ansible_user=root    # default user — overridden per-host above if set
