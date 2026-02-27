@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="frontend/patchpilot-icon.jpeg" alt="PatchPilot" width="400">
+  <img src="frontend/patchpilot-icon.jpeg" alt="PatchPilot" width="200">
 </p>
 
 # PatchPilot
