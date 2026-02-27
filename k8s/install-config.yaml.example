@@ -4,7 +4,7 @@ patchpilot:
   image:
     strategy: registry
     # Docker Hub repo — change to your own repo if self-building, or leave as-is for the public image
-    dockerHubRepo: YOUR_DOCKERHUB_USERNAME/patchpilot
+    dockerHubRepo: linit01/patchpilot
     tag: 0.9.6-alpha
     pullPolicy: Always
   dockerHub:
