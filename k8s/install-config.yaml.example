@@ -1,0 +1,54 @@
+patchpilot:
+  version: 0.9.6-alpha
+  namespace: patchpilot
+  image:
+    strategy: registry
+    # Docker Hub repo — change to your own repo if self-building, or leave as-is for the public image
+    dockerHubRepo: YOUR_DOCKERHUB_USERNAME/patchpilot
+    tag: 0.9.6-alpha
+    pullPolicy: Always
+  dockerHub:
+    # Only needed if using a private image repo (--developer mode)
+    # Leave blank for the public image
+    username: ''
+    token: ''
+  network:
+    hostname: patchpilot.lan        # Hostname your ingress should respond to
+    additionalHostnames: []
+    tls:
+      enabled: false                # Set true to enable cert-manager TLS
+      clusterIssuer: letsencrypt-prod
+      secretName: ''
+    httpsRedirect: true
+    securityHeaders: true
+    ingressClass: traefik
+  certManager:
+    createClusterIssuer: true
+    email: ''                       # your@email.com — used for Let's Encrypt registration
+    challengeType: dns01-cloudflare # or http01
+    cloudflare:
+      email: ''                     # Cloudflare account email (dns01 only)
+      apiTokenSecretName: cloudflare-api-token-secret
+  postgres:
+    user: patchpilot
+    password: ''                    # Leave blank — installer generates a strong password
+    database: patchpilot
+    storageSize: 5Gi
+    storageClass: app-data          # Change to match your cluster's StorageClass
+  app:
+    encryptionKey: ''               # Leave blank — installer auto-generates a Fernet key
+    autoRefreshInterval: 60
+    defaultSshUser: root
+    defaultSshPort: 22
+    backupRetainCount: 3
+    maxBackupSizeMb: 500
+  storage:
+    type: local                     # local or nfs
+    storageClass: local-path        # Change to match your cluster's StorageClass
+    backupsSize: 10Gi
+    ansibleSize: 1Gi
+    nfsServer: ''                   # NFS server IP (nfs type only)
+    nfsShare: ''                    # NFS export path (nfs type only)
+  ansible:
+    playbookPath: ''
+    inventoryPath: ''
