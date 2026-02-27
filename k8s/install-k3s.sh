@@ -3,7 +3,7 @@
 # PatchPilot v0.9.6-alpha — K3s Installer
 #
 # Usage:
-#   ./k8s/install-k3s.sh                    # Uses k8s/install-config.yaml (public image)
+#   ./k8s/install-k3s.sh                    # Uses k8s/install-config.yaml
 #   ./k8s/install-k3s.sh --config my.yaml   # Custom config file
 #   ./k8s/install-k3s.sh --interactive      # Force interactive prompts
 #   ./k8s/install-k3s.sh --no-interactive   # Skip all prompts (web wizard mode)
@@ -26,7 +26,6 @@ DRY_RUN=false
 INTERACTIVE=false
 NO_PROMPTS=false
 UNINSTALL=false
-DEVELOPER=false
 PP_SC_WAIT_FOR_CONSUMER=false
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -48,8 +47,7 @@ while [[ $# -gt 0 ]]; do
     --interactive)    INTERACTIVE=true; NO_PROMPTS=false; shift ;;
     --no-interactive) NO_PROMPTS=true; INTERACTIVE=false; shift ;;
     --uninstall)      UNINSTALL=true; shift ;;
-    --developer)      DEVELOPER=true; INTERACTIVE=true; NO_PROMPTS=false; shift ;;
-    -h|--help)        sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)        sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
 done
@@ -1112,16 +1110,6 @@ main() {
   [[ "${UNINSTALL}" == "true" ]] && do_uninstall
   check_prerequisites
   load_config
-
-  # ── Developer mode — build and push images before installing ─────────────
-  if [[ "${DEVELOPER}" == "true" ]]; then
-    step "Developer mode — building and pushing images"
-    local build_script="${SCRIPT_DIR}/build-push.sh"
-    [[ -f "${build_script}" ]] || die "build-push.sh not found at ${build_script}"
-    bash "${build_script}" --tag "${PP_IMAGE_TAG}"
-    ok "Images built and pushed successfully"
-    echo ""
-  fi
 
   if [[ "${DRY_RUN}" == "false" ]]; then
     confirm_proceed "Proceed with installation?" || { info "Aborted."; exit 0; }
