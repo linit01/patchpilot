@@ -1,11 +1,9 @@
-<table border="0" cellpadding="0" cellspacing="0">
-  <tr>
-    <td><img src="frontend/patchpilot-icon.jpeg" alt="PatchPilot" width="48"></td>
-    <td><h1 style="margin:0 0 0 10px">PatchPilot</h1></td>
+<table border="0" cellpadding="8" cellspacing="0" style="border:none">
+  <tr style="border:none">
+    <td style="border:none"><img src="frontend/patchpilot-icon.jpeg" alt="PatchPilot" width="48"></td>
+    <td style="border:none"><h1 style="margin:0">PatchPilot</h1></td>
   </tr>
 </table>
-
-# PatchPilot
 
 **Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**
 
