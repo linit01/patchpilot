@@ -1,4 +1,8 @@
-# 🎯 PatchPilot
+<p align="center">
+  <img src="frontend/patchpilot-icon.jpeg" alt="PatchPilot" width="400">
+</p>
+
+# PatchPilot
 
 **Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**
 
