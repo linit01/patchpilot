@@ -5,7 +5,10 @@ patchpilot:
     strategy: registry
     # Docker Hub repo — change to your own repo if self-building, or leave as-is for the public image
     dockerHubRepo: linit01/patchpilot
-    tag: 0.9.6-alpha
+    # Use the clean tag (no -amd64 / -arm64 suffix).
+    # The public image is a multi-arch manifest list — Docker/k8s pull the right arch automatically.
+    # If you built with ./k8s/build-push.sh (dev mode, no --release), use the arch-suffixed tag instead.
+    tag: 0.9.5-alpha
     pullPolicy: Always
   dockerHub:
     # Only needed if using a private image repo (--developer mode)

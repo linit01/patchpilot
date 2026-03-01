@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PatchPilot Installer — v0.9.2-alpha</title>
+<title>PatchPilot Installer — v0.9.6-alpha</title>
 <style>
   :root {
     --bg:#0d1117;--surface:#161b22;--border:#30363d;
@@ -98,6 +98,15 @@
   .danger-zone{border:1px solid rgba(248,81,73,.4);border-radius:8px;padding:24px;background:rgba(248,81,73,.04);margin-bottom:20px}
   .danger-zone h3{color:var(--red);margin-bottom:8px}
   .danger-zone p{color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:16px}
+  /* Developer page */
+  .dev-badge{display:inline-block;background:rgba(88,166,255,.15);color:var(--accent-light);border:1px solid rgba(88,166,255,.3);border-radius:4px;padding:2px 8px;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-left:8px;vertical-align:middle}
+  .build-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:600px){.build-grid{grid-template-columns:1fr}}
+  .build-status{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:6px;background:var(--bg);border:1px solid var(--border);font-size:13px;margin-top:16px}
+  .build-status.idle   {color:var(--muted)}
+  .build-status.running{color:var(--accent-light);border-color:rgba(88,166,255,.4)}
+  .build-status.ok     {color:var(--green);border-color:rgba(63,185,80,.4);background:rgba(63,185,80,.05)}
+  .build-status.fail   {color:var(--red);border-color:rgba(248,81,73,.4);background:rgba(248,81,73,.05)}
 </style>
 </head>
 <body>
@@ -110,12 +119,12 @@
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/</pre>
     <div>
       <div class="header-title">Web Installer</div>
-      <div class="header-sub">v0.9.2-alpha</div>
+      <div class="header-sub">v0.9.6-alpha</div>
     </div>
   </div>
   <div class="nav">
     <button class="nav-btn active" id="nav-install" onclick="showView('install')">⚙ Install</button>
-    <button class="nav-btn danger" id="nav-uninstall" onclick="showView('uninstall')">🗑 Uninstall</button>
+    <button class="nav-btn" id="nav-dev" onclick="showView('dev')" style="display:none">🔧 Developer</button>
   </div>
 </div>
 
@@ -463,13 +472,96 @@
 </div>
 </div><!-- /view-uninstall -->
 
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     DEVELOPER VIEW — shown only when server started with --developer
+════════════════════════════════════════════════════════════════════════════ -->
+<div id="view-dev" class="hidden">
+<div class="container">
+  <div class="card">
+    <h2>Build &amp; Push Images <span class="dev-badge">Developer</span></h2>
+    <p class="subtitle">Build Docker images from source and push to Docker Hub before running the install wizard. Changes here don't touch <code>install-config.yaml</code>.</p>
+
+    <div class="build-grid">
+      <div class="field">
+        <label>Docker Hub repo</label>
+        <input type="text" id="build-repo" value="linit01/patchpilot">
+      </div>
+      <div class="field">
+        <label>Image tag</label>
+        <input type="text" id="build-tag" value="0.9.6-alpha">
+      </div>
+    </div>
+
+    <div class="build-grid" style="margin-top:12px">
+      <div class="field">
+        <label>Target platform</label>
+        <select id="build-platform">
+          <option value="">Auto-detect from cluster</option>
+          <option value="linux/amd64">linux/amd64</option>
+          <option value="linux/arm64">linux/arm64</option>
+          <option value="linux/amd64,linux/arm64">Multi-arch (amd64 + arm64)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Options</label>
+        <div style="display:flex;gap:16px;align-items:center;height:40px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="build-no-cache"> No cache
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="checkbox" id="build-push" checked> Push to Hub
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="build-status idle" id="build-status">
+      <span id="build-status-icon">⬤</span>&nbsp;<span id="build-status-text">Ready to build</span>
+    </div>
+
+    <div class="actions" style="margin-top:20px">
+      <button class="btn" onclick="showView('install')">← Back to Install Wizard</button>
+      <button class="btn btn-primary" id="build-btn" onclick="startBuild()">▶ Build &amp; Push</button>
+    </div>
+  </div>
+
+  <!-- Build log -->
+  <div id="build-log-panel" class="log-panel hidden" style="margin-top:16px">
+    <div class="log-toolbar">
+      <span class="log-title">Build Output</span>
+      <span class="badge" id="build-log-status">Running…</span>
+    </div>
+    <pre class="log-output" id="build-log-output"></pre>
+    <div class="actions" id="build-post-actions" style="display:none;margin-top:12px">
+      <span></span>
+      <button class="btn btn-primary" onclick="showView('install')">Continue to Install Wizard →</button>
+    </div>
+  </div>
+</div>
+</div><!-- /view-dev -->
+
 <script>
+// ── Server info (developer mode) ───────────────────────────────────────────────
+let DEVELOPER_MODE = false;
+
+async function loadServerInfo() {
+  try {
+    const r = await fetch('/api/info');
+    const d = await r.json();
+    DEVELOPER_MODE = d.developer || false;
+    if (DEVELOPER_MODE) {
+      $('nav-dev').style.display = '';
+    }
+  } catch(e) { /* server info unavailable — non-fatal */ }
+}
+
 // ── View switching ─────────────────────────────────────────────────────────────
 function showView(v) {
   document.getElementById('view-install').classList.toggle('hidden', v !== 'install');
   document.getElementById('view-uninstall').classList.toggle('hidden', v !== 'uninstall');
+  document.getElementById('view-dev').classList.toggle('hidden', v !== 'dev');
   document.getElementById('nav-install').classList.toggle('active', v === 'install');
-  document.getElementById('nav-uninstall').classList.toggle('active', v === 'uninstall');
+  document.getElementById('nav-dev').classList.toggle('active', v === 'dev');
   if (v === 'uninstall') checkUninstallConfig();
 }
 
@@ -790,8 +882,88 @@ async function startUninstall() {
   streamOutput('/api/uninstall-stream', 'uninstall');
 }
 
+// ── Developer: Build & Push ────────────────────────────────────────────────────
+function setBuildStatus(state, text) {
+  const el = $('build-status');
+  el.className = 'build-status ' + state;
+  $('build-status-text').textContent = text;
+}
+
+async function startBuild() {
+  const repo     = $('build-repo').value.trim()     || 'linit01/patchpilot';
+  const tag      = $('build-tag').value.trim()      || '0.9.6-alpha';
+  const platform = $('build-platform').value;
+  const noCache  = $('build-no-cache').checked;
+  const push     = $('build-push').checked;
+
+  $('build-btn').disabled = true;
+  $('build-log-panel').classList.remove('hidden');
+  $('build-log-panel').scrollIntoView({behavior:'smooth'});
+  $('build-log-output').textContent = '';
+  $('build-post-actions').style.display = 'none';
+  setBuildStatus('running', 'Building…');
+  $('build-log-status').textContent = 'Running…';
+  $('build-log-status').className = 'badge';
+
+  const params = new URLSearchParams({repo, tag, no_cache: noCache, push});
+  if (platform) params.set('platform', platform);
+
+  const es = new EventSource('/api/build-stream?' + params.toString());
+  const log = $('build-log-output');
+
+  es.onmessage = e => {
+    const raw = JSON.parse(e.data);
+
+    if (raw.startsWith('__EXIT__')) {
+      es.close();
+      $('build-btn').disabled = false;
+      const code = parseInt(raw.replace('__EXIT__', ''));
+      if (code === 0) {
+        setBuildStatus('ok', push ? 'Images pushed successfully ✓' : 'Build complete (not pushed) ✓');
+        $('build-log-status').textContent = '✓ Done';
+        $('build-log-status').className = 'badge badge-green';
+        $('build-post-actions').style.display = 'flex';
+      } else {
+        setBuildStatus('fail', 'Build failed — see log above');
+        $('build-log-status').textContent = '✗ Failed';
+        $('build-log-status').className = 'badge badge-red';
+      }
+      return;
+    }
+
+    if (raw.startsWith('__ERROR__')) {
+      es.close();
+      $('build-btn').disabled = false;
+      setBuildStatus('fail', raw.replace('__ERROR__', '').trim() || 'Unexpected error');
+      $('build-log-status').textContent = '✗ Error';
+      $('build-log-status').className = 'badge badge-red';
+      return;
+    }
+
+    const span = document.createElement('span');
+    span.className = 'log-line';
+    const clean = raw.replace(/\x1b\[[0-9;]*m/g, '');
+    if (/^✓/.test(clean))       span.classList.add('ok');
+    else if (/^✗/.test(clean))  span.classList.add('err');
+    else if (/^!/.test(clean))  span.classList.add('warn');
+    else if (/^▸/.test(clean))  span.classList.add('step');
+    else if (/^ℹ/.test(clean))  span.classList.add('info');
+    span.textContent = clean + '\n';
+    log.appendChild(span);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  es.onerror = () => {
+    es.close();
+    $('build-btn').disabled = false;
+    setBuildStatus('fail', 'Connection lost');
+    $('build-log-status').textContent = '✗ Lost';
+    $('build-log-status').className = 'badge badge-red';
+  };
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────────
-showPage(0);
+loadServerInfo().then(() => showPage(0));
 </script>
 </body>
 </html>

@@ -88,6 +88,13 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro  # required — enables in-app uninstall
       - .:/install:rw  # mount install dir so restore can update .env encryption key
 
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/setup/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
     networks:
       - patchpilot
 
