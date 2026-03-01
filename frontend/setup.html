@@ -1138,7 +1138,7 @@
                     const el = document.getElementById('default-ssh-port');
                     if (el) el.value = d.default_ssh_port;
                 }
-                if (d.backup_storage_type) {
+                if (d.backup_storage_type && d.backup_storage_type !== 'local') {
                     state.backup.storage_type = d.backup_storage_type;
                     selectStorage(d.backup_storage_type);
                 }
@@ -1151,6 +1151,11 @@
                     state.backup.nfs_share = d.nfs_share;
                     const el = document.getElementById('nfs-share');
                     if (el) el.value = d.nfs_share;
+                }
+                // Also pre-select NFS if server/share are set even if type wasn't explicit
+                if (d.nfs_server && d.nfs_share && state.backup.storage_type === 'local') {
+                    state.backup.storage_type = 'nfs';
+                    selectStorage('nfs');
                 }
             } catch (e) {
                 // backend not reachable yet — stay on page
