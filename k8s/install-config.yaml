@@ -7,8 +7,8 @@ patchpilot:
     tag: 0.9.7-alpha
     pullPolicy: Always
   dockerHub:
-    username: linit01
-    token: dckr_pat_S458vJ5TNz2vLVQugd7BMtRQJvQ
+    username: ''
+    token: ''
   network:
     hostname: patchpilot.apps.lan
     additionalHostnames: []
@@ -34,18 +34,18 @@ patchpilot:
     storageClass: app-data
   app:
     encryptionKey: ''
-    autoRefreshInterval: 60
+    autoRefreshInterval: 300
     defaultSshUser: root
     defaultSshPort: 22
     backupRetainCount: 3
     maxBackupSizeMb: 500
   storage:
-    type: local
+    type: nfs
     storageClass: nfs-backups
     backupsSize: 10Gi
     ansibleSize: 1Gi
-    nfsServer: ''
-    nfsShare: ''
+    nfsServer: 192.168.1.100
+    nfsShare: /mnt/nas1/BACKUPS
   ansible:
     playbookPath: ''
     inventoryPath: ''

@@ -177,21 +177,23 @@
   <div id="page-2" class="page hidden">
     <div class="card">
       <h2>Docker Hub</h2>
-      <p class="subtitle">Images are built here and pushed to Docker Hub. Your cluster pulls from there.</p>
+      <p class="subtitle" id="dh-subtitle">Your cluster pulls pre-built images from this public repository.</p>
       <div class="field"><label>Repository</label><input type="text" id="dh_repo" value="linit01/patchpilot"></div>
-      <div class="row">
-        <div class="field">
-          <label>Username</label>
-          <input type="text" id="dh_username" placeholder="your-dockerhub-user">
-          <div class="errmsg">Required</div>
+      <div id="dh-creds" class="hidden">
+        <div class="row">
+          <div class="field">
+            <label>Username</label>
+            <input type="text" id="dh_username" placeholder="your-dockerhub-user">
+            <div class="errmsg">Required</div>
+          </div>
+          <div class="field">
+            <label>Access Token</label>
+            <input type="password" id="dh_token" placeholder="dckr_pat_…">
+            <div class="errmsg">Required</div>
+          </div>
         </div>
-        <div class="field">
-          <label>Access Token</label>
-          <input type="password" id="dh_token" placeholder="dckr_pat_…">
-          <div class="errmsg">Required</div>
-        </div>
+        <div style="font-size:12px;color:var(--muted)">Create tokens: hub.docker.com → Account Settings → Security → New Access Token</div>
       </div>
-      <div style="font-size:12px;color:var(--muted)">Create tokens: hub.docker.com → Account Settings → Security → New Access Token</div>
     </div>
     <div class="actions">
       <button class="btn btn-secondary" onclick="prevPage()">← Back</button>
@@ -551,6 +553,8 @@ async function loadServerInfo() {
     DEVELOPER_MODE = d.developer || false;
     if (DEVELOPER_MODE) {
       $('nav-dev').style.display = '';
+      $('dh-creds').classList.remove('hidden');
+      $('dh-subtitle').textContent = 'Images are built here and pushed to Docker Hub. Your cluster pulls from there.';
     }
   } catch(e) { /* server info unavailable — non-fatal */ }
 }
@@ -618,7 +622,7 @@ function required(id) {
 }
 function validateCurrent() {
   const page = pageList()[currentPage];
-  if (page === 2) return !!(required('dh_username') & required('dh_token'));
+  if (page === 2) return DEVELOPER_MODE ? !!(required('dh_username') & required('dh_token')) : true;
   if (page === 3) { let ok = required('hostname'); if (getTls()) ok = required('le_email') && ok; return !!ok; }
   if (page === 4 && getBt() === 'nfs') return !!(required('nfs_server') & required('nfs_share'));
   return true;
@@ -679,7 +683,7 @@ function buildSummary() {
   }
   const rows = [
     ['Namespace',      $('namespace').value],
-    ['Docker Hub',     `${$('dh_repo').value} (${$('dh_username').value})`],
+    ['Docker Hub',     DEVELOPER_MODE ? `${$('dh_repo').value} (${$('dh_username').value})` : $('dh_repo').value],
     ['Hostname',       $('hostname').value + ($('additional_hostnames').value ? ` + ${$('additional_hostnames').value}` : '')],
     ['TLS',            getTls() ? `Yes (${$('challenge_type').value})` : 'HTTP only'],
     ['Postgres SC',    $('postgres_storage_class').value],
