@@ -25,6 +25,25 @@
             font-size: 24px;
             font-weight: 700;
             color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .header-icon {
+            width: 48px;
+            height: 32px;
+            flex-shrink: 0;
+        }
+
+        .header-icon img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center 30%;
+            -webkit-mask-image: radial-gradient(ellipse 90% 80% at center, black 40%, transparent 72%);
+            mask-image: radial-gradient(ellipse 90% 80% at center, black 40%, transparent 72%);
+            filter: brightness(0.85) contrast(1.1);
         }
 
         .header .actions {
@@ -437,7 +456,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>⚙️ Settings</h1>
+        <h1><div class="header-icon"><img src="patchpilot-icon.jpeg" alt="PatchPilot"></div> Settings</h1>
         <div class="actions">
             <button class="btn btn-secondary" onclick="window.location.href='index.html'">← Back to Dashboard</button>
         </div>
@@ -2712,12 +2731,12 @@
                         </thead>
                         <tbody>
                             ${backups.map(b => {
-                                const sizeMB = (b.size_bytes / 1048576).toFixed(1);
+                                const sizeDisplay = b.size_human || ((b.size_bytes / 1048576).toFixed(1) + ' MB');
                                 const date = b.created_at ? new Date(b.created_at).toLocaleString() : '—';
                                 const desc = b.description || '—';
                                 return `<tr style="border-bottom:1px solid var(--border);">
                                     <td style="padding:11px 16px;font-family:monospace;font-size:12px;color:var(--cyan);">${b.filename}</td>
-                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-secondary);">${sizeMB} MB</td>
+                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-secondary);">${sizeDisplay}</td>
                                     <td style="padding:11px 16px;font-size:12px;color:var(--text-secondary);">${date}</td>
                                     <td style="padding:11px 16px;font-size:12px;color:var(--text-muted);">${desc}</td>
                                     <td style="padding:11px 16px;text-align:right;white-space:nowrap;">
@@ -2743,10 +2762,9 @@
             showBackupBanner('Creating backup…', 0);
 
             try {
-                const res = await fetch(`${_BACKUP_API}/create`, {
+                const params = new URLSearchParams({ description: desc, include_encryption_key: includeKey });
+                const res = await fetch(`${_BACKUP_API}/create?${params}`, {
                     method: 'POST',
-                    headers: {'Content-Type':'application/json'},
-                    body: JSON.stringify({ description: desc, include_encryption_key: includeKey })
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || 'Unknown error');
