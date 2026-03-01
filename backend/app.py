@@ -130,7 +130,7 @@ _ansible_check_lock = asyncio.Lock()
 _ansible_patch_running = False
 
 # Create FastAPI app
-_APP_VERSION = os.getenv("APP_VERSION", "0.9.6-alpha")
+_APP_VERSION = os.getenv("APP_VERSION", "0.9.7-alpha")
 app = FastAPI(title="PatchPilot API", version=_APP_VERSION)
 
 # ── CORS configuration ────────────────────────────────────────────────────────

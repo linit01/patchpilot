@@ -1,5 +1,5 @@
 """
-PatchPilot v0.9.6-alpha — Web Install Server
+PatchPilot v0.9.7-alpha — Web Install Server
 Collects configuration via browser wizard, writes config files,
 then streams ./install.sh output back to the browser via SSE.
 """
@@ -42,7 +42,7 @@ async def info():
     """Returns server capabilities so the UI can show/hide developer features."""
     return {
         "developer": DEVELOPER_MODE,
-        "version":   "0.9.6-alpha",
+        "version":   "0.9.7-alpha",
         "repo_root": str(REPO_ROOT),
     }
 
@@ -95,7 +95,7 @@ class K3sConfig(BaseModel):
     dh_repo: str = "linit01/patchpilot"
     dh_username: str
     dh_token: str
-    image_tag: str = "0.9.6-alpha"
+    image_tag: str = "0.9.7-alpha"
     pull_policy: str = "Always"
     hostname: str
     additional_hostnames: str = ""
@@ -165,7 +165,7 @@ async def resume():
 @app.get("/api/build-stream")
 async def build_stream(
     repo: str = "linit01/patchpilot",
-    tag: str = "0.9.6-alpha",
+    tag: str = "0.9.7-alpha",
     platform: str = "",
     no_cache: bool = False,
     push: bool = True,
@@ -323,7 +323,7 @@ def _write_k3s_config(cfg: K3sConfig):
     additional = [h.strip() for h in cfg.additional_hostnames.replace(",", " ").split() if h.strip()]
     data = {
         "patchpilot": {
-            "version": "0.9.6-alpha",
+            "version": "0.9.7-alpha",
             "namespace": cfg.namespace,
             "image": {
                 "strategy": "registry",
