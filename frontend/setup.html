@@ -881,7 +881,7 @@
                 <div class="done-screen">
                     <div class="done-icon">🎉</div>
                     <h2>Setup Complete!</h2>
-                    <p>PatchPilot is configured and ready. Redirecting you to the login page in <span id="countdown">5</span>s...</p>
+                    <p>PatchPilot is configured. Waiting for the backend to be ready…</p>
 
                     <div class="summary-grid" id="summary-grid">
                         <!-- filled by JS -->
@@ -894,8 +894,8 @@
                         <p>For Kubernetes users, see the PV snippet in the <strong>Backup &amp; Restore</strong> settings tab after login.</p>
                     </div>
 
-                    <button class="btn btn-primary" style="width:100%; padding: 14px;" onclick="goToLogin()">
-                        → Sign In Now
+                    <button class="btn btn-primary" id="signin-btn" style="width:100%; padding: 14px;" onclick="goToLogin()" disabled>
+                        ⟳ Waiting for backend…
                     </button>
                 </div>
             </div>
@@ -1035,8 +1035,12 @@
                 buildRestoreDoneScreen(data);
 
                 if (data.restarting) {
-                    // Backend is about to restart — auto-redirect after ~18s
-                    startRestoreCountdown(18);
+                    // Backend is about to restart — poll until ready
+                    pollBackendReady();
+                } else {
+                    // Manual restart needed — let user click through
+                    const sb = document.getElementById('signin-btn');
+                    if (sb) { sb.disabled = false; sb.textContent = '→ Sign In Now'; }
                 }
 
             } catch (e) {
@@ -1095,7 +1099,7 @@
             if (doneH2) doneH2.textContent = '🎉 Restore Complete!';
             const doneP = document.querySelector('.done-screen > p');
             if (doneP) doneP.textContent = data.restarting
-                ? 'The backend is restarting. You will be redirected to the login page automatically.'
+                ? 'The backend is restarting. Sign In will be available once it is ready.'
                 : `Restore is complete. Run the restart command shown above, then log in with your existing credentials.`;
         }
 
@@ -1394,7 +1398,7 @@
                 currentStep = 7;
                 showStep(7);
                 buildDoneScreen(data);
-                startCountdown();
+                pollBackendReady();
 
             } catch (e) {
                 showError(5, 'Connection error. Is the backend running?');
@@ -1449,6 +1453,51 @@
         function goToLogin() {
             clearInterval(countdownTimer);
             window.location.href = 'login.html';
+        }
+
+        // ── Backend readiness polling ────────────────────────
+        let healthPoller;
+        function pollBackendReady() {
+            const btn = document.getElementById('signin-btn');
+            if (!btn) return;
+            btn.disabled = true;
+            btn.textContent = '⟳ Waiting for backend…';
+
+            let attempts = 0;
+            healthPoller = setInterval(async () => {
+                attempts++;
+                try {
+                    const r = await fetch('/health', { signal: AbortSignal.timeout(3000) });
+                    if (r.ok) {
+                        clearInterval(healthPoller);
+                        btn.disabled = false;
+                        btn.textContent = '→ Sign In Now';
+
+                        // Update subtitle
+                        const doneP = document.querySelector('.done-screen > p');
+                        if (doneP) doneP.textContent = 'Backend is ready. Redirecting to login…';
+
+                        // Update Backend status cell if present (restore flow)
+                        const cells = document.querySelectorAll('.si-value');
+                        cells.forEach(el => {
+                            if (el.textContent.includes('Restarting')) {
+                                el.innerHTML = '<span style="color:var(--green-bright)">✅ Ready</span>';
+                            }
+                        });
+
+                        // Auto-redirect after a brief pause
+                        setTimeout(goToLogin, 1500);
+                    }
+                } catch (e) {
+                    // backend not up yet — keep polling
+                }
+                if (attempts >= 60) {
+                    // Give up after ~60s, let user try manually
+                    clearInterval(healthPoller);
+                    btn.disabled = false;
+                    btn.textContent = '→ Sign In Now (backend may still be starting)';
+                }
+            }, 1000);
         }
 
         // ── Init ──────────────────────────────────────────────
