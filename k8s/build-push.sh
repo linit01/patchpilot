@@ -71,7 +71,40 @@ EOF
   fi
 }
 
-# ── Token prompt helper ───────────────────────────────────────────────────────
+# ── Credential prompt helpers ──────────────────────────────────────────────────
+_ensure_username() {
+  [[ -n "${DH_USERNAME}" ]] && return
+
+  echo ""
+  warn "dockerHub.username is not set in install-config.yaml"
+  echo -en "${CYAN}Enter your Docker Hub username: ${NC}"
+  read -r DH_USERNAME
+  [[ -n "${DH_USERNAME}" ]] || { err "No username entered — aborting."; exit 1; }
+
+  echo -en "${CYAN}Save username to install-config.yaml for future runs? [y/N]: ${NC}"
+  read -r save_choice
+  if [[ "${save_choice:-N}" == [yY] ]]; then
+    if command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null; then
+      python3 - "${DH_USERNAME}" "${CONFIG_FILE}" <<'PYEOF'
+import sys, yaml
+username, path = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    data = yaml.safe_load(f)
+data.setdefault("patchpilot", {}).setdefault("dockerHub", {})["username"] = username
+with open(path, "w") as f:
+    yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+PYEOF
+    else
+      grep -q "username:" "${CONFIG_FILE}" \
+        && sed_i "s|username:.*|username: ${DH_USERNAME}|" "${CONFIG_FILE}" \
+        || echo "    username: ${DH_USERNAME}" >> "${CONFIG_FILE}"
+    fi
+    ok "Username saved."
+  else
+    info "Username not saved — you'll be prompted again next run."
+  fi
+}
+
 _ensure_token() {
   [[ -n "${DH_TOKEN}" ]] && return
 
@@ -84,7 +117,7 @@ _ensure_token() {
 
   echo -en "${CYAN}Save token to install-config.yaml for future runs? [y/N]: ${NC}"
   read -r save_choice
-  if [[ "${save_choice,,}" == "y" ]]; then
+  if [[ "${save_choice:-N}" == [yY] ]]; then
     if command -v python3 &>/dev/null && python3 -c "import yaml" 2>/dev/null; then
       python3 - "${DH_TOKEN}" "${CONFIG_FILE}" <<'PYEOF'
 import sys, yaml
@@ -170,7 +203,7 @@ if [[ "${RELEASE_MODE}" == "true" ]]; then
   ok "Docker: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo running)"
   docker buildx version &>/dev/null || { err "docker buildx required for --release"; exit 1; }
   ok "docker buildx: $(docker buildx version 2>/dev/null | awk '{print $2}' | head -1)"
-  [[ -n "${DH_USERNAME}" ]] || { err "dockerHub.username not set in install-config.yaml"; exit 1; }
+  _ensure_username
 
   # Ensure multi-arch builder exists
   if ! docker buildx inspect patchpilot-builder &>/dev/null; then
@@ -295,7 +328,7 @@ ok "Docker: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 
   docker buildx version &>/dev/null || { err "docker buildx required for cross-arch builds"; exit 1; }
   ok "docker buildx available"
 }
-[[ -n "${DH_USERNAME}" ]] || { err "dockerHub.username not set in install-config.yaml"; exit 1; }
+_ensure_username
 
 _ensure_token
 
