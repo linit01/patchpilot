@@ -46,11 +46,62 @@ function connectPatchProgressWebSocket() {
         patchProgressWS.onclose = () => {
             console.log('Patch progress WebSocket closed');
             patchProgressWS = null;
+            // If the patch progress modal is still open, the WS dropped mid-patch.
+            // Start polling /api/patch/status so we can close the modal when done.
+            const modal = document.getElementById('patch-progress-modal');
+            if (modal && modal.style.display === 'flex') {
+                _startPatchStatusPolling();
+            }
         };
     } catch (e) {
         console.error('Failed to create WebSocket:', e);
         patchProgressWS = null;
     }
+}
+
+// Polling fallback — used when WebSocket drops during a long patch (e.g. large
+// App Store downloads). Polls /api/patch/status every 10 s and closes the modal
+// once the backend reports the patch is no longer running.
+let _patchStatusPollTimer = null;
+function _startPatchStatusPolling() {
+    if (_patchStatusPollTimer) return; // already polling
+    console.log('WS dropped mid-patch — starting poll fallback');
+    const progressDiv = document.getElementById('patch-progress-messages');
+    if (progressDiv) {
+        const el = document.createElement('div');
+        el.className = 'progress-message msg-warning';
+        el.textContent = `[${new Date().toLocaleTimeString()}] ⚠️ Connection interrupted — monitoring via polling...`;
+        progressDiv.appendChild(el);
+        progressDiv.scrollTop = progressDiv.scrollHeight;
+    }
+    _patchStatusPollTimer = setInterval(async () => {
+        try {
+            const res = await fetch('/api/patch/status', { credentials: 'include' });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (!data.running) {
+                // Patch + post-check are both done
+                clearInterval(_patchStatusPollTimer);
+                _patchStatusPollTimer = null;
+                handlePatchProgress({
+                    type: 'complete',
+                    message: 'All operations complete! (recovered via polling)'
+                });
+            } else if (data.patch_running === false && data.check_running === true) {
+                // Patch done, post-check running — update UI
+                const progressDiv = document.getElementById('patch-progress-messages');
+                if (progressDiv && !progressDiv.querySelector('._poll-check-msg')) {
+                    const el = document.createElement('div');
+                    el.className = 'progress-message msg-info _poll-check-msg';
+                    el.textContent = `[${new Date().toLocaleTimeString()}] 🔍 Patch complete — running post-patch status check...`;
+                    progressDiv.appendChild(el);
+                    progressDiv.scrollTop = progressDiv.scrollHeight;
+                }
+            }
+        } catch (e) {
+            console.warn('Patch status poll failed:', e);
+        }
+    }, 10000); // poll every 10 s
 }
 
 function handlePatchProgress(data) {
@@ -182,10 +233,9 @@ function startCountdown() {
         
         if (countdownSeconds <= 0) {
             countdownSeconds = AUTO_CHECK_INTERVAL;
-            // Show a brief activity pill (not the intrusive center status bar)
-            // so the user can see auto-refreshes happening without manual clicks.
-            addActivityPill('auto-refresh', '🔄 Auto-refreshing…', 'running', 4000);
-            loadDashboard();
+            // Trigger a real Ansible scan (same as REFRESH button) — not just a DB poll.
+            // The user's "Next check" countdown should mean an actual update scan.
+            triggerCheckAndPoll();
         }
     }, 1000);
 }
@@ -474,7 +524,15 @@ async function loadHosts() {
         });
         const parsed = await response.json();
         hostsData = Array.isArray(parsed) ? parsed : [];
-        
+
+        // Track newest last_checked across all hosts so triggerCheckAndPoll
+        // knows when fresh Ansible results have landed in the DB.
+        const newestCheck = hostsData.reduce((max, h) => {
+            const t = h.last_checked ? new Date(h.last_checked).getTime() : 0;
+            return t > max ? t : max;
+        }, 0);
+        if (newestCheck > _lastCheckTimestamp) _lastCheckTimestamp = newestCheck;
+
         renderHostsTable();
     } catch (error) {
         console.error('Error loading hosts:', error);
@@ -552,7 +610,71 @@ function getStatusClass(status) {
 }
 
 // Handle Refresh
+// Shared function used by both the REFRESH button and the countdown timer.
+// Triggers a real Ansible scan via POST /api/check, then polls until the
+// lock clears and updates the dashboard. Prevents the two entry-points from
+// having divergent behaviour.
+async function triggerCheckAndPoll() {
+    if (!isAuthenticated) return;
+
+    const btn = document.getElementById('refresh-btn');
+    const timerEl = document.getElementById('countdown-timer');
+
+    // Disable REFRESH button and freeze countdown display while scanning
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="btn-icon">⏳</span> Scanning...'; }
+    if (timerEl) timerEl.textContent = '⏳ scanning';
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/check`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+
+        if (!response.ok) throw new Error('Failed to trigger check');
+
+        const data = await response.json();
+        const queued = data.status === 'queued';
+
+        document.dispatchEvent(new CustomEvent('patchpilot:refresh-start'));
+
+        // Poll the backend every 5 s. Stop when:
+        //  - a host's last_checked timestamp is newer than when we started, OR
+        //  - we've waited up to 5 minutes (fallback)
+        const startedAt = Date.now();
+        const MAX_WAIT_MS = 300000; // 5 min
+        const pollInterval = setInterval(async () => {
+            await loadDashboard();
+            const elapsed = Date.now() - startedAt;
+            const anyUpdated = _lastCheckTimestamp && _lastCheckTimestamp > startedAt;
+            if (anyUpdated || elapsed >= MAX_WAIT_MS) {
+                clearInterval(pollInterval);
+                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="btn-icon">🔄</span> Refresh Status'; }
+                resetCountdown();
+                document.dispatchEvent(new CustomEvent('patchpilot:refresh-done'));
+            }
+        }, 5000);
+    } catch (error) {
+        showStatus('Error triggering check: ' + error.message, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<span class="btn-icon">🔄</span> Refresh Status'; }
+        resetCountdown();
+    }
+}
+
+// Track the most recent last_checked timestamp seen across all hosts so
+// triggerCheckAndPoll knows when new results have arrived from Ansible.
+let _lastCheckTimestamp = 0;
+
 async function handleRefresh() {
+    if (!isAuthenticated) {
+        showStatus('Please sign in to trigger a refresh', 'error');
+        return;
+    }
+    resetCountdown();
+    triggerCheckAndPoll();
+}
+
+async function _handleRefresh_UNUSED() {
+    // kept for reference — replaced by triggerCheckAndPoll above
     if (!isAuthenticated) {
         showStatus('Please sign in to trigger a refresh', 'error');
         return;
@@ -867,6 +989,11 @@ function showPatchProgressModal() {
 function closePatchProgressModal() {
     const modal = document.getElementById('patch-progress-modal');
     modal.style.display = 'none';
+    // Cancel any polling fallback that may be running
+    if (_patchStatusPollTimer) {
+        clearInterval(_patchStatusPollTimer);
+        _patchStatusPollTimer = null;
+    }
 }
 
 // Update auto-reboot setting for a host

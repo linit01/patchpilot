@@ -510,7 +510,7 @@
                 <h2 style="font-size: 20px; font-weight: 600; margin-bottom: 20px;">General Settings</h2>
                 
                 <div class="form-group">
-                    <label>Auto-Refresh Interval</label>
+                    <label>Auto-Check Interval</label>
                     <select id="refresh-interval">
                         <option value="60">1 minute</option>
                         <option value="300" selected>5 minutes</option>
@@ -518,7 +518,11 @@
                         <option value="1800">30 minutes</option>
                         <option value="0">Disabled</option>
                     </select>
-                    <div class="help-text">How often the dashboard automatically checks for updates</div>
+                    <div class="help-text">
+                        How often PatchPilot automatically runs an Ansible scan against all hosts to check for updates.
+                        Each interval triggers a real SSH check — the same as pressing the Refresh Status button.
+                        Shorter intervals keep status fresh but add SSH load to your hosts.
+                    </div>
                 </div>
                 
                 <div class="form-group">
@@ -611,8 +615,102 @@
                 <button class="btn btn-primary" onclick="saveNetworkSettings()" style="margin-top:4px;">
                     Save Network Settings
                 </button>
+
+                <!-- macOS / App Store Settings -->
+                <h2 style="font-size: 20px; font-weight: 600; margin: 32px 0 20px;">🍎 macOS / App Store</h2>
+
+                <div class="form-group">
+                    <label>Enable App Store Updates (mas)</label>
+                    <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+                            <input type="checkbox" id="mas-enabled" style="width:16px;height:16px;">
+                            <span>Enable automated App Store updates on macOS hosts</span>
+                        </label>
+                    </div>
+                    <div class="help-text">
+                        <strong>Off by default.</strong>
+                        <code>mas</code> requires an active GUI login session and App Store sign-in
+                        on the target Mac — it will hang silently in a headless SSH context if those
+                        conditions are not met. Enable only after confirming
+                        <code>mas outdated</code> works interactively on each host.
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Excluded App Store IDs
+                        <span style="color:var(--text-muted);font-weight:400;font-size:12px;">
+                            (skip during auto-update)
+                        </span>
+                    </label>
+
+                    <!-- Tag pill display -->
+                    <div id="mas-excluded-pills" style="
+                        display:flex;flex-wrap:wrap;gap:6px;
+                        min-height:38px;padding:6px 8px;
+                        background:var(--bg-input,#1a1a2e);
+                        border:1px solid var(--border);border-radius:6px;
+                        align-items:center;
+                    "></div>
+
+                    <!-- Add new ID row -->
+                    <div style="display:flex;gap:8px;margin-top:8px;">
+                        <input type="number" id="mas-excluded-add-id"
+                               placeholder="App Store ID  e.g. 497799835"
+                               min="1" step="1"
+                               style="flex:1;font-family:monospace;color:var(--text-primary,#e0e0e0);">
+                        <button type="button" class="btn btn-secondary"
+                                onclick="masExcludedAddCurrent()"
+                                style="white-space:nowrap;padding:6px 14px;">+ Add ID</button>
+                    </div>
+
+                    <!-- hidden field still used by saveMasSettings() -->
+                    <input type="hidden" id="mas-excluded-ids">
+
+                    <div class="help-text">
+                        IDs shown with their known app name where possible.
+                        To find any app's ID run: <code>mas search &lt;name&gt;</code>
+                        on the Mac — Xcode (<code>497799835</code>) is excluded by default.
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Per-App Download Timeout
+                        <span style="color:var(--text-muted);font-weight:400;font-size:12px;">
+                            (seconds, remote host hard kill)
+                        </span>
+                    </label>
+                    <input type="number" id="mas-per-app-timeout"
+                           min="60" max="7200" step="60"
+                           placeholder="600">
+                    <div class="help-text">
+                        Hard timeout per individual app on the <em>remote Mac</em> — uses the
+                        <code>timeout</code> binary to kill a hung <code>mas</code> process so
+                        the patch run can continue. Default <code>600</code> (10 min) per app.
+                        Increase for particularly large apps.
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Total App Store Timeout
+                        <span style="color:var(--text-muted);font-weight:400;font-size:12px;">
+                            (seconds, Ansible async ceiling)
+                        </span>
+                    </label>
+                    <input type="number" id="mas-timeout-seconds"
+                           min="300" max="28800" step="300"
+                           placeholder="7200">
+                    <div class="help-text">
+                        Maximum seconds Ansible waits for <em>all</em> App Store updates to
+                        finish on a single host. Default <code>7200</code> (2 h).
+                        The overall PatchPilot runner timeout is set to this value + 5 min.
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" onclick="saveMasSettings()" style="margin-top:4px;">
+                    Save macOS Settings
+                </button>
             </div>
-            
+
             <!-- Advanced Tab -->
             <!-- Users Tab -->
             <div id="users-tab" class="tab-content">
@@ -2136,9 +2234,162 @@
                     document.getElementById('allowed-origins').value = settings.allowed_origins.value;
                     updateOriginsWarning();
                 }
+                // macOS / mas settings
+                if (settings.mas_enabled !== undefined) {
+                    document.getElementById('mas-enabled').checked = settings.mas_enabled.value === 'true';
+                }
+                if (settings.mas_excluded_ids !== undefined) {
+                    masExcludedRenderPills(settings.mas_excluded_ids.value || '');
+                }
+                if (settings.mas_per_app_timeout !== undefined) {
+                    document.getElementById('mas-per-app-timeout').value = settings.mas_per_app_timeout.value || '600';
+                }
+                if (settings.mas_timeout_seconds !== undefined) {
+                    document.getElementById('mas-timeout-seconds').value = settings.mas_timeout_seconds.value || '7200';
+                }
                 updateTimezoneWarning();
             } catch (e) {
                 console.error('Failed to load settings:', e);
+            }
+        }
+
+        // ── MAS Excluded IDs pill UI ──────────────────────────────────────────
+        const MAS_KNOWN_APPS = {
+            '497799835':  'Xcode',
+            '1569813296': '1Password for Safari',
+            '1295203466': 'Microsoft Remote Desktop',
+            '784801555':  'Microsoft OneNote',
+            '985367838':  'Microsoft Outlook',
+            '462054704':  'Microsoft Word',
+            '462058435':  'Microsoft Excel',
+            '462062816':  'Microsoft PowerPoint',
+            '1274495053': 'Microsoft To Do',
+            '1176895641': 'Spark – Email App by Readdle',
+            '1480933944': 'Vinyls',
+            '904280696':  'Things 3',
+            '1147396723': 'WhatsApp',
+            '310633997':  'WhatsApp',
+            '1482490089': 'Tailscale',
+            '1091189122': 'Bear',
+            '1529448980': 'Klack',
+            '1569813296': '1Password for Safari',
+            '1333542190': 'iPhone Backup Extractor',
+            '408981434':  'iMovie',
+            '682658836':  'GarageBand',
+            '409183694':  'Keynote',
+            '409201541':  'Pages',
+            '409203825':  'Numbers',
+            '1451685025': 'WireGuard',
+            '1352778147': 'Toolbox for Word',
+            '1355679052': 'Creativit- Mood Board & Vision',
+            '1437957494': 'Toolbox for Pages',
+            '1474276998': 'Privacy Cleaner Pro',
+            '1607635845': 'Overflow 3',
+            '1564825723': 'Keewordz',
+        };
+
+        function masExcludedGetIds() {
+            return (document.getElementById('mas-excluded-ids').value || '')
+                .split(',').map(s => s.trim()).filter(Boolean);
+        }
+
+        function masExcludedSetIds(ids) {
+            document.getElementById('mas-excluded-ids').value = ids.join(',');
+        }
+
+        function masExcludedRenderPills(csvValue) {
+            masExcludedSetIds(
+                (csvValue || '').split(',').map(s => s.trim()).filter(Boolean)
+            );
+            const container = document.getElementById('mas-excluded-pills');
+            container.innerHTML = '';
+            const ids = masExcludedGetIds();
+            if (ids.length === 0) {
+                container.innerHTML = '<span style="color:var(--text-muted);font-size:12px;font-style:italic;">No IDs excluded — all App Store apps will be updated</span>';
+                return;
+            }
+            ids.forEach(id => {
+                const name = MAS_KNOWN_APPS[id] || null;
+                const pill = document.createElement('span');
+                pill.style.cssText = `
+                    display:inline-flex;align-items:center;gap:6px;
+                    padding:3px 10px 3px 10px;border-radius:20px;
+                    background:rgba(0,192,239,0.12);border:1px solid rgba(0,192,239,0.3);
+                    font-size:12px;font-family:monospace;color:var(--text-primary,#e0e0e0);
+                    white-space:nowrap;
+                `;
+                pill.innerHTML = `
+                    ${name ? `<span style="color:var(--cyan,#00c0ef);font-weight:600;">${name}</span><span style="color:var(--text-muted);font-size:11px;">${id}</span>` : `<span>${id}</span>`}
+                    <button type="button" onclick="masExcludedRemove('${id}')" style="
+                        background:none;border:none;cursor:pointer;
+                        color:var(--text-muted);font-size:14px;line-height:1;
+                        padding:0 0 0 2px;
+                    " title="Remove">×</button>
+                `;
+                container.appendChild(pill);
+            });
+        }
+
+        function masExcludedRemove(id) {
+            const ids = masExcludedGetIds().filter(i => i !== id);
+            masExcludedRenderPills(ids.join(','));
+        }
+
+        function masExcludedAddCurrent() {
+            const input = document.getElementById('mas-excluded-add-id');
+            const newId = input.value.trim();
+            if (!newId || !/^\d+$/.test(newId)) {
+                alert('Please enter a valid numeric App Store ID.');
+                return;
+            }
+            const ids = masExcludedGetIds();
+            if (ids.includes(newId)) {
+                alert('That ID is already in the exclusion list.');
+                input.value = '';
+                return;
+            }
+            ids.push(newId);
+            masExcludedRenderPills(ids.join(','));
+            input.value = '';
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
+        async function saveMasSettings() {
+            const masEnabled       = document.getElementById('mas-enabled').checked;
+            const excludedIds      = document.getElementById('mas-excluded-ids').value.trim();
+            const perAppTimeout    = document.getElementById('mas-per-app-timeout').value.trim() || '600';
+            const timeoutSeconds   = document.getElementById('mas-timeout-seconds').value.trim() || '7200';
+
+            const perApp = parseInt(perAppTimeout, 10);
+            if (isNaN(perApp) || perApp < 60) {
+                alert('Per-app timeout must be at least 60 seconds.');
+                return;
+            }
+            const total = parseInt(timeoutSeconds, 10);
+            if (isNaN(total) || total < 300) {
+                alert('Total timeout must be at least 300 seconds (5 minutes).');
+                return;
+            }
+
+            try {
+                const pairs = [
+                    ['mas_enabled',         masEnabled ? 'true' : 'false'],
+                    ['mas_excluded_ids',    excludedIds],
+                    ['mas_per_app_timeout', String(perApp)],
+                    ['mas_timeout_seconds', String(total)],
+                ];
+                for (const [key, value] of pairs) {
+                    const res = await fetch(`/api/settings/app/${key}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ value })
+                    });
+                    if (!res.ok) throw new Error(`Failed to save ${key}`);
+                }
+                alert('macOS / App Store settings saved!');
+            } catch (e) {
+                alert('Failed to save macOS settings: ' + e.message);
             }
         }
 

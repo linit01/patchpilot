@@ -16,6 +16,10 @@ warn() { echo -e "${YELLOW}!${NC} $*"; }
 info() { echo -e "${BLUE}ℹ${NC} $*"; }
 step() { echo ""; echo -e "${PURPLE}▸${NC} $*"; echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; }
 
+# ── Cross-platform sed -i (macOS BSD vs Linux GNU) ────────────────────────────
+# Usage: sed_i 's/foo/bar/' file
+sed_i() { sed -i '' "$@" 2>/dev/null || sed -i "$@"; }
+
 # ── Banner ────────────────────────────────────────────────────────────────────
 print_banner() {
   echo -e "${PURPLE}"
@@ -34,6 +38,7 @@ EOF
 # ── Argument parsing ──────────────────────────────────────────────────────────
 MODE=""
 NO_INTERACTIVE=false
+DEVELOPER_MODE=false
 WEB_PORT=9090
 
 while [[ $# -gt 0 ]]; do
@@ -41,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --docker)          MODE="docker"; shift ;;
     --k3s)             MODE="k3s";    shift ;;
     --web)             MODE="web";    shift ;;
+    --developer)       DEVELOPER_MODE=true; shift ;;
     --no-interactive)  NO_INTERACTIVE=true; shift ;;
     --port)            WEB_PORT="$2"; shift 2 ;;
     --help|-h)
@@ -49,6 +55,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --docker           Install using Docker Compose"
       echo "  --k3s              Install on a K3s/Kubernetes cluster"
       echo "  --web              Launch web-based install wizard (http://localhost:9090)"
+      echo "  --web --developer  Web wizard + Developer tab (build & push images first)"
       echo "  --no-interactive   Skip all prompts — config must exist in k8s/install-config.yaml"
       echo "  --port N           Web wizard port (default: 9090)"
       exit 0
@@ -106,11 +113,14 @@ install_web() {
 
   export PATCHPILOT_ROOT="${SCRIPT_DIR}"
   export PATCHPILOT_WEB_PORT="${WEB_PORT}"
+  export PATCHPILOT_DEVELOPER="${DEVELOPER_MODE}"
 
   echo ""
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${GREEN}  PatchPilot Web Installer${NC}"
   echo -e "${GREEN}  → http://localhost:${WEB_PORT}${NC}"
+  [[ "${DEVELOPER_MODE}" == "true" ]] && \
+    echo -e "${YELLOW}  🔧 Developer mode enabled (Build & Push tab active)${NC}"
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${YELLOW}  Press Ctrl+C to stop${NC}"
   echo ""
@@ -153,9 +163,8 @@ docker_setup_env() {
   local fernet_key
   fernet_key="$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || \
                 python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")"
-  sed -i.bak "s|PATCHPILOT_ENCRYPTION_KEY=CHANGE_ME_FERNET_KEY|PATCHPILOT_ENCRYPTION_KEY=${fernet_key}|" .env
-  sed -i "s|INSTALL_DIR=/path/to/patchpilot|INSTALL_DIR=${SCRIPT_DIR}|" .env
-  rm -f .env.bak
+  sed_i "s|PATCHPILOT_ENCRYPTION_KEY=CHANGE_ME_FERNET_KEY|PATCHPILOT_ENCRYPTION_KEY=${fernet_key}|" .env
+  sed_i "s|INSTALL_DIR=/path/to/patchpilot|INSTALL_DIR=${SCRIPT_DIR}|" .env
   warn "Auto-generated Fernet key — saved to .env — keep this safe"
   ok "Environment configured — INSTALL_DIR set to ${SCRIPT_DIR}"
 }
@@ -189,12 +198,23 @@ docker_start_services() {
   $DOCKER_COMPOSE_CMD build
   info "Starting services..."
   $DOCKER_COMPOSE_CMD up -d
-  info "Waiting for services to initialise..."
-  sleep 12
-  curl -sf http://localhost:8000/health >/dev/null 2>&1 && ok "Backend healthy" \
-    || warn "Backend still starting — check: ${DOCKER_COMPOSE_CMD} logs backend"
+  info "Waiting for backend to be ready..."
+  local i=0
+  until curl -sf http://localhost:8080/api/auth/check-setup >/dev/null 2>&1; do
+    i=$((i+1))
+    if [[ $i -ge 60 ]]; then
+      warn "Backend didn't respond after 120s — check: ${DOCKER_COMPOSE_CMD} logs backend"
+      return
+    fi
+    sleep 2
+  done
+  ok "Backend healthy"
   curl -sf http://localhost:8080/ >/dev/null 2>&1 && ok "Frontend healthy" \
     || warn "Frontend still starting — check: ${DOCKER_COMPOSE_CMD} logs frontend"
+  sleep 1 && (
+    open http://localhost:8080 2>/dev/null || \
+    xdg-open http://localhost:8080 2>/dev/null || true
+  ) &
 }
 
 docker_show_completion() {
@@ -208,8 +228,6 @@ docker_show_completion() {
   echo ""
   echo -e "${PURPLE}Commands:${NC}  ${DOCKER_COMPOSE_CMD} [logs -f | down | restart]"
   echo ""
-  command -v open &>/dev/null && sleep 1 && open http://localhost:8080 &
-  command -v xdg-open &>/dev/null && sleep 1 && xdg-open http://localhost:8080 &
 }
 
 install_docker() {

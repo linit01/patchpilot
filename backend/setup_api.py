@@ -601,12 +601,12 @@ async def restore_from_backup(file: UploadFile = File(...)):
                             hint.write_text(
                                 f"PATCHPILOT_ENCRYPTION_KEY={backup_enc_key}\n\n"
                                 "Add this to your .env and restart the backend:\n"
-                                "  docker restart patchpilot-backend-1\n"
+                                "  docker compose up -d backend\n"
                             )
                             warnings.append(
                                 f"Encryption key mismatch — .env not writable. "
                                 f"Key written to {hint}. "
-                                "Add it to .env and run: docker restart patchpilot-backend-1"
+                                "Add it to .env, then run: cd $INSTALL_DIR && docker compose up -d backend"
                             )
             except Exception as e:
                 warnings.append(f"Could not restore encryption key: {e}")
@@ -620,29 +620,38 @@ async def restore_from_backup(file: UploadFile = File(...)):
         namespace = os.getenv("PATCHPILOT_NAMESPACE", "patchpilot")
 
         if not is_k8s:
+            # CRITICAL: "docker restart" does NOT re-read .env — env vars are
+            # baked at container creation time.  We MUST use
+            # "docker compose up -d backend" so Compose re-evaluates .env and
+            # the restored encryption key takes effect without a manual step.
             restarting = False
-            own_id = os.environ.get("HOSTNAME", "")
-            if own_id and Path("/var/run/docker.sock").exists():
+            install_dir = os.getenv("INSTALL_DIR", "")
+            compose_file = f"{install_dir}/docker-compose.yml" if install_dir else "/install/docker-compose.yml"
+            compose_dir  = install_dir or "/install"
+            if Path("/var/run/docker.sock").exists():
                 r = subprocess.run(
                     ["docker", "run", "--rm", "-d",
                      "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                     "-v", f"{compose_dir}:{compose_dir}:ro",
+                     "-w", compose_dir,
                      "docker:cli", "sh", "-c",
-                     f"sleep 5 && docker restart {own_id}"],
+                     f"sleep 5 && docker compose -f {compose_file} up -d backend"],
                     capture_output=True, text=True, timeout=15,
                 )
                 restarting = r.returncode == 0
                 if not restarting:
                     warnings.append(
-                        "Could not schedule auto-restart. Run manually: "
-                        "docker restart patchpilot-backend-1"
+                        f"Could not schedule auto-restart. Run manually to apply the restored encryption key: "
+                        f"cd {compose_dir} && docker compose up -d backend"
                     )
         # For K8s, restarting was set inside the encryption key block above
         # (True if the rollout restart API call succeeded, False otherwise)
 
+    _compose_dir = os.getenv("INSTALL_DIR", "/install")
     restart_command = (
         f"kubectl rollout restart deployment/patchpilot-backend -n {namespace}"
         if is_k8s else
-        "docker restart patchpilot-backend-1"
+        f"cd {_compose_dir} && docker compose up -d backend"
     )
 
     if is_k8s and restarting:

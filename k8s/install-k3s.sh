@@ -27,6 +27,7 @@ INTERACTIVE=false
 NO_PROMPTS=false
 UNINSTALL=false
 PP_SC_WAIT_FOR_CONSUMER=false
+DEVELOPER=false
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -611,7 +612,7 @@ push_and_configure_registry() {
   step "Pushing images to Docker Hub"
 
   if [[ "${PP_BUILDX_PUSH:-false}" == "true" ]]; then
-    ok "Images already pushed during buildx build — skipping"
+    ok "strategy=registry — images pulled from DockerHub at deploy time, no local push"
   else
     echo "${PP_DH_TOKEN}" | docker login --username "${PP_DH_USERNAME}" --password-stdin
     ok "Logged in"
@@ -625,13 +626,24 @@ push_and_configure_registry() {
 
   step "Creating imagePullSecret in cluster"
   kubectl create namespace "${PP_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - &>/dev/null
-  kubectl create secret docker-registry "${PP_PULL_SECRET_NAME}" \
-    --namespace="${PP_NAMESPACE}" \
-    --docker-server="https://index.docker.io/v1/" \
-    --docker-username="${PP_DH_USERNAME}" \
-    --docker-password="${PP_DH_TOKEN}" \
-    --dry-run=client -o yaml | kubectl apply -f -
-  ok "imagePullSecret '${PP_PULL_SECRET_NAME}' ready"
+
+  if [[ -n "${PP_DH_USERNAME}" && -n "${PP_DH_TOKEN}" ]]; then
+    kubectl create secret docker-registry "${PP_PULL_SECRET_NAME}" \
+      --namespace="${PP_NAMESPACE}" \
+      --docker-server="https://index.docker.io/v1/" \
+      --docker-username="${PP_DH_USERNAME}" \
+      --docker-password="${PP_DH_TOKEN}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    ok "imagePullSecret '${PP_PULL_SECRET_NAME}' ready"
+  else
+    # Public image — no pull secret needed. Create a placeholder so manifest
+    # templates that reference imagePullSecrets don't error on a missing secret.
+    kubectl create secret generic "${PP_PULL_SECRET_NAME}" \
+      --namespace="${PP_NAMESPACE}" \
+      --from-literal=placeholder=true \
+      --dry-run=client -o yaml | kubectl apply -f - &>/dev/null
+    ok "Public image — no pull secret needed (placeholder created)"
+  fi
 }
 
 # ── Generate manifests ─────────────────────────────────────────────────────────

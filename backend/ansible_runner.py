@@ -90,12 +90,13 @@ class AnsibleRunner:
                 if limit_hosts and hostname not in limit_hosts:
                     continue
 
+                is_control = host.get('is_control_node', False)
                 host_vars = {
                     'ansible_host': host.get('ip_address') or hostname,
                     'ansible_user': host.get('ssh_user', 'root'),
                     'ansible_port': host.get('ssh_port', 22),
                     'allow_auto_reboot': host.get('allow_auto_reboot', False),
-                    'is_control_node': host.get('is_control_node', False),
+                    'is_control_node': is_control,
                 }
 
                 print(f"DEBUG Host {hostname}: ssh_key_type={host.get('ssh_key_type')}, "
@@ -196,11 +197,32 @@ class AnsibleRunner:
             if limit_hosts:
                 cmd.extend(["--limit", ",".join(limit_hosts)])
 
+            # Pass MAS settings so the check scan also sees App Store updates
+            # when mas_enabled=true (same DB lookup as run_patch)
+            check_env = os.environ.copy()
+            check_env['PYTHONUNBUFFERED'] = '1'
+            check_env['ANSIBLE_FORCE_COLOR'] = '0'
+            check_env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
+            try:
+                if self.db_client and self.db_client.pool:
+                    async with self.db_client.pool.acquire() as _conn:
+                        _rows = await _conn.fetch(
+                            "SELECT key, value FROM settings WHERE key IN "
+                            "('mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds')"
+                        )
+                        for _r in _rows:
+                            if _r['value'] is not None:
+                                # Empty string is valid for mas_excluded_ids (no exclusions)
+                                check_env[_r['key'].upper()] = _r['value']
+            except Exception as _e:
+                logger.warning("Could not load mas settings for check run: %s", _e)
+
             # Use async subprocess so the event loop stays responsive
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=check_env
             )
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -465,6 +487,52 @@ class AnsibleRunner:
             env['ANSIBLE_FORCE_COLOR'] = '0'
             env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
 
+            # ── macOS / App Store settings ────────────────────────────────
+            # Load mas config from DB settings (user-configurable via UI).
+            # Falls back to env vars / .env defaults.
+            # NOTE: mas_excluded_ids is checked separately — an empty string
+            # is a valid intentional value (user cleared all exclusions) and
+            # must override the env/default rather than being skipped.
+            _mas_excluded_from_db = None
+            try:
+                if self.db_client and self.db_client.pool:
+                    async with self.db_client.pool.acquire() as _conn:
+                        _rows = await _conn.fetch(
+                            "SELECT key, value FROM settings WHERE key IN "
+                            "('mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds')"
+                        )
+                        for _r in _rows:
+                            if _r['key'] == 'mas_enabled' and _r['value']:
+                                env['MAS_ENABLED'] = _r['value']
+                            elif _r['key'] == 'mas_excluded_ids' and _r['value'] is not None:
+                                # Store separately — empty string is valid (no exclusions)
+                                _mas_excluded_from_db = _r['value']
+                            elif _r['key'] == 'mas_per_app_timeout' and _r['value']:
+                                env['MAS_PER_APP_TIMEOUT'] = _r['value']
+                            elif _r['key'] == 'mas_timeout_seconds' and _r['value']:
+                                env['MAS_TIMEOUT_SECONDS'] = _r['value']
+            except Exception as _mas_e:
+                logger.warning("Could not load mas settings from DB (non-fatal): %s", _mas_e)
+            # Explicit env overrides always win — EXCEPT mas_excluded_ids where
+            # an empty DB value means "user intentionally cleared all exclusions"
+            if os.getenv('MAS_ENABLED') and 'MAS_ENABLED' not in env:
+                env['MAS_ENABLED'] = os.getenv('MAS_ENABLED', 'false')
+            if _mas_excluded_from_db is not None:
+                # DB value takes precedence — even empty string (no exclusions)
+                env['MAS_EXCLUDED_IDS'] = _mas_excluded_from_db
+            elif os.getenv('MAS_EXCLUDED_IDS') and 'MAS_EXCLUDED_IDS' not in env:
+                env['MAS_EXCLUDED_IDS'] = os.getenv('MAS_EXCLUDED_IDS', '')
+            if os.getenv('MAS_PER_APP_TIMEOUT') and 'MAS_PER_APP_TIMEOUT' not in env:
+                env['MAS_PER_APP_TIMEOUT'] = os.getenv('MAS_PER_APP_TIMEOUT', '600')
+            if os.getenv('MAS_TIMEOUT_SECONDS') and 'MAS_TIMEOUT_SECONDS' not in env:
+                env['MAS_TIMEOUT_SECONDS'] = os.getenv('MAS_TIMEOUT_SECONDS', '7200')
+            # Overall runner timeout = larger of 30 min or mas_timeout + 5 min buffer
+            try:
+                _mas_secs = int(env.get('MAS_TIMEOUT_SECONDS', '7200'))
+            except (ValueError, TypeError):
+                _mas_secs = 7200
+            _runner_timeout = max(1800, _mas_secs + 300)
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -490,7 +558,7 @@ class AnsibleRunner:
  
                 if progress_callback and line.strip():
                     line_clean = line.strip()
-                
+
                     # Show TASK headers
                     if line_clean.startswith('TASK ['):
                         await progress_callback(line_clean)
@@ -508,10 +576,32 @@ class AnsibleRunner:
                     # Show fatal errors
                     elif 'fatal:' in line_clean or 'FAILED!' in line_clean:
                         await progress_callback(f"❌ {line_clean}")
+                    # ── Async polling heartbeats (mas / long-running tasks) ──
+                    # Ansible emits "ASYNC POLL on host: jid=... finished=0" every
+                    # poll seconds. Without forwarding these the UI appears frozen
+                    # because the shell script produces no output during downloads.
+                    elif 'ASYNC POLL' in line_clean:
+                        import re as _re
+                        _host = _re.search(r'ASYNC POLL on ([^:]+)', line_clean)
+                        _fin  = _re.search(r'finished=(\d+)', line_clean)
+                        _host_s = _host.group(1).strip() if _host else '?'
+                        _fin_s  = _fin.group(1) if _fin else '0'
+                        if _fin_s == '0':
+                            await progress_callback(f"⏳ [{_host_s}] App Store downloads in progress...")
+                        # finished=1 is followed immediately by ASYNC OK/FAILED — skip
+                    elif 'ASYNC OK' in line_clean:
+                        await progress_callback(f"✅ App Store task complete")
+                    elif 'ASYNC FAILED' in line_clean:
+                        await progress_callback(f"❌ App Store task failed")
+                    # mas result lines emitted by the "Show App Store update results" debug task.
+                    # These appear AFTER the async task completes, in the debug output.
+                    # Format: "msg": "START [id] name | DONE [id] name | SUMMARY: ..."
+                    elif any(k in line_clean for k in ('START [', 'DONE [', 'SKIP [', 'TIMEOUT [', 'ERROR [', 'SUMMARY:', 'No App Store')):
+                        await progress_callback(f"🍎 {line_clean}")
 
             # Wait for process to complete
             print(f"TOTAL LINES READ: {line_count}")
-            await asyncio.wait_for(process.wait(), timeout=1800)
+            await asyncio.wait_for(process.wait(), timeout=_runner_timeout)
             
             # Cleanup temp files owned by this patch run only
             self._cleanup_files(patch_temp)
@@ -564,11 +654,23 @@ class AnsibleRunner:
                     if hostname not in hosts_data:
                         hosts_data[hostname] = {}
                     
-                    # Determine status from recap
+                    # Determine status from recap.
+                    # Only set negative status here — positive status (up-to-date /
+                    # updates-available) is determined later from actual task output.
+                    # If recap shows unreachable=0 and failed=0, explicitly mark the
+                    # host as reachable so a previous stale "failed" status in the DB
+                    # is always overwritten by a clean run.
                     if unreachable > 0:
                         hosts_data[hostname]['status'] = 'unreachable'
+                        print(f"[PARSER] {hostname}: RECAP unreachable={unreachable} → status=unreachable")
                     elif failed > 0:
                         hosts_data[hostname]['status'] = 'failed'
+                        print(f"[PARSER] {hostname}: RECAP failed={failed} → status=failed")
+                    else:
+                        # Clean run — mark reachable; will be refined to up-to-date or
+                        # updates-available once task output is parsed below.
+                        hosts_data[hostname].setdefault('status', 'up-to-date')
+                        print(f"[PARSER] {hostname}: RECAP ok={match.group(2)} failed=0 unreachable=0 → reachable")
             
             # Capture OS family
             if '"ansible_os_family"' in line or 'ansible_os_family' in line:
@@ -611,9 +713,13 @@ class AnsibleRunner:
 
             # Look for "Show update status" messages with package counts
             if 'msg' in line and 'updates available' in line.lower():
-                # Extract hostname and count
-                # Format: "msg": "10.0.1.104 | 65 updates available"
-                match = re.search(r'"msg":\s*"[^\d]*?([^\s:|]+)\s*[:|]\s*(\d+)\s+(?:\w+\s+)?updates?\s+available', line)
+                # Matches: "hostname:  65 apt updates available"
+                #           "hostname:  2 App Store updates available"
+                #           "hostname:  3 brew updates available"
+                #           "hostname:  macOS system updates available"  (no count)
+                #           "hostname:  App Store updates available"     (no count)
+                match = re.search(r'"msg":\s*"[^\d]*?([^\s:|]+)\s*[:|]\s*(\d+)\s+(?:\w+\s+){0,3}updates?\s+available', line)
+                macos_qual_match = re.search(r'"msg":\s*"([^\s|":\\n]+)[:\\n]+\s*(?:macOS\s+system|App\s+Store)\s+updates?\s+available', line)
 
                 if match:
                     hostname = match.group(1)
@@ -622,6 +728,15 @@ class AnsibleRunner:
                         hosts_data[hostname] = {}
                     hosts_data[hostname]['total_updates'] = count
                     hosts_data[hostname]['status'] = 'updates-available' if count > 0 else 'up-to-date'
+                    current_host = hostname
+                elif macos_qual_match:
+                    # qualitative macOS message without a count — status is known,
+                    # exact count will be set during final reconciliation from PACKAGE: lines
+                    hostname = macos_qual_match.group(1)
+                    if hostname not in hosts_data:
+                        hosts_data[hostname] = {}
+                    hosts_data[hostname].setdefault('total_updates', 0)
+                    hosts_data[hostname]['status'] = 'updates-available'
                     current_host = hostname
             
             # Look for package details (PACKAGE: hostname | package_name)
@@ -693,19 +808,23 @@ class AnsibleRunner:
                         hosts_data[current_host]['reboot_required'] = False
                         break
 
-        # Set defaults for any hosts that didn't get update counts
+        # Reconcile totals — always trust update_details count over parsed numbers.
+        # The "Show update status" debug message only carries numeric counts for
+        # apt/brew; macOS system and mas updates don't emit a count there, so
+        # total_updates may be 0 even when update_details is populated.
         for hostname in hosts_data:
-            if 'total_updates' not in hosts_data[hostname]:
-                # Count from update_details if available
-                if 'update_details' in hosts_data[hostname]:
-                    hosts_data[hostname]['total_updates'] = len(hosts_data[hostname]['update_details'])
-                else:
-                    hosts_data[hostname]['total_updates'] = 0
-            
+            detail_count = len(hosts_data[hostname].get('update_details', []))
+            if detail_count > 0:
+                # Packages on disk are ground truth
+                hosts_data[hostname]['total_updates'] = detail_count
+                hosts_data[hostname]['status'] = 'updates-available'
+            elif 'total_updates' not in hosts_data[hostname]:
+                hosts_data[hostname]['total_updates'] = 0
+
             if 'status' not in hosts_data[hostname]:
-                if hosts_data[hostname]['total_updates'] > 0:
+                if hosts_data[hostname].get('total_updates', 0) > 0:
                     hosts_data[hostname]['status'] = 'updates-available'
                 else:
                     hosts_data[hostname]['status'] = 'up-to-date'
-        
+
         return hosts_data

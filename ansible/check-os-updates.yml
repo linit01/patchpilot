@@ -4,13 +4,29 @@
   serial: 1
   vars:
     ansible_python_interpreter: auto_silent
+
+    # mas_enabled: must be explicitly true to run App Store updates.
+    # mas in headless SSH requires an active GUI login + App Store auth on
+    # the target Mac. Confirm `mas outdated` works interactively first.
+    mas_enabled: "{{ lookup('env', 'MAS_ENABLED') | default('false', true) | lower == 'true' }}"
+
+    # Comma-separated App Store IDs to always skip (Xcode = 497799835).
+    mas_excluded_ids: "{{ lookup('env', 'MAS_EXCLUDED_IDS') | default('497799835', true) }}"
+
+    # Per-app hard timeout in seconds on the REMOTE HOST.
+    # Uses `timeout` or `gtimeout` (coreutils) to hard-kill hung mas processes.
+    mas_per_app_timeout: "{{ lookup('env', 'MAS_PER_APP_TIMEOUT') | default('600', true) | int }}"
+
+    # Ansible async ceiling for the entire mas upgrade task.
+    mas_timeout_seconds: "{{ lookup('env', 'MAS_TIMEOUT_SECONDS') | default('7200', true) | int }}"
+
   tasks:
-    # Emit structured host info for PatchPilot parser (OS, IP, Family)
+    # ── Host info ──────────────────────────────────────────────────────────────
     - name: Emit host info
       debug:
         msg: "HOSTINFO: {{ inventory_hostname }} | IP: {{ ansible_default_ipv4.address | default('N/A') }} | OS: {{ ansible_distribution | default('Unknown') }} | Family: {{ ansible_os_family | default('Unknown') }}"
 
-    # Linux update checks
+    # ── Linux ──────────────────────────────────────────────────────────────────
     - name: Refresh apt cache (Debian/Ubuntu)
       shell: apt-get update -qq 2>/dev/null
       become: yes
@@ -19,18 +35,130 @@
       failed_when: false
       ignore_errors: true
 
-    # Include phased updates in the list so dashboard reflects what *can* be installed
     - name: Check for updates (Debian/Ubuntu)
       shell: APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1 apt list --upgradable 2>/dev/null | tail -n +2
       register: apt_updates
       when: ansible_facts['os_family'] == "Debian"
       changed_when: false
 
-    # macOS update checks
-    - name: Check for Homebrew updates (macOS)
-      shell: /opt/homebrew/bin/brew outdated
-      register: brew_updates
+    # ── macOS: locate tools ────────────────────────────────────────────────────
+    - name: Stat mas binary candidates (macOS)
+      # stat module does a direct filesystem lookup — no shell, no PATH, no
+      # interpretation. This is the only reliable way to check file existence
+      # in a non-interactive Ansible SSH session.
+      stat:
+        path: "{{ item }}"
+      register: mas_stat_results
+      loop:
+        - /opt/homebrew/bin/mas
+        - /usr/local/bin/mas
+        - /usr/bin/mas
       when: ansible_facts['os_family'] == "Darwin"
+
+    - name: Set mas_bin fact (macOS)
+      set_fact:
+        mas_bin_path: "{{ item.stat.path }}"
+      loop: "{{ mas_stat_results.results | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - item.stat is defined
+        - item.stat.exists
+        - item.stat.executable
+      # Last match wins — first found is fine since we loop in preference order
+
+    - name: Debug mas binary found (macOS)
+      debug:
+        msg: "mas binary: {{ mas_bin_path | default('NOT FOUND') }}"
+      when: ansible_facts['os_family'] == "Darwin"
+
+    # Detect timeout binary binary: macOS 12.3+ has /usr/bin/timeout natively.
+    # Older macOS needs `brew install coreutils` which provides gtimeout.
+    # If neither exists we fall back to running mas without a timeout wrapper
+    # (still better than before — at least async/poll gives Ansible heartbeats).
+    - name: Stat timeout binary candidates (macOS)
+      stat:
+        path: "{{ item }}"
+      register: timeout_stat_results
+      loop:
+        - /usr/bin/timeout
+        - /opt/homebrew/bin/gtimeout
+        - /usr/local/bin/gtimeout
+        - /opt/homebrew/bin/timeout
+        - /usr/local/bin/timeout
+      when: ansible_facts['os_family'] == "Darwin"
+
+    - name: Set timeout_bin fact (macOS)
+      set_fact:
+        timeout_bin_path: "{{ item.stat.path }}"
+      loop: "{{ timeout_stat_results.results | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - item.stat is defined
+        - item.stat.exists
+        - item.stat.executable
+
+    - name: Stat brew binary candidates (macOS)
+      stat:
+        path: "{{ item }}"
+      register: brew_stat_results
+      loop:
+        - /opt/homebrew/bin/brew
+        - /usr/local/bin/brew
+        - /home/linuxbrew/.linuxbrew/bin/brew
+      when: ansible_facts['os_family'] == "Darwin"
+
+    - name: Set brew_bin fact (macOS)
+      set_fact:
+        brew_bin_path: "{{ item.stat.path }}"
+      loop: "{{ brew_stat_results.results | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - item.stat is defined
+        - item.stat.exists
+        - item.stat.executable
+
+    - name: Warn if mas not installed (macOS)
+      debug:
+        msg: >-
+          WARNING: mas (Mac App Store CLI) not found on {{ inventory_hostname }}.
+          App Store updates will be skipped. Install: brew install mas
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_bin_path is defined
+        - mas_bin_path | default('') == ""
+
+    - name: Warn if mas disabled (macOS)
+      debug:
+        msg: >-
+          INFO: App Store updates disabled on {{ inventory_hostname }} (mas_enabled=false).
+          Enable in PatchPilot Settings → macOS → Enable mas Updates.
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_bin_path is defined
+        - mas_bin_path | default('') != ""
+        - not mas_enabled
+
+    - name: Warn if no timeout binary (macOS)
+      debug:
+        msg: >-
+          WARNING: No timeout binary found on {{ inventory_hostname }}.
+          mas updates will run without a per-app hard timeout.
+          Install GNU coreutils for safety: brew install coreutils
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_bin_path is defined
+        - mas_bin_path | default('') != ""
+        - mas_enabled | bool
+        - timeout_bin_path is not defined or timeout_bin_path | default('') == ''
+
+    # ── macOS checks ───────────────────────────────────────────────────────────
+    - name: Check for Homebrew updates (macOS)
+      shell: "{{ brew_bin_path }} outdated"
+      register: brew_updates
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - brew_bin_path is defined
+        - brew_bin_path | default('') != ""
       changed_when: false
       failed_when: false
 
@@ -41,14 +169,18 @@
       changed_when: false
       failed_when: false
 
-    - name: Check for App Store updates (requires mas)
-      shell: /opt/homebrew/bin/mas outdated
+    - name: Check for App Store updates (requires mas + mas_enabled)
+      shell: "{{ mas_bin_path }} outdated"
       register: mas_updates
-      when: ansible_facts['os_family'] == "Darwin"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_bin_path is defined
+        - mas_bin_path | default('') != ""
+        - mas_enabled | bool
       changed_when: false
       failed_when: false
 
-    # Emit individual package details so PatchPilot can populate the packages table
+    # ── Emit package details ───────────────────────────────────────────────────
     - name: Emit Debian package details
       debug:
         msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
@@ -71,23 +203,38 @@
       debug:
         msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
       loop: "{{ mas_updates.stdout_lines | default([]) }}"
-      when: ansible_facts['os_family'] == "Darwin" and mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_updates is defined
+        - mas_updates.stdout_lines is defined
+        - mas_updates.stdout_lines | length > 0
 
-    # Show status
+    # ── Status ─────────────────────────────────────────────────────────────────
     - name: Show update status
       debug:
-        msg: "{{ inventory_hostname }}: {% if apt_updates.stdout_lines is defined and apt_updates.stdout_lines | length > 0 %}{{ apt_updates.stdout_lines | length }} apt updates available{% elif brew_updates.stdout_lines is defined and brew_updates.stdout_lines | length > 0 %}{{ brew_updates.stdout_lines | length }} brew updates available{% elif macos_updates.stdout is defined and 'No new software available' not in macos_updates.stdout %}macOS system updates available{% elif mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}{{ mas_updates.stdout_lines | length }} App Store updates available{% else %}Up to date{% endif %}"
-      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or mas_updates.stdout_lines is defined
+        msg: >-
+          {{ inventory_hostname }}:
+          {% if apt_updates.stdout_lines is defined and apt_updates.stdout_lines | length > 0 %}
+            {{ apt_updates.stdout_lines | length }} apt updates available
+          {% elif brew_updates.stdout_lines is defined and brew_updates.stdout_lines | length > 0 %}
+            {{ brew_updates.stdout_lines | length }} brew updates available
+          {% elif macos_updates.stdout is defined and 'No new software available' not in macos_updates.stdout %}
+            macOS system updates available
+          {% elif mas_updates is defined and mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}
+            {{ mas_updates.stdout_lines | length }} App Store updates available
+          {% else %}
+            Up to date
+          {% endif %}
+      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or (mas_updates is defined and mas_updates.stdout_lines is defined)
 
-    # Apply updates
+    # =========================================================================
+    # APPLY UPDATES  (--tags apply-updates)
+    # =========================================================================
     - name: Starting updates on host
       debug:
         msg: "=== Applying updates to {{ inventory_hostname }} ==="
       tags: ['never', 'apply-updates']
 
-    # Use shell instead of apt module so we can pass --allow-phased-updates.
-    # The apt module has no parameter for this flag — without it, Ubuntu silently
-    # defers phased packages (changed: false) even when the dashboard shows them pending.
     - name: Apply updates (Debian/Ubuntu)
       shell: |
         DEBIAN_FRONTEND=noninteractive apt-get -y \
@@ -102,7 +249,9 @@
       tags: ['never', 'apply-updates']
 
     - name: Apply Homebrew updates (macOS)
-      shell: HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 /opt/homebrew/bin/brew upgrade
+      shell: |
+        HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 \
+        {{ brew_bin_path }} upgrade
       when: ansible_facts['os_family'] == "Darwin"
       register: brew_upgrade_result
       failed_when: false
@@ -114,14 +263,122 @@
       register: macos_upgrade_result
       tags: ['never', 'apply-updates']
 
-    - name: Apply App Store updates
-      shell: /opt/homebrew/bin/mas upgrade
-      when: ansible_facts['os_family'] == "Darwin"
+    # ── App Store updates ──────────────────────────────────────────────────────
+    # How this avoids hanging:
+    #
+    # 1. mas_enabled=true is required — opt-in because headless mas is fragile.
+    #
+    # 2. async + poll: Ansible runs the script detached on the remote Mac and
+    #    polls every 30s, emitting "ASYNC POLL" lines. PatchPilot forwards these
+    #    as ⏳ heartbeats so the UI stays alive during silent downloads.
+    #    NOTE: the shell script's stdout (Updating..., DONE, etc.) is only
+    #    visible when the task finishes — not line-by-line during download.
+    #    That's a limitation of Ansible async, not a bug.
+    #
+    # 3. Per-app hard timeout: uses `timeout` (/usr/bin/timeout, macOS 12.3+)
+    #    or `gtimeout` (brew install coreutils) to kill a hung mas process on
+    #    the REMOTE HOST. Ansible's async timeout only fires on the control
+    #    node — without this the mas process keeps running on the Mac forever.
+    #    If neither timeout binary is found, mas runs without a hard kill
+    #    but async/poll still bounds the Ansible-side wait.
+    #
+    - name: Apply App Store updates (macOS)
+      shell: |
+        MAS="{{ mas_bin_path }}"
+        EXCLUDE="{{ mas_excluded_ids }}"
+        PER_APP_TIMEOUT="{{ mas_per_app_timeout }}"
+        TIMEOUT_CMD="{{ timeout_bin_path | default('') }}"
+
+        # Wrapper: use timeout binary if available, otherwise run bare.
+        run_mas_upgrade() {
+          APP_ID="$1"
+          if [ -n "$TIMEOUT_CMD" ]; then
+            "$TIMEOUT_CMD" "$PER_APP_TIMEOUT" "$MAS" upgrade "$APP_ID" 2>&1
+          else
+            "$MAS" upgrade "$APP_ID" 2>&1
+          fi
+        }
+
+        OUTDATED=$("$MAS" outdated 2>/dev/null | awk '{print $1}')
+        if [ -z "$OUTDATED" ]; then
+          echo "No App Store updates pending."
+          exit 0
+        fi
+
+        TOTAL=$(echo "$OUTDATED" | wc -w | tr -d ' ')
+        echo "App Store: $TOTAL update(s) to process."
+
+        UPDATED=0; SKIPPED=0; TIMEDOUT=0; ERRORED=0
+        for APP_ID in $OUTDATED; do
+          # Look up app name
+          APP_NAME=$("$MAS" outdated 2>/dev/null | awk -v id="$APP_ID" '$1==id {$1=""; sub(/^ /,""); print}')
+
+          # Check exclusion list
+          SKIP=false
+          for EXC in $(echo "$EXCLUDE" | tr ',' '\n'); do
+            EXC=$(echo "$EXC" | tr -d ' ')
+            [ "$APP_ID" = "$EXC" ] && [ -n "$EXC" ] && SKIP=true && break
+          done
+
+          if $SKIP; then
+            echo "SKIP [$APP_ID] $APP_NAME (excluded)"
+            SKIPPED=$((SKIPPED+1))
+            continue
+          fi
+
+          echo "START [$APP_ID] $APP_NAME"
+          run_mas_upgrade "$APP_ID"
+          RC=$?
+          if [ $RC -eq 0 ]; then
+            echo "DONE [$APP_ID] $APP_NAME"
+            UPDATED=$((UPDATED+1))
+          elif [ $RC -eq 124 ]; then
+            echo "TIMEOUT [$APP_ID] $APP_NAME exceeded ${PER_APP_TIMEOUT}s"
+            TIMEDOUT=$((TIMEDOUT+1))
+          else
+            echo "ERROR [$APP_ID] $APP_NAME (exit $RC)"
+            ERRORED=$((ERRORED+1))
+          fi
+        done
+
+        echo "SUMMARY: updated=$UPDATED skipped=$SKIPPED timedout=$TIMEDOUT errored=$ERRORED"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_bin_path is defined
+        - mas_bin_path | default('') != ""
+        - mas_enabled | bool
       register: mas_upgrade_result
       failed_when: false
+      async: "{{ mas_timeout_seconds }}"
+      poll: 30
       tags: ['never', 'apply-updates']
 
-    # Reboot handling
+    - name: Show App Store update results
+      debug:
+        msg: "{{ mas_upgrade_result.stdout_lines | default(['(no output)']) | join(' | ') }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - mas_upgrade_result is defined
+        - mas_upgrade_result is not skipped
+        - mas_upgrade_result.stdout is defined
+        - mas_upgrade_result.stdout | length > 0
+      tags: ['never', 'apply-updates']
+
+    - name: Skip App Store updates (mas disabled or not installed)
+      debug:
+        msg: >-
+          App Store updates skipped on {{ inventory_hostname }} —
+          {% if mas_bin_path is not defined or mas_bin_path | default('') == "" %}
+          mas not installed. Run: brew install mas
+          {% else %}
+          mas_enabled=false. Enable in PatchPilot Settings → macOS.
+          {% endif %}
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - (mas_bin_path is not defined or mas_bin_path | default('') == "") or not mas_enabled
+      tags: ['never', 'apply-updates']
+
+    # ── Reboot handling ────────────────────────────────────────────────────────
     - name: Check if reboot required (Linux)
       stat:
         path: /var/run/reboot-required

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Deque
 from datetime import datetime, timezone
 import zoneinfo, os
+from pathlib import Path
 import asyncio
 import logging
 import psutil
@@ -129,7 +130,7 @@ _ansible_check_lock = asyncio.Lock()
 _ansible_patch_running = False
 
 # Create FastAPI app
-_APP_VERSION = os.getenv("APP_VERSION", "0.9.5-alpha")
+_APP_VERSION = os.getenv("APP_VERSION", "0.9.6-alpha")
 app = FastAPI(title="PatchPilot API", version=_APP_VERSION)
 
 # ── CORS configuration ────────────────────────────────────────────────────────
@@ -181,6 +182,24 @@ async def startup_event():
     # Wire DatabaseClient so restore can rebuild both pools after a DB drop/recreate
     backup_set_db_client(db)
     
+    # ── STEP 0: Sync bundled playbook to ansible volume ──────────────────────
+    # The /ansible dir is a Docker volume mount from the host.  It may contain
+    # a stale version of the playbook from a previous install, a restore, or
+    # an old image.  Always overwrite with the version baked into this image
+    # so the container is always running the current playbook.
+    import shutil as _shutil
+    _src_playbook = Path("/ansible-src/check-os-updates.yml")
+    _dst_playbook = Path("/ansible/check-os-updates.yml")
+    if _src_playbook.exists():
+        try:
+            _dst_playbook.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(_src_playbook, _dst_playbook)
+            print(f"Playbook synced: {_src_playbook} → {_dst_playbook}")
+        except Exception as _e:
+            print(f"WARNING: Could not sync playbook: {_e}")
+    else:
+        print(f"WARNING: Bundled playbook not found at {_src_playbook}")
+
     # ── STEP 1: Core schema (hosts, packages, patch_history) ─────────────────
     # Must run BEFORE any column-check helpers that assume the tables exist.
     await ensure_core_tables(pool)
@@ -311,30 +330,103 @@ async def ensure_core_tables(pool):
 
 
 async def run_auth_migration(pool):
-    """Auto-run the auth migration if users table doesn't exist"""
+    """Create auth tables (users, sessions, audit_log) if they don't exist.
+
+    SQL is inlined here — no dependency on a migrations/ file that may not
+    be present inside the Docker image.
+    """
+    AUTH_MIGRATION_SQL = """
+        -- Users table for authentication
+        CREATE TABLE IF NOT EXISTS users (
+            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            username      VARCHAR(50)  UNIQUE NOT NULL,
+            email         VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            role          VARCHAR(20)  NOT NULL DEFAULT 'viewer',
+            is_active     BOOLEAN      DEFAULT true,
+            created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            last_login    TIMESTAMP WITH TIME ZONE
+        );
+
+        -- Sessions table
+        CREATE TABLE IF NOT EXISTS sessions (
+            id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+            token      VARCHAR(255) UNIQUE NOT NULL,
+            expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            ip_address VARCHAR(45),
+            user_agent TEXT
+        );
+
+        -- Audit log
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id       UUID REFERENCES users(id) ON DELETE SET NULL,
+            username      VARCHAR(50),
+            action        VARCHAR(100) NOT NULL,
+            resource_type VARCHAR(50),
+            resource_id   VARCHAR(255),
+            details       JSONB,
+            ip_address    VARCHAR(45),
+            user_agent    TEXT,
+            success       BOOLEAN DEFAULT true,
+            timestamp     TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+
+        -- Indexes
+        CREATE INDEX IF NOT EXISTS idx_users_username      ON users(username);
+        CREATE INDEX IF NOT EXISTS idx_users_email         ON users(email);
+        CREATE INDEX IF NOT EXISTS idx_sessions_token      ON sessions(token);
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_id    ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_user_id   ON audit_log(user_id);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_action    ON audit_log(action);
+
+        -- Row Level Security (permissive — enforced at application layer)
+        ALTER TABLE users     ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE sessions   ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE audit_log  ENABLE ROW LEVEL SECURITY;
+    """
+
+    # RLS policies must be created outside a multi-statement string on some PG versions
+    RLS_POLICIES = [
+        ("users",     "Allow all operations on users",     "users"),
+        ("sessions",  "Allow all operations on sessions",  "sessions"),
+        ("audit_log", "Allow all operations on audit_log", "audit_log"),
+    ]
+
     try:
         async with pool.acquire() as conn:
             exists = await conn.fetchval("""
                 SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'users'
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'users'
                 )
             """)
             if not exists:
-                print("Running authentication migration...")
-                import os
-                migration_path = os.path.join(os.path.dirname(__file__), 'migrations', '002_add_authentication.sql')
-                if os.path.exists(migration_path):
-                    with open(migration_path, 'r') as f:
-                        sql = f.read()
-                    await conn.execute(sql)
-                    print("Authentication tables created")
-                else:
-                    print(f"Migration file not found: {migration_path}")
+                print("Running authentication migration (inlined)...")
+                await conn.execute(AUTH_MIGRATION_SQL)
+                # Create RLS policies only if they don't already exist
+                for table, policy_name, _ in RLS_POLICIES:
+                    policy_exists = await conn.fetchval("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM pg_policies
+                            WHERE tablename = $1 AND policyname = $2
+                        )
+                    """, table, policy_name)
+                    if not policy_exists:
+                        await conn.execute(
+                            f'CREATE POLICY "{policy_name}" ON {table} FOR ALL USING (true)'
+                        )
+                print("Authentication tables created successfully")
             else:
                 print("Authentication tables already exist")
     except Exception as e:
-        print(f"Auth migration check failed: {e}")
+        print(f"Auth migration failed: {e}")
+        raise  # Fatal — cannot create users without this schema
 
 
 async def ensure_settings_table(pool):
@@ -367,6 +459,23 @@ async def ensure_settings_table(pool):
                  'explicit URLs for production '
                  '(e.g. https://patchpilot.BLAH.com,https://patchpilot.lan). '
                  'Changes require a container restart to take effect.'),
+                # ── macOS / App Store (mas) settings ──────────────────────────
+                ('mas_enabled',          os.getenv('MAS_ENABLED', 'false'),
+                 'Enable App Store (mas) updates on macOS hosts. Defaults to false — '
+                 'mas in a headless SSH session requires an active GUI login and App Store '
+                 'sign-in on the target Mac and will hang silently if those conditions '
+                 'are not met. Set to true only after confirming mas works interactively.'),
+                ('mas_excluded_ids',     os.getenv('MAS_EXCLUDED_IDS', '497799835'),
+                 'Comma-separated App Store app IDs to skip during automated updates. '
+                 'Default excludes Xcode (497799835) — it is enormous and rarely needs '
+                 'automated updates. Add more IDs as needed.'),
+                ('mas_per_app_timeout',  os.getenv('MAS_PER_APP_TIMEOUT', '600'),
+                 'Hard per-app timeout in seconds on the remote host (default 600 = 10 min). '
+                 'A timeout binary on the Mac kills a hung mas process so the run does not '
+                 'block forever. Increase for very large apps.'),
+                ('mas_timeout_seconds',  os.getenv('MAS_TIMEOUT_SECONDS', '7200'),
+                 'Max seconds to wait for all App Store downloads per host (default 7200 = 2 h). '
+                 'This is the Ansible async timeout — the overall ceiling for the task.'),
             ]
             await conn.executemany("""
                 INSERT INTO settings (key, value, description) VALUES ($1, $2, $3)
@@ -598,6 +707,10 @@ async def run_ansible_check_task(limit_hosts: list = None):
     if not success:
         print(f"Ansible check failed: {hosts_data.get('error', 'Unknown error')}")
         return
+    # Log parsed results before writing so failed status is visible in logs
+    for hostname, data in hosts_data.items():
+        print(f"[CHECK] {hostname} → status={data.get('status')} updates={data.get('total_updates')} "
+              f"os={data.get('os_family','?')}")
     # Update database with results
     for hostname, data in hosts_data.items():
         try:
@@ -636,95 +749,100 @@ async def run_ansible_check_task(limit_hosts: list = None):
 # Background task to run ansible patch
 async def run_ansible_patch_task(hostnames: List[str], become_password: Optional[str] = None):
     """Background task to run Ansible patch on specified hosts"""
+    global _ansible_patch_running
     print(f"[{datetime.now()}] Running Ansible patch on: {', '.join(hostnames)}")
     await db.connect()
     
-    # Broadcast start
-    await manager.broadcast({
-        "type": "start",
-        "hosts": hostnames,
-        "message": f"Starting patch for {len(hostnames)} host(s)..."
-    })
-
-    # Patch each host
-    for hostname in hostnames:
-        await manager.broadcast({
-            "type": "progress",
-            "hostname": hostname,
-            "message": f"Patching {hostname}..."
-        })
-    
-    start_time = datetime.now()
-    
-    # Create progress callback for real-time updates
-    async def progress_callback(message):
-        hostname = None
-        import re
-        host_match = re.search(r'(?:changed|ok|fatal|unreachable|skipping|failed):\s*\[([^\]]+)\]', message)
-        if host_match:
-            hostname = host_match.group(1)
-        broadcast_data = {
-            "type": "progress",
-            "message": message
-        }
-        if hostname:
-            broadcast_data["hostname"] = hostname
-        await manager.broadcast(broadcast_data)
-    
-    success, results = await ansible.run_patch(
-        limit_hosts=hostnames, 
-        become_password=become_password,
-        progress_callback=progress_callback
-    )
-    end_time = datetime.now()
-    execution_seconds = (end_time - start_time).total_seconds()
-
-    # Determine per-host actual patch success from Ansible output.
-    # Ansible can exit non-zero (code 4 UNREACHABLE) even when apt/yum ran
-    # successfully — e.g. when the temp SSH key is cleaned up right after the
-    # update task completes but before a subsequent task (reboot-check) reconnects.
-    # _detect_hosts_actually_patched() looks for 'changed:/ok:' inside the
-    # 'Apply updates' task block rather than trusting the final exit code alone.
-    ansible_output = results.get("output", "") if isinstance(results, dict) else ""
-    actually_patched = _detect_hosts_actually_patched(ansible_output, hostnames)
-    print(f"[INFO] actually_patched={actually_patched}, ansible_success={success}")
-
-    # Record patch history for each host
+    _ansible_patch_running = True
     try:
-        pool = db.pool
-        async with pool.acquire() as conn:
-            for hostname in hostnames:
-                host_row = await conn.fetchrow("SELECT id FROM hosts WHERE hostname = $1", hostname)
-                if host_row:
-                    is_success = hostname in actually_patched
-                    duration_secs = int(execution_seconds)
-                    error_msg = None if is_success else (results.get("error", "Unknown error") if isinstance(results, dict) else str(results))
-                    # Extract actual package names from Ansible output for this host
-                    pkgs_updated = _extract_packages_updated(ansible_output, hostname)
-                    print(f"[INFO] packages extracted for {hostname}: {len(pkgs_updated)} pkgs")
-                    await conn.execute("""
-                        INSERT INTO patch_history (host_id, success, packages_updated, duration_seconds, error_message, output)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                    """, host_row["id"], is_success, pkgs_updated, duration_secs, error_msg, ansible_output)
-                    print(f"[INFO] Recorded patch_history for {hostname}: success={is_success}, pkgs={len(pkgs_updated)}")
-    except Exception as e:
-        print(f"[WARN] Failed to record patch history: {e}")
+        # Broadcast start
+        await manager.broadcast({
+            "type": "start",
+            "hosts": hostnames,
+            "message": f"Starting patch for {len(hostnames)} host(s)..."
+        })
 
-    if success or actually_patched:
-        print(f"[{end_time}] Ansible patch completed (success={success}, patched={actually_patched})")
-        await manager.broadcast({
-            "type": "success",
-            "message": "Patching completed successfully. Refreshing status..."
-        })
-    else:
-        print(f"[{end_time}] Ansible patch failed: {results.get('error', 'Unknown error')}")
-        await manager.broadcast({
-            "type": "error",
-            "message": f"Patch failed: {results.get('error', 'Unknown error') if isinstance(results, dict) else str(results)}"
-        })
+        # Patch each host
+        for hostname in hostnames:
+            await manager.broadcast({
+                "type": "progress",
+                "hostname": hostname,
+                "message": f"Patching {hostname}..."
+            })
+        
+        start_time = datetime.now()
+        
+        # Create progress callback for real-time updates
+        async def progress_callback(message):
+            hostname = None
+            import re
+            host_match = re.search(r'(?:changed|ok|fatal|unreachable|skipping|failed):\s*\[([^\]]+)\]', message)
+            if host_match:
+                hostname = host_match.group(1)
+            broadcast_data = {
+                "type": "progress",
+                "message": message
+            }
+            if hostname:
+                broadcast_data["hostname"] = hostname
+            await manager.broadcast(broadcast_data)
+        
+        success, results = await ansible.run_patch(
+            limit_hosts=hostnames, 
+            become_password=become_password,
+            progress_callback=progress_callback
+        )
+        end_time = datetime.now()
+        execution_seconds = (end_time - start_time).total_seconds()
+
+        # Determine per-host actual patch success from Ansible output.
+        ansible_output = results.get("output", "") if isinstance(results, dict) else ""
+        actually_patched = _detect_hosts_actually_patched(ansible_output, hostnames)
+        print(f"[INFO] actually_patched={actually_patched}, ansible_success={success}")
+
+        # Record patch history for each host
+        try:
+            pool = db.pool
+            async with pool.acquire() as conn:
+                for hostname in hostnames:
+                    host_row = await conn.fetchrow("SELECT id FROM hosts WHERE hostname = $1", hostname)
+                    if host_row:
+                        is_success = hostname in actually_patched
+                        duration_secs = int(execution_seconds)
+                        error_msg = None if is_success else (results.get("error", "Unknown error") if isinstance(results, dict) else str(results))
+                        pkgs_updated = _extract_packages_updated(ansible_output, hostname)
+                        print(f"[INFO] packages extracted for {hostname}: {len(pkgs_updated)} pkgs")
+                        await conn.execute("""
+                            INSERT INTO patch_history (host_id, success, packages_updated, duration_seconds, error_message, output)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                        """, host_row["id"], is_success, pkgs_updated, duration_secs, error_msg, ansible_output)
+                        print(f"[INFO] Recorded patch_history for {hostname}: success={is_success}, pkgs={len(pkgs_updated)})")
+        except Exception as e:
+            print(f"[WARN] Failed to record patch history: {e}")
+
+        if success or actually_patched:
+            print(f"[{end_time}] Ansible patch completed (success={success}, patched={actually_patched})")
+            await manager.broadcast({
+                "type": "success",
+                "message": "Patching completed successfully. Refreshing status..."
+            })
+        else:
+            print(f"[{end_time}] Ansible patch failed: {results.get('error', 'Unknown error')}")
+            await manager.broadcast({
+                "type": "error",
+                "message": f"Patch failed: {results.get('error', 'Unknown error') if isinstance(results, dict) else str(results)}"
+            })
+
+    finally:
+        _ansible_patch_running = False
+
 
     # Always re-run the check after patching — even on failure — so the dashboard
     # reflects the actual host state (up-to-date vs still needs updates).
+    # Delay 30 s: softwareupdate/brew can leave SSH temporarily unresponsive
+    # immediately after completing. Without the delay the check races in,
+    # gets failed=1 in the RECAP, and stamps the host as "failed".
+    await asyncio.sleep(30)
     await run_ansible_check_task(hostnames)
     await manager.broadcast({
         "type": "complete",
@@ -1518,7 +1636,26 @@ async def dismiss_reboot_alert(hostname: str,
 @app.post("/api/check")
 async def trigger_check(background_tasks: BackgroundTasks,
                         user: dict = Depends(require_auth)):
-    """Trigger an immediate Ansible check (PROTECTED)"""
+    """Trigger an immediate Ansible check (PROTECTED).
+
+    If a check is already running, we schedule one to run immediately after
+    the lock releases rather than silently dropping the request.  Without
+    this, pressing REFRESH while the periodic background check happens to be
+    running causes the entire request to be discarded — the frontend polls
+    for 3 minutes and nothing happens until the next periodic timer fires.
+    """
+    if _ansible_check_lock.locked() or _ansible_patch_running:
+        # Already busy — queue a follow-up run instead of silently dropping
+        async def _run_after_current():
+            # Wait for the current run to finish (poll up to 5 min)
+            for _ in range(300):
+                if not _ansible_check_lock.locked() and not _ansible_patch_running:
+                    break
+                await asyncio.sleep(1)
+            await run_ansible_check_task()
+        background_tasks.add_task(_run_after_current)
+        return {"message": "Check queued (another check is running)", "status": "queued"}
+
     background_tasks.add_task(run_ansible_check_task)
     return {"message": "Check initiated", "status": "running"}
 
@@ -1529,8 +1666,28 @@ async def trigger_single_host_check(hostname: str, background_tasks: BackgroundT
     host = await db.get_host_by_hostname(hostname)
     if not host:
         raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    if _ansible_check_lock.locked() or _ansible_patch_running:
+        async def _run_after_current(h=[hostname]):
+            for _ in range(300):
+                if not _ansible_check_lock.locked() and not _ansible_patch_running:
+                    break
+                await asyncio.sleep(1)
+            await run_ansible_check_task(h)
+        background_tasks.add_task(_run_after_current)
+        return {"message": f"Check queued for {hostname} (another check is running)", "status": "queued"}
     background_tasks.add_task(run_ansible_check_task, [hostname])
     return {"message": f"Check initiated for {hostname}", "status": "running"}
+
+@app.get("/api/patch/status")
+async def get_patch_status(user: dict = Depends(require_auth)):
+    """Return whether a patch run is currently in progress (PROTECTED).
+    Used by the frontend to recover from WebSocket disconnects during long
+    patch operations (e.g. large App Store downloads)."""
+    return {
+        "running": _ansible_patch_running or _ansible_check_lock.locked(),
+        "patch_running": _ansible_patch_running,
+        "check_running": _ansible_check_lock.locked(),
+    }
 
 @app.post("/api/patch")
 async def trigger_patch(patch_request: PatchRequest, background_tasks: BackgroundTasks,

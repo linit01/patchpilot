@@ -278,15 +278,24 @@ async def change_password(req: ChangePasswordRequest, request: Request,
 @router.get("/check-setup")
 async def check_setup(pool: asyncpg.Pool = Depends(get_db_pool)):
     """Check if any users exist (for initial setup flow).
-    Returns both has_users (legacy) and setup_required (new) for compatibility."""
-    async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT COUNT(*) FROM users")
-    has_users = count > 0
-    return {
-        "has_users": has_users,
-        "setup_required": not has_users,
-        "user_count": count,
-    }
+    Returns both has_users (legacy) and setup_required (new) for compatibility.
+    Handles the race where the endpoint is called before startup migrations finish."""
+    try:
+        async with pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        has_users = count > 0
+        return {
+            "has_users": has_users,
+            "setup_required": not has_users,
+            "user_count": count,
+        }
+    except Exception:
+        # Table doesn't exist yet (startup migration still running) — safe default
+        return {
+            "has_users": False,
+            "setup_required": True,
+            "user_count": 0,
+        }
 
 
 @router.post("/setup")

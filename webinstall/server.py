@@ -1,5 +1,5 @@
 """
-PatchPilot v0.9.5-alpha — Web Install Server
+PatchPilot v0.9.6-alpha — Web Install Server
 Collects configuration via browser wizard, writes config files,
 then streams ./install.sh output back to the browser via SSE.
 """
@@ -17,13 +17,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-WEBINSTALL_DIR = Path(__file__).parent
-REPO_ROOT      = Path(os.environ.get("PATCHPILOT_ROOT", WEBINSTALL_DIR.parent))
-STATIC_DIR     = WEBINSTALL_DIR / "static"
-K8S_DIR        = REPO_ROOT / "k8s"
-CONFIG_FILE    = K8S_DIR / "install-config.yaml"
-INSTALL_SCRIPT = REPO_ROOT / "install.sh"
-RESUME_FILE    = Path("/tmp/patchpilot-install-resume")
+WEBINSTALL_DIR  = Path(__file__).parent
+REPO_ROOT       = Path(os.environ.get("PATCHPILOT_ROOT", WEBINSTALL_DIR.parent))
+STATIC_DIR      = WEBINSTALL_DIR / "static"
+K8S_DIR         = REPO_ROOT / "k8s"
+CONFIG_FILE     = K8S_DIR / "install-config.yaml"
+INSTALL_SCRIPT  = REPO_ROOT / "install.sh"
+BUILD_SCRIPT    = K8S_DIR / "build-push.sh"
+RESUME_FILE     = Path("/tmp/patchpilot-install-resume")
+DEVELOPER_MODE  = os.environ.get("PATCHPILOT_DEVELOPER", "false").lower() == "true"
 
 app = FastAPI(title="PatchPilot Web Installer")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -32,6 +34,17 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return (STATIC_DIR / "index.html").read_text()
+
+
+# ── Server info (developer mode flag, version) ─────────────────────────────────
+@app.get("/api/info")
+async def info():
+    """Returns server capabilities so the UI can show/hide developer features."""
+    return {
+        "developer": DEVELOPER_MODE,
+        "version":   "0.9.6-alpha",
+        "repo_root": str(REPO_ROOT),
+    }
 
 
 # ── Cluster info ───────────────────────────────────────────────────────────────
@@ -82,7 +95,7 @@ class K3sConfig(BaseModel):
     dh_repo: str = "linit01/patchpilot"
     dh_username: str
     dh_token: str
-    image_tag: str = "0.9.5-alpha"
+    image_tag: str = "0.9.6-alpha"
     pull_policy: str = "Always"
     hostname: str
     additional_hostnames: str = ""
@@ -146,6 +159,58 @@ async def resume():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"status": "ok"}
+
+
+# ── Build & Push stream (developer mode only) ──────────────────────────────────
+@app.get("/api/build-stream")
+async def build_stream(
+    repo: str = "linit01/patchpilot",
+    tag: str = "0.9.6-alpha",
+    platform: str = "",
+    no_cache: bool = False,
+    push: bool = True,
+):
+    """
+    SSE — runs k8s/build-push.sh with the given parameters.
+    Only meaningful when DEVELOPER_MODE is True, but not gated server-side
+    so the script can be invoked manually too.
+    """
+    if not BUILD_SCRIPT.exists():
+        raise HTTPException(status_code=500, detail=f"build-push.sh not found at {BUILD_SCRIPT}")
+
+    cmd = [str(BUILD_SCRIPT), "--tag", tag]
+    if platform:
+        cmd += ["--platform", platform]
+    if no_cache:
+        cmd.append("--no-cache")
+    if not push:
+        cmd.append("--no-push")
+
+    async def event_generator():
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(REPO_ROOT),
+                env={**os.environ,
+                     "TERM": "xterm-256color",
+                     "DH_REPO_OVERRIDE": repo},
+            )
+            async for raw_line in proc.stdout:
+                line = raw_line.decode("utf-8", errors="replace").rstrip()
+                yield f"data: {json.dumps(line)}\n\n"
+            await proc.wait()
+            yield f"data: {json.dumps('__EXIT__' + str(proc.returncode))}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps('__ERROR__' + str(exc))}\n\n"
+            yield f"data: {json.dumps('__EXIT__1')}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── Install stream ─────────────────────────────────────────────────────────────
@@ -258,7 +323,7 @@ def _write_k3s_config(cfg: K3sConfig):
     additional = [h.strip() for h in cfg.additional_hostnames.replace(",", " ").split() if h.strip()]
     data = {
         "patchpilot": {
-            "version": "0.9.5-alpha",
+            "version": "0.9.6-alpha",
             "namespace": cfg.namespace,
             "image": {
                 "strategy": "registry",

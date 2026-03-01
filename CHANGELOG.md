@@ -4,6 +4,62 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.9.6-alpha] — 2026-02-27  (patch 3 — macOS / mas fixes)
+
+### Fixed
+- **`mas upgrade` hangs forever during patch run** — The "Apply App Store updates" Ansible task had no
+  timeout. `mas upgrade` is completely silent during downloads (Xcode = ~15 GB), so the streaming
+  readline loop produced zero output and the WebSocket UI appeared frozen until the overall 1800 s
+  runner timeout fired and killed the whole run mid-download. The task now runs with
+  `async: <mas_timeout_seconds>` + `poll: 30` so Ansible emits polling heartbeats every 30 s and
+  the backend stream stays alive. The overall runner timeout is dynamically set to
+  `max(1800, mas_timeout_seconds + 300)`.
+- **Xcode (and other large apps) auto-updated by default** — `mas upgrade` with no arguments updates
+  everything, including Xcode. Added `mas_excluded_ids` setting (default `497799835` — Xcode) so
+  automated runs update apps individually and skip excluded IDs. Each app is upgraded via
+  `mas upgrade <id>` rather than a bulk `mas upgrade`.
+- **`mas` path hardcoded to `/opt/homebrew/bin/mas` (breaks Intel Macs)** — Replaced with a runtime
+  `command -v` probe that tries `/opt/homebrew/bin/mas` (Apple Silicon), `/usr/local/bin/mas`
+  (Intel), then bare `mas` in `$PATH`. All subsequent mas tasks reference `{{ mas_bin.stdout }}`.
+- **Silent skip when mas is not installed** — Added an explicit `debug` warning task that tells the
+  operator `mas not found on <host> — install: brew install mas` instead of silently passing
+  with `failed_when: false`.
+- **brew path not architecture-aware** — Homebrew is at `/opt/homebrew` on ARM and `/usr/local` on
+  x86_64. All `brew` invocations now select the correct prefix via
+  `{{ '/opt/homebrew/bin/brew' if ansible_architecture == 'arm64' else '/usr/local/bin/brew' }}`.
+
+### Added
+- **macOS / App Store settings section** (Settings → Network & Security → 🍎 macOS / App Store):
+  - `mas_excluded_ids` — comma-separated App Store IDs to skip (default: Xcode `497799835`).
+  - `mas_timeout_seconds` — per-host download timeout in seconds (default `7200` / 2 h).
+  Both settings are stored in the `settings` table and loaded by `ansible_runner.py` into the
+  subprocess environment before each patch run.
+
+---
+
+## [0.9.6-alpha] — 2026-02-27  (patch 2)
+
+### Fixed
+- **`users` table never created on fresh Docker install** — `run_auth_migration()` was loading
+  `backend/migrations/002_add_authentication.sql` from disk, but the `migrations/` folder was
+  never included in the Docker image (`COPY backend/ .` only copies Python files). The missing
+  file was silently swallowed (`print("Migration file not found")`), leaving the `users`,
+  `sessions`, and `audit_log` tables absent. Any attempt to complete first-run setup then bombed
+  with `asyncpg.exceptions.UndefinedTableError: relation "users" does not exist`. SQL is now
+  inlined directly in `run_auth_migration()` — no file dependency (`backend/app.py`).
+- **Restore applies wrong encryption key after backend restart** — The `/api/setup/restore`
+  endpoint correctly wrote the backup's encryption key to `/install/.env`, but then triggered a
+  restart via `docker restart <container-id>`. Docker's `restart` does **not** re-read `.env` —
+  environment variables are baked into the container at creation time. The backend therefore came
+  back up with the old key, causing every encrypted credential (SSH keys, passwords) to fail
+  decryption. Restart now uses `docker compose -f <compose_file> up -d backend` so Compose
+  re-evaluates `.env` and the restored key is active immediately (`backend/setup_api.py`).
+- **Version bump to v0.9.6-alpha** across all components
+  (`backend/app.py`, `frontend/index.html`, `webinstall/server.py`,
+  `webinstall/static/index.html`).
+
+---
+
 ## [0.9.6-alpha] - 2026-02-26
 
 ### Fixed

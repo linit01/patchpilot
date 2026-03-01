@@ -311,6 +311,7 @@
         let isSetupMode = false;
 
         async function checkAuth() {
+            // Check if already logged in
             try {
                 const res = await fetch(`${API_BASE}/auth/me`, { credentials: 'include' });
                 const data = await res.json();
@@ -320,16 +321,26 @@
                 }
             } catch (e) {}
 
-            try {
-                const res = await fetch(`${API_BASE}/auth/check-setup`);
-                const data = await res.json();
-                // If setup hasn't been completed, send to the full wizard
-                if (data.setup_required || !data.has_users) {
-                    window.location.replace('setup.html');
-                    return;
+            // Check if first-run setup is needed.
+            // Retry up to 10x with 1s delay — backend may still be starting.
+            for (let attempt = 0; attempt < 10; attempt++) {
+                try {
+                    const res = await fetch(`${API_BASE}/auth/check-setup`);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const data = await res.json();
+                    if (data.setup_required || !data.has_users) {
+                        window.location.replace('setup.html');
+                    }
+                    return; // backend replied cleanly — done either way
+                } catch (e) {
+                    if (attempt < 9) {
+                        await new Promise(r => setTimeout(r, 1000));
+                    } else {
+                        // Backend unreachable after 10s — send to setup as safest default
+                        console.warn('Backend unreachable after retries — defaulting to setup');
+                        window.location.replace('setup.html');
+                    }
                 }
-            } catch (e) {
-                console.error('Setup check failed:', e);
             }
         }
 
