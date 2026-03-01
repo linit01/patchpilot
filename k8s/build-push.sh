@@ -21,7 +21,7 @@
 #
 # Usage:
 #   ./k8s/build-push.sh --release                    # public multi-arch release
-#   ./k8s/build-push.sh --release --tag 0.9.6-alpha  # release with explicit tag
+#   ./k8s/build-push.sh --release --tag 0.9.7-alpha  # release with explicit tag
 #   ./k8s/build-push.sh                              # dev: auto-detect cluster arch
 #   ./k8s/build-push.sh --platform linux/arm64       # dev: force arch
 #   ./k8s/build-push.sh --no-cache                   # force fresh layers

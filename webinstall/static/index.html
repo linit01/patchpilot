@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PatchPilot Installer — v0.9.6-alpha</title>
+<title>PatchPilot Installer — v0.9.7-alpha</title>
 <style>
   :root {
     --bg:#0d1117;--surface:#161b22;--border:#30363d;
@@ -119,7 +119,7 @@
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/</pre>
     <div>
       <div class="header-title">Web Installer</div>
-      <div class="header-sub">v0.9.6-alpha</div>
+      <div class="header-sub">v0.9.7-alpha</div>
     </div>
   </div>
   <div class="nav">
@@ -488,7 +488,7 @@
       </div>
       <div class="field">
         <label>Image tag</label>
-        <input type="text" id="build-tag" value="0.9.6-alpha">
+        <input type="text" id="build-tag" value="0.9.7-alpha">
       </div>
     </div>
 
@@ -891,7 +891,7 @@ function setBuildStatus(state, text) {
 
 async function startBuild() {
   const repo     = $('build-repo').value.trim()     || 'linit01/patchpilot';
-  const tag      = $('build-tag').value.trim()      || '0.9.6-alpha';
+  const tag      = $('build-tag').value.trim()      || '0.9.7-alpha';
   const platform = $('build-platform').value;
   const noCache  = $('build-no-cache').checked;
   const push     = $('build-push').checked;

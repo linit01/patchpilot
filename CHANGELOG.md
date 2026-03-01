@@ -4,6 +4,24 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.9.7-alpha] — 2026-03-01
+
+### Fixed
+- **macOS check fails with `'timeout_bin' is undefined` when mas enabled** — The "Warn if no
+  timeout binary" task in `ansible/check-os-updates.yml` referenced an undefined variable
+  `timeout_bin.stdout` instead of the correct `timeout_bin_path` fact set by the preceding
+  `set_fact` task. When `mas_enabled=true`, Ansible evaluated the broken conditional,
+  threw an undefined variable error, and the task failed (`failed=1` in PLAY RECAP). The
+  backend parser then stamped every macOS host as `status=failed`. Replaced the two broken
+  condition lines with `timeout_bin_path is not defined or timeout_bin_path | default('') == ''`.
+  With `mas_enabled=false` the bug was hidden because Ansible short-circuited the `when` chain
+  before reaching the bad line.
+
+### Changed
+- Version bumped to `0.9.7-alpha` (`backend/app.py`, `frontend/index.html`).
+
+---
+
 ## [0.9.6-alpha] — 2026-02-27  (patch 3 — macOS / mas fixes)
 
 ### Fixed
