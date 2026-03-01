@@ -1087,14 +1087,16 @@ async def get_system_info():
             "ansible_version": ansible_version,
             "python_version": python_version,
             "encryption_enabled": encryption_enabled,
-            "database_connected": True  # If we got here, DB is connected
+            "database_connected": True,  # If we got here, DB is connected
+            "install_mode": os.getenv("PATCHPILOT_INSTALL_MODE", "docker").lower(),
         }
     except subprocess.TimeoutExpired:
         return {
             "ansible_version": "Detection timeout",
             "python_version": f"Python {sys.version.split()[0]}",
             "encryption_enabled": bool(os.getenv("PATCHPILOT_ENCRYPTION_KEY")),
-            "database_connected": True
+            "database_connected": True,
+            "install_mode": os.getenv("PATCHPILOT_INSTALL_MODE", "docker").lower(),
         }
     except Exception as e:
         logger.error(f"Failed to get system info: {e}")

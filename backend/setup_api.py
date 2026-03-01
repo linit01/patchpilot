@@ -15,9 +15,9 @@ import os
 def _install_defaults() -> dict:
     """Return install-time defaults from environment variables set by install-k3s.sh."""
     return {
-        "default_ssh_user":    os.getenv("DEFAULT_SSH_USER", "root"),
-        "default_ssh_port":    int(os.getenv("DEFAULT_SSH_PORT", "22")),
-        "backup_storage_type": os.getenv("BACKUP_STORAGE_TYPE", "local"),
+        "default_ssh_user":    os.getenv("DEFAULT_SSH_USER", "") or "root",
+        "default_ssh_port":    int(os.getenv("DEFAULT_SSH_PORT", "") or "22"),
+        "backup_storage_type": os.getenv("BACKUP_STORAGE_TYPE", "") or "local",
         "nfs_server":          os.getenv("NFS_SERVER", ""),
         "nfs_share":           os.getenv("NFS_SHARE", ""),
     }

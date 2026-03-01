@@ -1072,6 +1072,11 @@ async def backup_health():
         "install_dir_configured": bool(os.environ.get("INSTALL_DIR")),
         "install_dir": os.environ.get("INSTALL_DIR"),
         "env_file_found": True,   # always reconstructable from container environment
+        # Expose actual env vars so Settings UI can detect DB vs reality mismatch
+        "env_backup_storage_type": os.getenv("BACKUP_STORAGE_TYPE", "") or "local",
+        "env_nfs_server": os.getenv("NFS_SERVER", ""),
+        "env_nfs_share": os.getenv("NFS_SHARE", ""),
+        "install_mode": os.getenv("PATCHPILOT_INSTALL_MODE", "docker").lower(),
     }
 
 

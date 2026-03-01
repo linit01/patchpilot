@@ -927,6 +927,48 @@
                             </div>
                         </div>
 
+                        <!-- Backup Configuration -->
+                        <div class="card" style="margin-top:16px;">
+                            <div class="card-header"><h2>🔧 Backup Configuration</h2></div>
+                            <div class="card-body">
+
+                                <div class="form-group" style="margin-bottom:14px;">
+                                    <label>Storage Type</label>
+                                    <select id="backup-storage-type" onchange="toggleNfsFields()" style="width:100%;">
+                                        <option value="local">💾 Local Disk (Docker volume)</option>
+                                        <option value="nfs">🗄️ NFS Share</option>
+                                    </select>
+                                </div>
+
+                                <div id="backup-nfs-fields" style="display:none;">
+                                    <div class="form-group" style="margin-bottom:14px;">
+                                        <label>NFS Server</label>
+                                        <input type="text" id="backup-nfs-server" placeholder="192.168.1.100 or nas.local">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom:14px;">
+                                        <label>NFS Share Path</label>
+                                        <input type="text" id="backup-nfs-share" placeholder="/mnt/backups/patchpilot">
+                                    </div>
+                                </div>
+
+                                <div class="form-group" style="margin-bottom:14px;">
+                                    <label>Retention Count</label>
+                                    <input type="number" id="backup-retain-count" value="10" min="1" max="100" style="width:100px;">
+                                    <div class="help-text">Number of backup archives to keep before oldest are pruned</div>
+                                </div>
+
+                                <div id="backup-config-hint" style="display:none; margin-bottom:14px; padding:12px 14px; border-radius:8px; background:rgba(243,156,18,0.1); border:1px solid rgba(243,156,18,0.3); font-size:12px; color:var(--amber); line-height:1.6;">
+                                    <strong>⚠️ Volume change required</strong><br>
+                                    <span id="backup-config-hint-text"></span>
+                                </div>
+
+                                <button class="btn btn-primary" onclick="saveBackupConfig()" id="backup-config-save-btn">
+                                    Save Backup Config
+                                </button>
+                                <span id="backup-config-saved" style="display:none; margin-left:10px; color:var(--green-bright); font-size:13px;">✓ Saved</span>
+                            </div>
+                        </div>
+
                     </div>
 
                     <!-- RIGHT COLUMN: Backup List -->
@@ -2893,9 +2935,179 @@
             const origSwitch = window.switchTab;
             window.switchTab = function(tabName) {
                 origSwitch(tabName);
-                if (tabName === 'backup') loadBackupList();
+                if (tabName === 'backup') {
+                    loadBackupList();
+                    loadBackupConfig();
+                }
             };
         });
+
+        // ── Backup Configuration ─────────────────────────────────────
+        let _installMode = 'docker';   // detected on load
+
+        function toggleNfsFields() {
+            const type = document.getElementById('backup-storage-type').value;
+            document.getElementById('backup-nfs-fields').style.display = type === 'nfs' ? 'block' : 'none';
+            updateBackupConfigHint();
+        }
+
+        function _updateStorageLabels(mode) {
+            const sel = document.getElementById('backup-storage-type');
+            const localOpt = sel.querySelector('option[value="local"]');
+            if (mode === 'k3s' || mode === 'k8s' || mode === 'kubernetes') {
+                localOpt.textContent = '💾 Local Disk (PersistentVolume)';
+            } else {
+                localOpt.textContent = '💾 Local Disk (Docker volume)';
+            }
+        }
+
+        function updateBackupConfigHint() {
+            const type = document.getElementById('backup-storage-type').value;
+            const hint = document.getElementById('backup-config-hint');
+            const hintText = document.getElementById('backup-config-hint-text');
+            const nfsServer = document.getElementById('backup-nfs-server').value.trim();
+            const nfsShare = document.getElementById('backup-nfs-share').value.trim();
+
+            if (type === 'nfs' && nfsServer && nfsShare) {
+                const isK8s = _installMode === 'k3s' || _installMode === 'k8s' || _installMode === 'kubernetes';
+                if (isK8s) {
+                    hintText.innerHTML = 'After saving, update the <strong>patchpilot-backups</strong> PersistentVolume to use NFS:'
+                        + '<pre style="margin:8px 0 0;padding:10px;background:rgba(0,0,0,0.3);border-radius:6px;font-size:11px;color:var(--cyan);white-space:pre;overflow-x:auto;">'
+                        + 'nfs:\n  server: ' + nfsServer + '\n  path: ' + nfsShare + '</pre>'
+                        + 'Then restart the backend pod: <code>kubectl rollout restart deploy/patchpilot-backend -n patchpilot</code>';
+                } else {
+                    hintText.innerHTML = 'After saving, update the <strong>backups:</strong> volume in <code>docker-compose.yml</code>:'
+                        + '<pre style="margin:8px 0 0;padding:10px;background:rgba(0,0,0,0.3);border-radius:6px;font-size:11px;color:var(--cyan);white-space:pre;overflow-x:auto;">'
+                        + '  backups:\n    driver: local\n    driver_opts:\n      type: nfs\n'
+                        + '      o: addr=' + nfsServer + ',rw,nfsvers=4\n'
+                        + '      device: ":' + nfsShare + '"</pre>'
+                        + 'Then run <code>docker compose down && docker compose up -d</code> to apply.';
+                }
+                hint.style.display = 'block';
+            } else if (type === 'local') {
+                hint.style.display = 'none';
+            } else {
+                hint.style.display = 'none';
+            }
+        }
+
+        let _backupConfigOriginal = {};
+        async function loadBackupConfig() {
+            try {
+                // Fetch DB settings, backup health (env vars), and system info in parallel
+                const [appRes, healthRes, sysRes] = await Promise.all([
+                    fetch('/api/settings/app', { credentials: 'include' }),
+                    fetch('/api/backup/health', { credentials: 'include' }),
+                    fetch('/api/settings/system-info', { credentials: 'include' }),
+                ]);
+
+                if (sysRes.ok) {
+                    const sysInfo = await sysRes.json();
+                    _installMode = sysInfo.install_mode || 'docker';
+                    _updateStorageLabels(_installMode);
+                }
+
+                let envType = 'local', envServer = '', envShare = '';
+                if (healthRes.ok) {
+                    const health = await healthRes.json();
+                    envType   = health.env_backup_storage_type || 'local';
+                    envServer = health.env_nfs_server || '';
+                    envShare  = health.env_nfs_share || '';
+                    if (health.install_mode) {
+                        _installMode = health.install_mode;
+                        _updateStorageLabels(_installMode);
+                    }
+                }
+
+                let dbType = 'local', dbServer = '', dbShare = '', dbRetain = '10';
+                if (appRes.ok) {
+                    const settings = await appRes.json();
+                    dbType   = settings.backup_storage_type?.value || 'local';
+                    dbServer = settings.backup_nfs_server?.value || '';
+                    dbShare  = settings.backup_nfs_share?.value || '';
+                    dbRetain = settings.backup_retain_count?.value || '10';
+                }
+
+                // Detect mismatch: env says NFS but DB says local
+                let type = dbType, server = dbServer, share = dbShare;
+                const mismatch = (envType === 'nfs' && dbType === 'local');
+                if (mismatch) {
+                    type = envType;
+                    server = envServer || dbServer;
+                    share  = envShare  || dbShare;
+                }
+
+                document.getElementById('backup-storage-type').value = type;
+                document.getElementById('backup-nfs-server').value = server;
+                document.getElementById('backup-nfs-share').value = share;
+                document.getElementById('backup-retain-count').value = dbRetain;
+
+                _backupConfigOriginal = { type, server, share, retain: dbRetain };
+                toggleNfsFields();
+
+                // Show mismatch banner and auto-save correction
+                if (mismatch) {
+                    const banner = document.getElementById('backup-config-hint');
+                    const hintText = document.getElementById('backup-config-hint-text');
+                    hintText.innerHTML = '⚙️ <strong>Auto-correcting:</strong> Your installation uses NFS '
+                        + '(<code>' + server + ':' + share + '</code>) but the database had "local". '
+                        + 'Saving the correct values now…';
+                    banner.style.display = 'block';
+                    // Auto-save the correction
+                    await saveBackupConfig();
+                    hintText.innerHTML = '✅ <strong>Corrected:</strong> Backup storage updated to NFS '
+                        + '(<code>' + server + ':' + share + '</code>). No further action needed.';
+                    setTimeout(() => { banner.style.display = 'none'; }, 6000);
+                }
+            } catch (e) {
+                console.error('Failed to load backup config:', e);
+            }
+        }
+
+        async function saveBackupConfig() {
+            const type = document.getElementById('backup-storage-type').value;
+            const server = document.getElementById('backup-nfs-server').value.trim();
+            const share = document.getElementById('backup-nfs-share').value.trim();
+            const retain = document.getElementById('backup-retain-count').value;
+
+            if (type === 'nfs') {
+                if (!server) { alert('NFS Server is required when using NFS storage.'); return; }
+                if (!share)  { alert('NFS Share path is required when using NFS storage.'); return; }
+            }
+
+            const btn = document.getElementById('backup-config-save-btn');
+            const saved = document.getElementById('backup-config-saved');
+            btn.disabled = true;
+            btn.textContent = 'Saving…';
+
+            try {
+                const entries = {
+                    backup_storage_type: type,
+                    backup_nfs_server: type === 'nfs' ? server : '',
+                    backup_nfs_share: type === 'nfs' ? share : '',
+                    backup_retain_count: retain,
+                };
+                for (const [key, value] of Object.entries(entries)) {
+                    const res = await fetch(`/api/settings/app/${key}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ value: String(value) }),
+                    });
+                    if (!res.ok) throw new Error(`Failed to save ${key}`);
+                }
+
+                _backupConfigOriginal = { type, server, share, retain };
+                saved.style.display = 'inline';
+                setTimeout(() => { saved.style.display = 'none'; }, 3000);
+                updateBackupConfigHint();
+            } catch (e) {
+                alert('Failed to save backup config: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save Backup Config';
+            }
+        }
 
     </script>
     <!-- Host Patch Logs Modal -->
