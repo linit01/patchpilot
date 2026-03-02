@@ -32,20 +32,24 @@
       register: setup_result
       ignore_errors: true
       ignore_unreachable: true
+      tags: always
 
     - name: Set host reachability fact
       set_fact:
         host_reachable: "{{ setup_result is not failed and setup_result is not unreachable }}"
       ignore_errors: true
+      tags: always
 
     - name: Emit unreachable status for parser
       debug:
         msg: "HOSTSTATUS: {{ inventory_hostname }} | unreachable"
       when: not (host_reachable | default(false))
+      tags: always
 
     - name: Skip remaining tasks for unreachable host
       meta: end_host
       when: not (host_reachable | default(false))
+      tags: always
 
     # ── Host info ──────────────────────────────────────────────────────────────
     - name: Emit host info
@@ -259,6 +263,14 @@
     - name: Starting updates on host
       debug:
         msg: "=== Applying updates to {{ inventory_hostname }} ==="
+      tags: ['never', 'apply-updates']
+
+    - name: Refresh apt cache before patching (Debian/Ubuntu)
+      shell: apt-get update -qq 2>/dev/null
+      become: yes
+      when: ansible_facts['os_family'] == "Debian"
+      changed_when: false
+      failed_when: false
       tags: ['never', 'apply-updates']
 
     - name: Apply updates (Debian/Ubuntu)
