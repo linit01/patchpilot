@@ -905,8 +905,7 @@ async def periodic_ansible_check():
         # Read interval from settings (default 120s)
         interval = 120
         try:
-            from dependencies import get_db_pool
-            pool = await get_db_pool()
+            pool = db.pool
             async with pool.acquire() as conn:
                 row = await conn.fetchval(
                     "SELECT value FROM settings WHERE key = 'refresh_interval'"
@@ -1098,10 +1097,9 @@ def _extract_packages_updated(output: str, hostname: str) -> list:
 
 async def check_and_run_schedules():
     """Check if any schedules are due to run, and retry unreachable hosts within the same window."""
-    from dependencies import get_db_pool
     from encryption_utils import decrypt_credential
 
-    pool = await get_db_pool()
+    pool = db.pool
 
     # Determine timezone: DB setting > TZ env var > UTC
     try:
@@ -1786,8 +1784,7 @@ async def trigger_patch(patch_request: PatchRequest, background_tasks: Backgroun
             raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
     
     # Audit log the patch operation
-    from dependencies import get_db_pool
-    pool = await get_db_pool()
+    pool = db.pool
     await log_audit(
         pool, str(user['id']), user['username'], "patch_initiated",
         resource_type="hosts", resource_id=",".join(patch_request.hostnames),
