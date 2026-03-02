@@ -2,7 +2,7 @@
 .env
 .env.local
 .env.*.local
-hosts
+ansible/hosts
 
 # Python
 __pycache__/
