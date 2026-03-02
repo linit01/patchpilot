@@ -192,7 +192,8 @@ class AnsibleRunner:
                 "ansible-playbook",
                 "-i", inventory_path,
                 self.playbook_path,
-                "-v"
+                "-v",
+                "--forks", "5"
             ]
             if limit_hosts:
                 cmd.extend(["--limit", ",".join(limit_hosts)])
@@ -466,7 +467,8 @@ class AnsibleRunner:
                 "-i", inventory_path,
                 self.playbook_path,
                 "--tags", "apply-updates",
-                "-v"
+                "-v",
+                "--forks", "1"
             ]
             
             # Add limit if specified
@@ -711,6 +713,20 @@ class AnsibleRunner:
                     hosts_data[hostname]['os_family'] = os_family
                     current_host = hostname
 
+            # Look for explicit unreachable marker emitted before meta: end_host
+            # Format: "HOSTSTATUS: hostname | unreachable"
+            if 'HOSTSTATUS:' in line:
+                match = re.search(r'HOSTSTATUS:\s*([^\s|"]+)\s*\|\s*(\w+)', line)
+                if match:
+                    hostname = match.group(1)
+                    explicit_status = match.group(2)
+                    if hostname not in hosts_data:
+                        hosts_data[hostname] = {}
+                    hosts_data[hostname]['status'] = explicit_status
+                    hosts_data[hostname]['total_updates'] = 0
+                    print(f"[PARSER] {hostname}: HOSTSTATUS={explicit_status}")
+                    current_host = hostname
+
             # Look for "Show update status" messages with package counts
             if 'msg' in line and 'updates available' in line.lower():
                 # Matches: "hostname:  65 apt updates available"
@@ -818,8 +834,25 @@ class AnsibleRunner:
                 # Packages on disk are ground truth
                 hosts_data[hostname]['total_updates'] = detail_count
                 hosts_data[hostname]['status'] = 'updates-available'
-            elif 'total_updates' not in hosts_data[hostname]:
+            else:
+                # No parseable package details — set total_updates to 0 to stay
+                # consistent with the packages table (which will have 0 rows).
+                # If the status message claimed updates but PACKAGE: lines were
+                # not parseable, log a warning so the user can investigate.
+                prev_total = hosts_data[hostname].get('total_updates', 0)
+                if prev_total > 0:
+                    print(f"[PARSER] WARNING: {hostname} status message claimed "
+                          f"{prev_total} updates but 0 package details were parsed "
+                          f"— resetting total_updates to 0 to prevent dashboard/details mismatch")
                 hosts_data[hostname]['total_updates'] = 0
+                # Also reset status to match — unless it was set to a negative
+                # status (unreachable/failed) by the RECAP or HOSTSTATUS parser
+                cur_status = hosts_data[hostname].get('status', '')
+                if cur_status not in ('unreachable', 'failed'):
+                    if cur_status == 'updates-available':
+                        print(f"[PARSER] WARNING: {hostname} status was 'updates-available' "
+                              f"but 0 packages parsed — resetting to 'up-to-date'")
+                    hosts_data[hostname]['status'] = 'up-to-date'
 
             if 'status' not in hosts_data[hostname]:
                 if hosts_data[hostname].get('total_updates', 0) > 0:

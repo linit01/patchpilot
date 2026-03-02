@@ -88,6 +88,10 @@ _db_pool: Optional[asyncpg.Pool] = None
 # hold stale connections to the dropped-and-recreated database.
 _db_client = None
 
+# Post-restore callback — set by app.py so the restore routine can trigger
+# an immediate Ansible check without circular imports.
+_post_restore_callback = None
+
 
 def set_pool(pool: asyncpg.Pool):
     """Called from app.py after pool creation so backup module can manage it."""
@@ -101,6 +105,13 @@ def set_db_client(db_client):
     reconnecting when the database is dropped and recreated)."""
     global _db_client
     _db_client = db_client
+
+
+def set_post_restore_callback(callback):
+    """Called from app.py to provide a coroutine that triggers an Ansible check.
+    Invoked after a successful restore when no self-restart occurs."""
+    global _post_restore_callback
+    _post_restore_callback = callback
 
 
 def get_pool() -> asyncpg.Pool:
@@ -1019,9 +1030,17 @@ def _schedule_self_restart(delay_seconds: int = 3) -> bool:
             else:
                 _set_progress(
                     "complete", 100,
-                    "Restore complete. Restart the backend container to apply all changes: "
-                    "docker restart patchpilot-backend-1"
+                    "Restore complete. Running host check..."
                 )
+                # No self-restart available — trigger an immediate Ansible
+                # check so the dashboard has fresh data as soon as the user
+                # logs in, rather than waiting for the periodic timer.
+                if _post_restore_callback:
+                    try:
+                        logger.info("Triggering post-restore Ansible check")
+                        await _post_restore_callback()
+                    except Exception as cb_e:
+                        logger.warning(f"Post-restore check failed (non-fatal): {cb_e}")
 
         except Exception as e:
             logger.error(f"Restore failed: {e}", exc_info=True)
@@ -1072,11 +1091,6 @@ async def backup_health():
         "install_dir_configured": bool(os.environ.get("INSTALL_DIR")),
         "install_dir": os.environ.get("INSTALL_DIR"),
         "env_file_found": True,   # always reconstructable from container environment
-        # Expose actual env vars so Settings UI can detect DB vs reality mismatch
-        "env_backup_storage_type": os.getenv("BACKUP_STORAGE_TYPE", "") or "local",
-        "env_nfs_server": os.getenv("NFS_SERVER", ""),
-        "env_nfs_share": os.getenv("NFS_SHARE", ""),
-        "install_mode": os.getenv("PATCHPILOT_INSTALL_MODE", "docker").lower(),
     }
 
 

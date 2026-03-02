@@ -1,7 +1,7 @@
 ---
 - hosts: all
-  gather_facts: yes
-  serial: 1
+  gather_facts: no
+  ignore_unreachable: true
   vars:
     ansible_python_interpreter: auto_silent
 
@@ -21,6 +21,32 @@
     mas_timeout_seconds: "{{ lookup('env', 'MAS_TIMEOUT_SECONDS') | default('7200', true) | int }}"
 
   tasks:
+    # ── Explicit fact gathering ────────────────────────────────────────────────
+    # gather_facts: no at the play level prevents Ansible from aborting the
+    # entire serial run when a single host is unreachable or gather_facts
+    # fails.  Instead we call setup explicitly and register the result so
+    # we can skip remaining tasks for that host gracefully while continuing
+    # to the next host in the inventory.
+    - name: Gather facts (explicit — allows failures without aborting play)
+      setup:
+      register: setup_result
+      ignore_errors: true
+      ignore_unreachable: true
+
+    - name: Set host reachability fact
+      set_fact:
+        host_reachable: "{{ setup_result is not failed and setup_result is not unreachable }}"
+      ignore_errors: true
+
+    - name: Emit unreachable status for parser
+      debug:
+        msg: "HOSTSTATUS: {{ inventory_hostname }} | unreachable"
+      when: not (host_reachable | default(false))
+
+    - name: Skip remaining tasks for unreachable host
+      meta: end_host
+      when: not (host_reachable | default(false))
+
     # ── Host info ──────────────────────────────────────────────────────────────
     - name: Emit host info
       debug:

@@ -81,7 +81,7 @@ from ansible_runner import AnsibleRunner
 from settings_api import router as settings_router
 from auth import router as auth_router, require_auth, log_audit, cleanup_expired_sessions
 from schedules_api import router as schedules_router
-from backup_restore import router as backup_router, set_pool as backup_set_pool, set_db_client as backup_set_db_client
+from backup_restore import router as backup_router, set_pool as backup_set_pool, set_db_client as backup_set_db_client, set_post_restore_callback as backup_set_post_restore_callback
 from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
 
@@ -181,6 +181,8 @@ async def startup_event():
     backup_set_pool(pool)
     # Wire DatabaseClient so restore can rebuild both pools after a DB drop/recreate
     backup_set_db_client(db)
+    # Wire post-restore callback so restore triggers an immediate host check
+    backup_set_post_restore_callback(run_ansible_check_task)
     
     # ── STEP 0: Sync bundled playbook to ansible volume ──────────────────────
     # The /ansible dir is a Docker volume mount from the host.  It may contain
@@ -230,9 +232,19 @@ async def startup_event():
     # Start background task for auto-patch schedules
     asyncio.create_task(schedule_checker_loop())
 
-    # Defer initial check by 60s so startup UI requests aren't blocked
+    # Defer initial check until the DB has hosts to check.
+    # After a restore + self-restart the pools need a few seconds to
+    # reconnect and the restored data to become visible.  Rather than a
+    # fixed sleep, poll until hosts exist (up to 60s ceiling).
     async def _deferred_initial_check():
-        await asyncio.sleep(60)
+        for _ in range(12):          # 12 × 5s = 60s max wait
+            await asyncio.sleep(5)
+            try:
+                hosts = await db.get_all_hosts()
+                if hosts:
+                    break
+            except Exception:
+                pass                 # pool not ready yet — retry
         await run_ansible_check_task()
     asyncio.create_task(_deferred_initial_check())
 
@@ -742,6 +754,42 @@ async def run_ansible_check_task(limit_hosts: list = None):
             print(f"Updated host: {hostname} - Status: {data.get('status')} - Updates: {data.get('total_updates')}")
         except Exception as e:
             print(f"Error updating host {hostname}: {e}")
+
+    # ── Mark unchecked hosts as unreachable ─────────────────────────────────
+    # If Ansible aborted early (e.g. a host was unreachable before
+    # ignore_unreachable was added, or a fatal error stopped the play),
+    # hosts that were never evaluated still carry their old stale status.
+    # Compare the set of hosts we asked Ansible to check against what it
+    # actually returned and mark the gap as unreachable.
+    try:
+        if limit_hosts:
+            expected_hosts = set(limit_hosts)
+        else:
+            all_db_hosts = await db.get_all_hosts()
+            expected_hosts = {h['hostname'] for h in all_db_hosts}
+        checked_hosts = set(hosts_data.keys())
+        unchecked = expected_hosts - checked_hosts
+        if unchecked:
+            print(f"[CHECK] {len(unchecked)} host(s) not in Ansible output — marking unreachable: {unchecked}")
+            for hostname in unchecked:
+                try:
+                    existing = await db.get_host_by_hostname(hostname)
+                    if existing:
+                        await db.upsert_host(
+                            hostname=hostname,
+                            ip_address=existing.get('ip_address', ''),
+                            os_type=existing.get('os_type', ''),
+                            os_family=existing.get('os_family', ''),
+                            status='unreachable',
+                            total_updates=0,
+                            reboot_required=False,
+                        )
+                        await db.delete_packages_for_host(existing['id'])
+                        print(f"Updated host: {hostname} - Status: unreachable - Updates: 0 (not in Ansible output)")
+                except Exception as e:
+                    print(f"Error marking unchecked host {hostname}: {e}")
+    except Exception as e:
+        print(f"Warning: Failed to check for unchecked hosts: {e}")
 
     print(f"[{datetime.now()}] Ansible check completed")
 
@@ -1338,9 +1386,44 @@ async def root():
 # =========================================================================
 
 @app.get("/api/hosts")
-async def get_hosts():
-    """Get all hosts with their update status (PUBLIC - read only)"""
+async def get_hosts(background_tasks: BackgroundTasks):
+    """Get all hosts with their update status (PUBLIC - read only).
+
+    If all hosts have stale or missing last_checked timestamps (e.g. after a
+    restore or long downtime), automatically triggers a background Ansible
+    check so the dashboard self-heals without requiring a manual refresh.
+    """
     hosts = await db.get_all_hosts()
+
+    # Auto-trigger a check if data looks stale and nothing is running
+    if hosts and not _ansible_check_lock.locked() and not _ansible_patch_running:
+        try:
+            pool = db.pool
+            async with pool.acquire() as conn:
+                interval = await conn.fetchval(
+                    "SELECT value FROM settings WHERE key = 'refresh_interval'"
+                )
+                interval_secs = max(30, int(interval)) if interval else 300
+            # Check if the most recent last_checked across all hosts is older
+            # than 2× the refresh interval (i.e. at least one full cycle was missed)
+            from datetime import timedelta
+            now = datetime.now(timezone.utc)
+            threshold = now - timedelta(seconds=interval_secs * 2)
+            newest_check = None
+            for h in hosts:
+                lc = h.get('last_checked')
+                if lc is not None:
+                    # Ensure timezone-aware comparison
+                    if lc.tzinfo is None:
+                        lc = lc.replace(tzinfo=timezone.utc)
+                    if newest_check is None or lc > newest_check:
+                        newest_check = lc
+            if newest_check is None or newest_check < threshold:
+                logger.info(f"Host data is stale (newest_check={newest_check}) — auto-triggering check")
+                background_tasks.add_task(run_ansible_check_task)
+        except Exception as e:
+            logger.debug(f"Auto-check trigger skipped: {e}")
+
     return hosts
 
 @app.get("/api/hosts/{hostname}")
