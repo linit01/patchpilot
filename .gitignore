@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+hosts
 
 # Python
 __pycache__/
