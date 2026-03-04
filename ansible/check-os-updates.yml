@@ -116,6 +116,7 @@
         - /opt/homebrew/bin/timeout
         - /usr/local/bin/timeout
       when: ansible_facts['os_family'] == "Darwin"
+      tags: always
 
     - name: Set timeout_bin fact (macOS)
       set_fact:
@@ -126,6 +127,7 @@
         - item.stat is defined
         - item.stat.exists
         - item.stat.executable
+      tags: always
 
     - name: Stat brew binary candidates (macOS)
       stat:
@@ -136,6 +138,7 @@
         - /usr/local/bin/brew
         - /home/linuxbrew/.linuxbrew/bin/brew
       when: ansible_facts['os_family'] == "Darwin"
+      tags: always
 
     - name: Set brew_bin fact (macOS)
       set_fact:
@@ -146,6 +149,7 @@
         - item.stat is defined
         - item.stat.exists
         - item.stat.executable
+      tags: always
 
     - name: Warn if mas not installed (macOS)
       debug:
