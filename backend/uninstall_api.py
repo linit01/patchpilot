@@ -196,83 +196,128 @@ def _k8s_cleanup_background(kc: list[str], namespace: str) -> None:
     )
     ssh_host = node_ip.strip() if (rc == 0 and node_ip.strip()) else "<k3s-node-ip>"
 
-    # ── Step 1: hostPath cleanup Job ──────────────────────────────────────────
+    # ── Step 1a: Scale down postgres & frontend (NOT backend — we're running on it)
+    # Postgres must release the hostPath volume mount before cleanup can rm it.
+    step = "Scale down postgres and frontend (release volume mounts)"
+    for deploy_name in ("patchpilot-postgres", "patchpilot-frontend"):
+        _run(
+            kc + ["scale", "deployment", deploy_name,
+                  "--replicas=0", "-n", namespace],
+            timeout=30,
+        )
+    # Wait for those pods specifically to terminate
+    _run(
+        kc + ["wait", "--for=delete", "pod",
+              "-l", "app.kubernetes.io/component in (postgres,frontend)",
+              "-n", namespace, "--timeout=60s"],
+        timeout=75,
+    )
+    completed.append(step)
+
+    # ── Step 1b: Query PV specs for actual hostPath directories ───────────────
+    # One kubectl call gets PV name, reclaim policy, and hostPath for every PV.
+    # We use these to build explicit rm commands (no find/glob).
+    _PV_JSONPATH = (
+        "{range .items[*]}"
+        "{.metadata.name}|{.spec.persistentVolumeReclaimPolicy}|"
+        "{.spec.hostPath.path}\n"
+        "{end}"
+    )
+    rc, pvs_out, _ = _run(
+        kc + ["get", "pv", "-o", "jsonpath=" + _PV_JSONPATH],
+        timeout=15,
+    )
+
+    hostpath_dirs: list[str] = []
+    if rc == 0:
+        for line in pvs_out.strip().splitlines():
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            pv_name = parts[0].strip()
+            hp      = parts[2].strip()
+            # Only target PVs belonging to this install
+            if not pv_name.startswith("patchpilot-"):
+                continue
+            # Collect hostPath dirs (NFS PVs have no hostPath — skip them)
+            if hp:
+                hostpath_dirs.append(hp)
+    logger.info("PV hostPath dirs to clean: %s", hostpath_dirs)
+
+    # ── Step 1c: hostPath cleanup Job with explicit paths ─────────────────────
     step = "Run hostPath cleanup Job on node"
-    job_name = "patchpilot-hostpath-cleanup"
-    job_manifest = {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": {"name": job_name, "namespace": namespace},
-        "spec": {
-            "backoffLimit": 0,
-            "ttlSecondsAfterFinished": 30,
-            "template": {
-                "spec": {
-                    "restartPolicy": "Never",
-                    "tolerations": [{"operator": "Exists"}],
-                    "containers": [{
-                        "name": "cleanup",
-                        "image": "busybox:1.36",
-                        "command": [
-                            "sh", "-c",
-                            "find /app-data -maxdepth 1 -name 'patchpilot-*' "
-                            "-exec rm -rf {} + 2>/dev/null; "
-                            "echo 'hostPath cleanup complete'"
-                        ],
-                        "securityContext": {"privileged": True, "runAsUser": 0},
-                        "volumeMounts": [{"name": "app-data", "mountPath": "/app-data"}],
-                    }],
-                    "volumes": [{
-                        "name": "app-data",
-                        "hostPath": {"path": "/app-data", "type": "DirectoryOrCreate"},
-                    }],
+    if hostpath_dirs:
+        # Build explicit rm commands — one per known path from PV specs
+        rm_parts = []
+        for d in hostpath_dirs:
+            rm_parts.append("rm -rf '" + d + "'")
+        cleanup_script = " && ".join(rm_parts) + " && echo 'hostPath cleanup complete'"
+
+        job_name = "patchpilot-hostpath-cleanup"
+        job_manifest = {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {"name": job_name, "namespace": namespace},
+            "spec": {
+                "backoffLimit": 0,
+                "ttlSecondsAfterFinished": 30,
+                "template": {
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "tolerations": [{"operator": "Exists"}],
+                        "containers": [{
+                            "name": "cleanup",
+                            "image": "busybox:1.36",
+                            "command": ["sh", "-c", cleanup_script],
+                            "securityContext": {"privileged": True, "runAsUser": 0},
+                            "volumeMounts": [{"name": "app-data", "mountPath": "/app-data"}],
+                        }],
+                        "volumes": [{
+                            "name": "app-data",
+                            "hostPath": {"path": "/app-data", "type": "DirectoryOrCreate"},
+                        }],
+                    },
                 },
             },
-        },
-    }
+        }
 
-    job_succeeded = False
-    jf_path = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as jf:
-            json.dump(job_manifest, jf)
-            jf_path = jf.name
+        jf_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as jf:
+                json.dump(job_manifest, jf)
+                jf_path = jf.name
 
-        _run(kc + ["delete", "job", job_name, "-n", namespace,
-                   "--ignore-not-found=true"], timeout=15)
+            _run(kc + ["delete", "job", job_name, "-n", namespace,
+                       "--ignore-not-found=true"], timeout=15)
 
-        rc, _, err = _run(kc + ["apply", "-f", jf_path], timeout=15)
-        if rc != 0:
-            raise RuntimeError(f"kubectl apply job failed: {err}")
+            rc, _, err = _run(kc + ["apply", "-f", jf_path], timeout=15)
+            if rc != 0:
+                raise RuntimeError("kubectl apply job failed: " + err)
 
-        rc, _, err = _run(
-            kc + ["wait", "--for=condition=complete",
-                  f"job/{job_name}", "-n", namespace, "--timeout=60s"],
-            timeout=75,
-        )
-        if rc == 0:
-            job_succeeded = True
-            completed.append(f"{step}: success")
-        else:
-            rc2, phase, _ = _run(
-                kc + ["get", "job", job_name, "-n", namespace,
-                      "-o", "jsonpath={.status.conditions[0].type}"],
-                timeout=10,
+            rc, _, err = _run(
+                kc + ["wait", "--for=condition=complete",
+                      f"job/{job_name}", "-n", namespace, "--timeout=60s"],
+                timeout=75,
             )
-            phase = phase.strip() if rc2 == 0 else "unknown"
-            raise RuntimeError(
-                f"Job did not complete in 60s (phase={phase}). "
-                f"Run manually: ssh {ssh_host} 'sudo rm -rf /app-data/patchpilot-*'"
-            )
-    except RuntimeError as e:
-        failed.append(f"{step}: {e}")
-        logger.warning("hostPath cleanup Job failed: %s", e)
-    except Exception as e:
-        failed.append(f"{step}: unexpected error: {e}")
-        logger.exception("Unexpected error during cleanup Job")
-    finally:
-        if jf_path:
-            Path(jf_path).unlink(missing_ok=True)
+            if rc == 0:
+                completed.append(step + ": removed " + str(hostpath_dirs))
+            else:
+                dirs_str = " ".join(hostpath_dirs)
+                raise RuntimeError(
+                    "Job did not complete in 60s. "
+                    "Run manually: ssh " + ssh_host + " 'sudo rm -rf " + dirs_str + "'"
+                )
+        except RuntimeError as e:
+            failed.append(step + ": " + str(e))
+            logger.warning("hostPath cleanup Job failed: %s", e)
+        except Exception as e:
+            failed.append(step + ": unexpected error: " + str(e))
+            logger.exception("Unexpected error during cleanup Job")
+        finally:
+            if jf_path:
+                Path(jf_path).unlink(missing_ok=True)
+    else:
+        completed.append(step + ": no hostPath PVs found (NFS-only install)")
 
     # ── Step 2a: Delete Deployments/StatefulSets first ────────────────────────
     # Scale everything to zero so pods release volume mounts before PVCs are
@@ -596,9 +641,11 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
             ssh_host = "<k3s-node-ip>"
         automated = [
             "Revoke all active login sessions",
-            "Run a privileged Kubernetes Job to remove /app-data/patchpilot-* on the node (no SSH required)",
-            "Delete the PatchPilot namespace — postgres-data and ansible-data PVs auto-deleted (reclaimPolicy: Delete)",
-            "backups PV is RETAINED — /app-data/patchpilot-backups survives for post-uninstall restore",
+            "Scale down postgres and frontend (release volume mounts — backend stays alive to orchestrate)",
+            "Query PV specs for actual hostPath directories on node",
+            "Run a privileged Kubernetes Job to remove hostPath dirs on node (no SSH required)",
+            "Scale down remaining workloads, delete namespace — postgres-data and ansible-data PVs auto-deleted (reclaimPolicy: Delete)",
+            "backups PV is RETAINED — backup archives survive for post-uninstall restore",
             "Delete the cert-manager ClusterIssuer resource",
             "Remove generated k8s manifests from k8s/.generated/",
         ]
