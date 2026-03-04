@@ -34,7 +34,7 @@ patchpilot:
     storageClass: app-data
   app:
     encryptionKey: ''
-    autoRefreshInterval: 300
+    autoRefreshInterval: 60
     defaultSshUser: root
     defaultSshPort: 22
     backupRetainCount: 3

@@ -15,9 +15,9 @@ from collections import deque
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# In-memory ring buffer for backend log lines (last 500 entries)
+# In-memory ring buffer for backend log lines (last 2000 entries)
 # ---------------------------------------------------------------------------
-_LOG_RING_BUFFER: Deque[dict] = deque(maxlen=500)
+_LOG_RING_BUFFER: Deque[dict] = deque(maxlen=2000)
 
 class _RingBufferHandler(logging.Handler):
     """Logging handler that pushes records into _LOG_RING_BUFFER."""
@@ -28,13 +28,22 @@ class _RingBufferHandler(logging.Handler):
         logging.ERROR:    "error",
         logging.CRITICAL: "error",
     }
+    # Substrings that indicate high-frequency noise — skip to preserve buffer space
+    _NOISE = ('"GET /health ', '"GET /api/hosts?', '"GET /api/stats?',
+              '"GET /api/stats/', '"GET /api/schedules/active')
     def emit(self, record: logging.LogRecord):
         try:
+            msg = self.format(record)
+            # Skip high-frequency polling / health endpoints
+            if record.name == 'uvicorn.access':
+                for noise in self._NOISE:
+                    if noise in msg:
+                        return
             _LOG_RING_BUFFER.append({
                 "ts":   datetime.now(timezone.utc).isoformat(),
                 "lvl":  self.LEVEL_MAP.get(record.levelno, "info"),
                 "name": record.name,
-                "msg":  self.format(record),
+                "msg":  msg,
             })
         except Exception:
             pass
@@ -44,6 +53,8 @@ _ring_handler = _RingBufferHandler()
 _ring_handler.setFormatter(logging.Formatter("%(name)s — %(message)s"))
 _ring_handler.setLevel(logging.DEBUG)
 logging.getLogger().addHandler(_ring_handler)
+logging.getLogger().setLevel(logging.INFO)      # third-party libs at INFO
+logging.getLogger(__name__).setLevel(logging.DEBUG)  # our code at DEBUG
 
 # ---------------------------------------------------------------------------
 # Also intercept print() / sys.stdout so docker-style output lands in buffer
@@ -123,11 +134,19 @@ APP_START_TIME = time.time()
 # A concurrent periodic check + manual refresh would cause one run to see
 # all hosts as unreachable (SSH slots exhausted by the other run).
 _ansible_check_lock = asyncio.Lock()
+_ansible_check_lock_since: Optional[float] = None   # time.monotonic() when lock was acquired
+_CHECK_LOCK_TIMEOUT = 600  # 10 min — auto-clear if stuck longer than this
 
 # Flag set while a patch job (scheduled or manual) is actively running.
 # The periodic background check skips its cycle while this is True so it
 # doesn't race against the patch and produce false "unreachable" readings.
 _ansible_patch_running = False
+_ansible_patch_running_since: Optional[float] = None   # time.monotonic() when flag was set
+_PATCH_FLAG_TIMEOUT = 1800  # 30 min — auto-clear if stuck longer than this
+
+# Gate: scheduler waits until the first host check has completed on startup
+# so it has accurate host status / total_updates before evaluating schedules.
+_initial_check_done = asyncio.Event()
 
 # Create FastAPI app
 _APP_VERSION = os.getenv("APP_VERSION", "0.9.7-alpha")
@@ -228,24 +247,36 @@ async def startup_event():
     
     # Start background task for periodic checks
     asyncio.create_task(periodic_ansible_check())
+    print("[STARTUP] periodic_ansible_check loop launched")
 
     # Start background task for auto-patch schedules
     asyncio.create_task(schedule_checker_loop())
+    print("[STARTUP] schedule_checker_loop launched")
 
     # Defer initial check until the DB has hosts to check.
     # After a restore + self-restart the pools need a few seconds to
     # reconnect and the restored data to become visible.  Rather than a
     # fixed sleep, poll until hosts exist (up to 60s ceiling).
     async def _deferred_initial_check():
+        print("[STARTUP] Deferred initial check: waiting for hosts in DB...")
         for _ in range(12):          # 12 × 5s = 60s max wait
             await asyncio.sleep(5)
             try:
                 hosts = await db.get_all_hosts()
                 if hosts:
+                    print(f"[STARTUP] Found {len(hosts)} host(s) — running initial Ansible check")
                     break
             except Exception:
                 pass                 # pool not ready yet — retry
-        await run_ansible_check_task()
+        try:
+            await run_ansible_check_task()
+            print(f"[STARTUP] Initial Ansible check completed")
+        except Exception as e:
+            print(f"[STARTUP] ERROR in initial Ansible check: {type(e).__name__}: {e}")
+            logger.error(f"Deferred initial check error: {e}", exc_info=True)
+        finally:
+            _initial_check_done.set()
+            print("[STARTUP] _initial_check_done event set — scheduler unblocked")
     asyncio.create_task(_deferred_initial_check())
 
 @app.on_event("shutdown")
@@ -698,24 +729,49 @@ async def run_ansible_check_task(limit_hosts: list = None):
     all connections occupied and reports every host as unreachable, writing
     that bad state to the DB before the first run can correct it.
     """
+    global _ansible_patch_running, _ansible_patch_running_since, _ansible_check_lock_since
     if _ansible_check_lock.locked():
-        logger.info("Ansible check already running — skipping duplicate invocation")
-        return
+        # Auto-clear stuck check lock after timeout
+        if _ansible_check_lock_since and (time.monotonic() - _ansible_check_lock_since) > _CHECK_LOCK_TIMEOUT:
+            elapsed = int(time.monotonic() - _ansible_check_lock_since)
+            print(f"[{datetime.now()}] WARNING: _ansible_check_lock stuck for {elapsed}s — force-releasing")
+            try:
+                _ansible_check_lock.release()
+            except RuntimeError:
+                pass  # already released by another path
+            _ansible_check_lock_since = None
+            # Don't proceed immediately — let the next periodic tick pick up
+            # a clean run so we don't race with the old stuck coroutine.
+            return
+        else:
+            print(f"[{datetime.now()}] Ansible check already running — skipping duplicate invocation")
+            return
 
     if _ansible_patch_running:
-        logger.info("Patch in progress — skipping background check to avoid SSH conflicts")
-        return
+        # Auto-clear stuck flag after timeout
+        if _ansible_patch_running_since and (time.monotonic() - _ansible_patch_running_since) > _PATCH_FLAG_TIMEOUT:
+            elapsed = int(time.monotonic() - _ansible_patch_running_since)
+            print(f"[{datetime.now()}] WARNING: _ansible_patch_running stuck for {elapsed}s — auto-clearing")
+            _ansible_patch_running = False
+            _ansible_patch_running_since = None
+        else:
+            print(f"[{datetime.now()}] Patch in progress — skipping background check to avoid SSH conflicts")
+            return
 
     async with _ansible_check_lock:
-        if limit_hosts:
-            logger.debug(f"Running check for specific hosts: {limit_hosts}")
-        else:
-            logger.debug(f"Running check for all hosts")
-        print(f"[{datetime.now()}] Running Ansible check...")
-        # Ensure we're connected
-        await db.connect()
+        _ansible_check_lock_since = time.monotonic()
+        try:
+            if limit_hosts:
+                logger.debug(f"Running check for specific hosts: {limit_hosts}")
+            else:
+                logger.debug(f"Running check for all hosts")
+            print(f"[{datetime.now()}] Running Ansible check...")
+            # Ensure we're connected
+            await db.connect()
 
-        success, hosts_data = await ansible.run_check(limit_hosts=limit_hosts)
+            success, hosts_data = await ansible.run_check(limit_hosts=limit_hosts)
+        finally:
+            _ansible_check_lock_since = None
     if not success:
         print(f"Ansible check failed: {hosts_data.get('error', 'Unknown error')}")
         return
@@ -797,11 +853,12 @@ async def run_ansible_check_task(limit_hosts: list = None):
 # Background task to run ansible patch
 async def run_ansible_patch_task(hostnames: List[str], become_password: Optional[str] = None):
     """Background task to run Ansible patch on specified hosts"""
-    global _ansible_patch_running
+    global _ansible_patch_running, _ansible_patch_running_since
     print(f"[{datetime.now()}] Running Ansible patch on: {', '.join(hostnames)}")
     await db.connect()
     
     _ansible_patch_running = True
+    _ansible_patch_running_since = time.monotonic()
     try:
         # Broadcast start
         await manager.broadcast({
@@ -883,6 +940,7 @@ async def run_ansible_patch_task(hostnames: List[str], become_password: Optional
 
     finally:
         _ansible_patch_running = False
+        _ansible_patch_running_since = None
 
 
     # Always re-run the check after patching — even on failure — so the dashboard
@@ -915,7 +973,12 @@ async def periodic_ansible_check():
         except Exception:
             pass
         await asyncio.sleep(interval)
-        await run_ansible_check_task()
+        try:
+            print(f"[{datetime.now()}] Periodic check loop firing (interval={interval}s)")
+            await run_ansible_check_task()
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in periodic_ansible_check: {type(e).__name__}: {e}")
+            logger.error(f"Periodic check loop error: {e}", exc_info=True)
 
 
 # =========================================================================
@@ -924,7 +987,14 @@ async def periodic_ansible_check():
 
 async def schedule_checker_loop():
     """Background loop that checks for due auto-patch schedules every 60 seconds"""
-    await asyncio.sleep(30)  # Wait for startup to complete
+    # Wait until the initial host check has completed so the scheduler has
+    # accurate host status and total_updates before evaluating any schedule.
+    # Falls back to a 120s ceiling so a broken initial check can't block forever.
+    try:
+        await asyncio.wait_for(_initial_check_done.wait(), timeout=120)
+        logger.info("[Scheduler] Initial host check complete — scheduler starting")
+    except asyncio.TimeoutError:
+        logger.warning("[Scheduler] Timed out waiting for initial host check (120s) — starting anyway")
     while True:
         try:
             await check_and_run_schedules()
@@ -1134,6 +1204,15 @@ async def check_and_run_schedules():
         """)
 
         for sched in schedules:
+            # If a patch is already in progress, skip all schedule evaluation
+            # this tick — we'll pick it up on the next 60s cycle.
+            if _ansible_patch_running:
+                logger.debug(
+                    f"[Scheduler] Patch already in progress — "
+                    f"deferring all schedule evaluation to next tick"
+                )
+                break
+
             # Must be the right day
             sched_days = [d.strip().lower() for d in sched['day_of_week'].split(',')]
             if current_day not in sched_days:
@@ -1159,30 +1238,53 @@ async def check_and_run_schedules():
                         pass
                 continue
 
-            # --- Determine which hosts to patch this cycle ---
+            # --- Determine which hosts need patching this cycle ---
+            # The scheduler is stateless per-tick: it looks at each host's
+            # CURRENT status and decides whether to patch.  No "already ran
+            # today" gate — if a host picks up new updates mid-window it
+            # gets patched again.
             host_ids = sched['host_ids'] or []
             if not host_ids:
                 continue
 
-            already_ran_today = False
-            if sched['last_run']:
-                last_run_local = sched['last_run'].replace(tzinfo=timezone.utc).astimezone(local_tz)
-                already_ran_today = (last_run_local.date() == now.date())
-
-            # Safe access: dict() cast handles asyncpg Records that lack a .get() method
+            # Also honour the explicit retry list from a prior 'partial' run
+            # (hosts that were unreachable last attempt).
             sched_dict = dict(sched)
-            retry_ids = list(sched_dict.get('retry_host_ids') or [])
+            retry_ids = set(sched_dict.get('retry_host_ids') or [])
 
-            if already_ran_today:
-                if not retry_ids:
-                    # Ran successfully for all hosts — nothing to do
+            needs_patch_ids = []
+            for hid in host_ids:
+                # If host is on the retry list, always attempt it regardless
+                # of DB status — Ansible will determine reachability.
+                if hid in retry_ids:
+                    needs_patch_ids.append(hid)
                     continue
-                # Still have unreachable hosts from an earlier attempt — retry only those
-                target_host_ids = retry_ids
-                logger.info(f"Schedule '{sched['name']}': retrying {len(retry_ids)} unreachable host(s) within window")
-            else:
-                # First run of the day — target all hosts in the schedule
-                target_host_ids = host_ids
+
+                # Otherwise, check current host state
+                host_row = await conn.fetchrow("""
+                    SELECT total_updates, status
+                    FROM hosts WHERE id = $1
+                """, hid)
+                if not host_row:
+                    continue
+                if host_row['status'] in ('offline', 'unreachable'):
+                    continue
+                if (host_row['total_updates'] or 0) <= 0:
+                    continue
+                needs_patch_ids.append(hid)
+
+            if not needs_patch_ids:
+                logger.debug(
+                    f"Schedule '{sched['name']}': no hosts need patching "
+                    f"(all patched, offline, or 0 updates) — skipping"
+                )
+                continue
+
+            logger.info(
+                f"Schedule '{sched['name']}': {len(needs_patch_ids)}/{len(host_ids)} "
+                f"host(s) need patching this cycle"
+            )
+            target_host_ids = needs_patch_ids
 
             # Resolve host IDs → hostnames.
             # For retries we intentionally do NOT filter on DB status — the check scan
@@ -1223,28 +1325,21 @@ async def check_and_run_schedules():
                         pass
                     continue
 
-            # Mark as running; update last_run only on first-of-day run.
+            # Mark as running and update last_run timestamp.
             # CRITICAL: last_run and last_status are set in their own statement first
             # so a missing retry_host_ids column can never prevent them from being written.
-            if already_ran_today:
+            await conn.execute(
+                "UPDATE patch_schedules SET last_run = $1, last_status = 'running' WHERE id = $2",
+                now_utc, sched['id']
+            )
+            # Clear retry list separately — safe to fail if column not yet present
+            try:
                 await conn.execute(
-                    "UPDATE patch_schedules SET last_status = 'running' WHERE id = $1",
+                    "UPDATE patch_schedules SET retry_host_ids = NULL WHERE id = $1",
                     sched['id']
                 )
-            else:
-                # Set last_run + status first — must not fail
-                await conn.execute(
-                    "UPDATE patch_schedules SET last_run = $1, last_status = 'running' WHERE id = $2",
-                    now_utc, sched['id']
-                )
-                # Clear retry list separately — safe to fail if column not yet present
-                try:
-                    await conn.execute(
-                        "UPDATE patch_schedules SET retry_host_ids = NULL WHERE id = $1",
-                        sched['id']
-                    )
-                except Exception as _e:
-                    logger.debug(f"retry_host_ids clear skipped (column may not exist yet): {_e}")
+            except Exception as _e:
+                logger.debug(f"retry_host_ids clear skipped (column may not exist yet): {_e}")
 
             logger.info(f"Auto-patch schedule '{sched['name']}' triggered for: {hostnames}")
 
@@ -1255,11 +1350,12 @@ async def check_and_run_schedules():
 
 async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, local_tz=None):
     """Run a scheduled patch, then store any unreachable host IDs for in-window retry."""
-    global _ansible_patch_running
+    global _ansible_patch_running, _ansible_patch_running_since
     if local_tz is None:
         local_tz = zoneinfo.ZoneInfo('UTC')
 
     _ansible_patch_running = True
+    _ansible_patch_running_since = time.monotonic()
     final_status = 'error'  # default — overwritten on success
     try:
         logger.info(f"[Schedule {schedule_id}] Ansible patch starting for: {hostnames}")
@@ -1276,6 +1372,39 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
 
         logger.info(f"[Schedule {schedule_id}] Final status will be: {final_status} "
                     f"(unreachable={unreachable_names})")
+
+        # ── Record patch_history for each host (mirrors manual-patch logic) ──
+        try:
+            elapsed = int(time.monotonic() - _ansible_patch_running_since) if _ansible_patch_running_since else 0
+            actually_patched = _detect_hosts_actually_patched(output, hostnames)
+            async with pool.acquire() as conn:
+                for hostname in hostnames:
+                    host_row = await conn.fetchrow(
+                        "SELECT id FROM hosts WHERE hostname = $1", hostname
+                    )
+                    if host_row:
+                        is_success = hostname in actually_patched
+                        error_msg = None if is_success else (
+                            results.get("error", "Unknown error")
+                            if isinstance(results, dict) else str(results)
+                        )
+                        pkgs_updated = _extract_packages_updated(output, hostname)
+                        await conn.execute("""
+                            INSERT INTO patch_history
+                                (host_id, success, packages_updated,
+                                 duration_seconds, error_message, output)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                        """, host_row["id"], is_success, pkgs_updated,
+                            elapsed, error_msg, output)
+                        logger.info(
+                            f"[Schedule {schedule_id}] Recorded patch_history "
+                            f"for {hostname}: success={is_success}, "
+                            f"pkgs={len(pkgs_updated)}"
+                        )
+        except Exception as hist_err:
+            logger.error(
+                f"[Schedule {schedule_id}] Failed to record patch_history: {hist_err}"
+            )
 
         # Store unreachable host IDs for in-window retry
         if unreachable_names:
@@ -1298,6 +1427,7 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
         final_status = 'error'
     finally:
         _ansible_patch_running = False
+        _ansible_patch_running_since = None
         # Always write the final status — this runs even if an exception occurred above.
         try:
             async with pool.acquire() as conn:
@@ -1760,14 +1890,17 @@ async def trigger_single_host_check(hostname: str, background_tasks: BackgroundT
     return {"message": f"Check initiated for {hostname}", "status": "running"}
 
 @app.get("/api/patch/status")
-async def get_patch_status(user: dict = Depends(require_auth)):
-    """Return whether a patch run is currently in progress (PROTECTED).
+async def get_patch_status():
+    """Return whether a patch run is currently in progress (PUBLIC - read only).
     Used by the frontend to recover from WebSocket disconnects during long
-    patch operations (e.g. large App Store downloads)."""
+    patch operations (e.g. large App Store downloads).
+    Also useful for debugging stuck flags from inside the container."""
     return {
         "running": _ansible_patch_running or _ansible_check_lock.locked(),
         "patch_running": _ansible_patch_running,
+        "patch_running_seconds": int(time.monotonic() - _ansible_patch_running_since) if _ansible_patch_running_since else None,
         "check_running": _ansible_check_lock.locked(),
+        "check_running_seconds": int(time.monotonic() - _ansible_check_lock_since) if _ansible_check_lock_since else None,
     }
 
 @app.post("/api/patch")
