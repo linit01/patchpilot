@@ -299,10 +299,32 @@
       failed_when: false
       tags: ['never', 'apply-updates']
 
-    - name: Apply macOS system updates
-      shell: /usr/sbin/softwareupdate -i -a
-      when: ansible_facts['os_family'] == "Darwin"
+    - name: Apply macOS system updates (non-control nodes — install + reboot)
+      shell: /usr/sbin/softwareupdate -iaR --agree-to-license
+      become: yes
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - not (is_control_node | default(false) | bool)
       register: macos_upgrade_result
+      tags: ['never', 'apply-updates']
+
+    - name: Download macOS system updates (control nodes only)
+      shell: /usr/sbin/softwareupdate -d -a --agree-to-license
+      become: yes
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - is_control_node | default(false) | bool
+      register: macos_download_result
+      tags: ['never', 'apply-updates']
+
+    - name: Notify control node user about pending macOS updates
+      debug:
+        msg: "macOS system updates have been downloaded. Please install manually via System Settings and reboot when ready."
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - is_control_node | default(false) | bool
+        - macos_download_result is defined
+        - macos_download_result.changed | default(false)
       tags: ['never', 'apply-updates']
 
     # ── App Store updates ──────────────────────────────────────────────────────
