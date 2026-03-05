@@ -502,6 +502,13 @@ async def ensure_settings_table(pool):
                  'explicit URLs for production '
                  '(e.g. https://patchpilot.BLAH.com,https://patchpilot.lan). '
                  'Changes require a container restart to take effect.'),
+                # ── macOS / System update settings ────────────────────────────
+                ('macos_system_updates_enabled', os.getenv('MACOS_SYSTEM_UPDATES_ENABLED', 'false'),
+                 'Enable macOS system (OS) updates via CLI during patch runs. Defaults to '
+                 'false — softwareupdate over SSH is unreliable on newer macOS because the '
+                 'daemon often hands off to the GUI notification manager and hangs. When '
+                 'false, PatchPilot still detects available system updates but skips '
+                 'installing them. Users install via System Settings instead.'),
                 # ── macOS / App Store (mas) settings ──────────────────────────
                 ('mas_enabled',          os.getenv('MAS_ENABLED', 'false'),
                  'Enable App Store (mas) updates on macOS hosts. Defaults to false — '
@@ -1694,12 +1701,18 @@ async def get_sidebar_stats():
     except Exception:
         pass
     
-    # Alert count (unreachable hosts + hosts needing reboot)
+    # Alert count (unreachable hosts + hosts needing reboot + macOS system updates)
     alert_count = 0
     try:
         alert_count = await pool.fetchval("""
-            SELECT COUNT(*) FROM hosts 
-            WHERE status = 'unreachable' OR reboot_required = TRUE
+            SELECT (
+                SELECT COUNT(*) FROM hosts 
+                WHERE status = 'unreachable' OR reboot_required = TRUE
+            ) + (
+                SELECT COUNT(DISTINCT h.id) FROM hosts h
+                JOIN packages p ON h.id = p.host_id
+                WHERE p.update_type = 'macos-system'
+            )
         """) or 0
     except Exception:
         pass
@@ -1792,7 +1805,7 @@ async def get_backend_logs(limit: int = 200, level: str = "all"):
 
 @app.get("/api/alerts")
 async def get_alerts():
-    """Get current alerts (unreachable hosts + reboot required) (PUBLIC)"""
+    """Get current alerts (unreachable hosts + reboot required + macOS system updates) (PUBLIC)"""
     pool = db.pool
     alerts = []
     try:
@@ -1820,6 +1833,21 @@ async def get_alerts():
                         "message": f"Host {r['hostname']} requires a reboot",
                         "last_checked": str(r['last_checked']) if r['last_checked'] else None
                     })
+            # macOS system updates: detected during check but not auto-installed
+            macos_rows = await conn.fetch("""
+                SELECT DISTINCT h.hostname, h.last_checked
+                FROM hosts h
+                JOIN packages p ON h.id = p.host_id
+                WHERE p.update_type = 'macos-system'
+            """)
+            for r in macos_rows:
+                alerts.append({
+                    "severity": "info",
+                    "type": "macos_system_update",
+                    "hostname": r['hostname'],
+                    "message": f"macOS system update available on {r['hostname']} — install via System Settings and reboot",
+                    "last_checked": str(r['last_checked']) if r['last_checked'] else None
+                })
     except Exception as e:
         logger.error(f"Error fetching alerts: {e}")
     return alerts

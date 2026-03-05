@@ -5,6 +5,12 @@
   vars:
     ansible_python_interpreter: auto_silent
 
+    # macos_system_updates_enabled: must be explicitly true to install macOS
+    # system updates via CLI.  softwareupdate over SSH is unreliable on newer
+    # macOS — the daemon often hands off to the GUI notification manager and
+    # the CLI hangs indefinitely.  Default false = detect & report only.
+    macos_system_updates_enabled: "{{ lookup('env', 'MACOS_SYSTEM_UPDATES_ENABLED') | default('false', true) | lower == 'true' }}"
+
     # mas_enabled: must be explicitly true to run App Store updates.
     # mas in headless SSH requires an active GUI login + App Store auth on
     # the target Mac. Confirm `mas outdated` works interactively first.
@@ -304,8 +310,19 @@
       become: yes
       when:
         - ansible_facts['os_family'] == "Darwin"
+        - macos_system_updates_enabled | bool
         - not (is_control_node | default(false) | bool)
       register: macos_upgrade_result
+      tags: ['never', 'apply-updates']
+
+    - name: Skip macOS system updates (disabled in settings)
+      debug:
+        msg: >-
+          macOS system updates skipped on {{ inventory_hostname }}
+          (macos_system_updates_enabled=false). Enable in PatchPilot Settings → macOS.
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - not (macos_system_updates_enabled | bool)
       tags: ['never', 'apply-updates']
 
     - name: Download macOS system updates (control nodes only)
@@ -313,6 +330,7 @@
       become: yes
       when:
         - ansible_facts['os_family'] == "Darwin"
+        - macos_system_updates_enabled | bool
         - is_control_node | default(false) | bool
       register: macos_download_result
       tags: ['never', 'apply-updates']
@@ -322,6 +340,7 @@
         msg: "macOS system updates have been downloaded. Please install manually via System Settings and reboot when ready."
       when:
         - ansible_facts['os_family'] == "Darwin"
+        - macos_system_updates_enabled | bool
         - is_control_node | default(false) | bool
         - macos_download_result is defined
         - macos_download_result.changed | default(false)

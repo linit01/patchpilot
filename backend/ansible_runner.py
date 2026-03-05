@@ -501,10 +501,13 @@ class AnsibleRunner:
                     async with self.db_client.pool.acquire() as _conn:
                         _rows = await _conn.fetch(
                             "SELECT key, value FROM settings WHERE key IN "
-                            "('mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds')"
+                            "('macos_system_updates_enabled', "
+                            "'mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds')"
                         )
                         for _r in _rows:
-                            if _r['key'] == 'mas_enabled' and _r['value']:
+                            if _r['key'] == 'macos_system_updates_enabled' and _r['value']:
+                                env['MACOS_SYSTEM_UPDATES_ENABLED'] = _r['value']
+                            elif _r['key'] == 'mas_enabled' and _r['value']:
                                 env['MAS_ENABLED'] = _r['value']
                             elif _r['key'] == 'mas_excluded_ids' and _r['value'] is not None:
                                 # Store separately — empty string is valid (no exclusions)
@@ -517,6 +520,8 @@ class AnsibleRunner:
                 logger.warning("Could not load mas settings from DB (non-fatal): %s", _mas_e)
             # Explicit env overrides always win — EXCEPT mas_excluded_ids where
             # an empty DB value means "user intentionally cleared all exclusions"
+            if os.getenv('MACOS_SYSTEM_UPDATES_ENABLED') and 'MACOS_SYSTEM_UPDATES_ENABLED' not in env:
+                env['MACOS_SYSTEM_UPDATES_ENABLED'] = os.getenv('MACOS_SYSTEM_UPDATES_ENABLED', 'false')
             if os.getenv('MAS_ENABLED') and 'MAS_ENABLED' not in env:
                 env['MAS_ENABLED'] = os.getenv('MAS_ENABLED', 'false')
             if _mas_excluded_from_db is not None:
