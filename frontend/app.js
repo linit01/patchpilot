@@ -1469,9 +1469,9 @@ async function showAlertsModal() {
         }
         
         list.innerHTML = alerts.map(a => {
-            const icon = a.severity === 'error' ? '❌' : '⚠️';
-            const color = a.severity === 'error' ? 'var(--red)' : 'var(--amber)';
-            const border = a.severity === 'error' ? '#ef444430' : '#f59e0b30';
+            const icon = a.severity === 'error' ? '❌' : a.severity === 'info' ? 'ℹ️' : '⚠️';
+            const color = a.severity === 'error' ? 'var(--red)' : a.severity === 'info' ? 'var(--blue, #3b82f6)' : 'var(--amber)';
+            const border = a.severity === 'error' ? '#ef444430' : a.severity === 'info' ? '#3b82f630' : '#f59e0b30';
             const checked = a.last_checked ? new Date(a.last_checked).toLocaleString() : 'Never';
             const dismissBtn = a.type === 'reboot_required'
                 ? `<button onclick="dismissRebootAlert('${a.hostname}')" style="
