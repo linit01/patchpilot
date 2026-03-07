@@ -11,7 +11,7 @@ Backup Strategy:
   - Maintenance mode is set (rejects new patch jobs and writes)
   - All active DB connections are terminated via pg_terminate_backend
   - pg_dump runs against a quiescent database (transactionally safe)
-  - A .tar.gz bundle is created and stored in /backups volume
+  - A .tgz bundle is created and stored in /backups volume
 
 Restore Strategy:
   - Maintenance mode is set
@@ -31,6 +31,7 @@ import io
 import json
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -67,6 +68,25 @@ PG_URL = os.getenv("DATABASE_URL", f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HO
 
 BACKUP_RETAIN_COUNT = int(os.getenv("BACKUP_RETAIN_COUNT", "10"))  # Keep last N backups
 MAX_BACKUP_SIZE_MB = int(os.getenv("MAX_BACKUP_SIZE_MB", "500"))
+
+# Backup filename prefix.  Produces: patchpilot_20260306_185509.tar.gz
+# Old files from earlier versions are still recognized via _BACKUP_PREFIXES.
+_BACKUP_PREFIX = "patchpilot_"
+_BACKUP_PREFIXES = ("patchpilot_", "patchpilot_backup_", "pp_bak_")  # current + legacy
+
+
+def _is_backup_file(name: str) -> bool:
+    """Return True if *name* looks like a PatchPilot backup archive."""
+    return (any(name.startswith(p) for p in _BACKUP_PREFIXES)
+            and (name.endswith(".tgz") or name.endswith(".tar.gz")))
+
+
+def _list_backup_archives(newest_first: bool = True) -> list:
+    """Return a sorted list of Path objects for all backup archives in BACKUP_DIR."""
+    archives = [p for p in BACKUP_DIR.iterdir()
+                if p.is_file() and _is_backup_file(p.name)]
+    archives.sort(key=lambda p: p.stat().st_mtime, reverse=newest_first)
+    return archives
 
 # Docker container names (used for hard stop/start if docker.sock is mounted)
 POSTGRES_CONTAINER = os.getenv("POSTGRES_CONTAINER_NAME", "patchpilot-postgres-1")
@@ -333,6 +353,11 @@ async def _rebuild_pool():
     )
     logger.info("_db_pool rebuilt successfully")
 
+    # ── Sync the dependencies module so Depends(get_db_pool) uses the new pool
+    from dependencies import set_pool as _deps_set_pool
+    _deps_set_pool(_db_pool)
+    logger.info("dependencies._pool synced with rebuilt _db_pool")
+
     # ── Rebuild DatabaseClient pool (host / package / patch-history) ──────
     if _db_client is not None:
         logger.info("Rebuilding DatabaseClient pool (_db_client.pool)...")
@@ -378,10 +403,11 @@ async def _run_backup(description: str, include_encryption_key: bool,
     if uninstall_mode:
         include_encryption_key = True
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    short_id = secrets.token_hex(2)  # 4 hex chars
     suffix = "_uninstall" if uninstall_mode else ""
-    backup_name = f"patchpilot_backup_{timestamp}{suffix}"
-    archive_path = BACKUP_DIR / f"{backup_name}.tar.gz"
+    backup_name = f"{_BACKUP_PREFIX}{timestamp}_{short_id}{suffix}"
+    archive_path = BACKUP_DIR / f"{backup_name}.tgz"
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -553,11 +579,7 @@ async def _run_backup(description: str, include_encryption_key: bool,
 
 def _enforce_retention():
     """Delete oldest backups beyond BACKUP_RETAIN_COUNT."""
-    backups = sorted(
-        BACKUP_DIR.glob("patchpilot_backup_*.tar.gz"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True  # newest first
-    )
+    backups = _list_backup_archives(newest_first=True)
     for old_backup in backups[BACKUP_RETAIN_COUNT:]:
         try:
             old_backup.unlink()
@@ -836,11 +858,7 @@ async def get_backup_status():
 async def list_backups():
     """List all available backup archives."""
     backups = []
-    for archive in sorted(
-        BACKUP_DIR.glob("patchpilot_backup_*.tar.gz"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True
-    ):
+    for archive in _list_backup_archives(newest_first=True):
         meta = {
             "postgres_version": "unknown",
             "app_version": "unknown",
@@ -929,7 +947,7 @@ async def download_backup(filename: str):
     # Sanitize filename to prevent path traversal
     safe_name = Path(filename).name
     archive_path = BACKUP_DIR / safe_name
-    if not archive_path.exists() or not safe_name.startswith("patchpilot_backup_"):
+    if not archive_path.exists() or not _is_backup_file(safe_name):
         raise HTTPException(404, detail="Backup not found")
     return FileResponse(
         path=str(archive_path),
@@ -945,7 +963,7 @@ async def upload_backup(file: UploadFile = File(...)):
         raise HTTPException(400, detail="File must be a .tar.gz backup archive")
 
     safe_name = Path(file.filename).name
-    if not safe_name.startswith("patchpilot_backup_"):
+    if not _is_backup_file(safe_name):
         raise HTTPException(400, detail="Invalid backup filename format")
 
     dest = BACKUP_DIR / safe_name
@@ -1016,6 +1034,13 @@ def _schedule_self_restart(delay_seconds: int = 3) -> bool:
             summary = await _run_restore(archive_path)
             logger.info(f"Restore completed: {json.dumps(summary, indent=2)}")
 
+            # Rebuild connection pools immediately so endpoints work even
+            # before a self-restart (or if self-restart is unavailable).
+            try:
+                await _rebuild_pool()
+            except Exception as rp_e:
+                logger.warning(f"Pool rebuild after restore: {rp_e}")
+
             # Schedule a self-restart so all in-process state (scheduler tasks,
             # cached settings, connection pools) is cleanly reinitialized.
             # The restart fires after a short delay so the progress poller can
@@ -1065,7 +1090,7 @@ async def delete_backup(filename: str):
     """Delete a backup archive from the server."""
     safe_name = Path(filename).name
     archive_path = BACKUP_DIR / safe_name
-    if not archive_path.exists() or not safe_name.startswith("patchpilot_backup_"):
+    if not archive_path.exists() or not _is_backup_file(safe_name):
         raise HTTPException(404, detail="Backup not found")
     archive_path.unlink()
     logger.info(f"Deleted backup: {safe_name}")
@@ -1075,7 +1100,7 @@ async def delete_backup(filename: str):
 @router.get("/health")
 async def backup_health():
     """Quick health check for backup subsystem."""
-    backup_count = len(list(BACKUP_DIR.glob("patchpilot_backup_*.tar.gz")))
+    backup_count = len(_list_backup_archives())
     total_size = sum(f.stat().st_size for f in BACKUP_DIR.glob("*.tar.gz"))
     free = shutil.disk_usage(BACKUP_DIR).free
     return {
@@ -1091,6 +1116,14 @@ async def backup_health():
         "install_dir_configured": bool(os.environ.get("INSTALL_DIR")),
         "install_dir": os.environ.get("INSTALL_DIR"),
         "env_file_found": True,   # always reconstructable from container environment
+        # Expose env-level backup config so the frontend can detect
+        # mismatches between env vars (set by install script / k8s manifest)
+        # and DB-stored settings, and auto-correct when needed.
+        "env_backup_storage_type": os.getenv("BACKUP_STORAGE_TYPE", "local"),
+        "env_nfs_server": os.getenv("NFS_SERVER", ""),
+        "env_nfs_share": os.getenv("NFS_SHARE", ""),
+        "env_backup_retain_count": os.getenv("BACKUP_RETAIN_COUNT", "10"),
+        "install_mode": os.getenv("PATCHPILOT_INSTALL_MODE", "docker").lower(),
     }
 
 

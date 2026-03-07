@@ -152,6 +152,8 @@ confirm_proceed() {
 do_uninstall() {
   step "Uninstalling PatchPilot from cluster"
   local ns; ns="$(yaml_get patchpilot.namespace patchpilot)"
+  local data_dir; data_dir="$(yaml_get patchpilot.storage.dataDir /app-data)"
+  data_dir="${data_dir%/}"
   warn "This will delete namespace '${ns}' and ALL data within it."
 
   if [[ "${NO_PROMPTS}" == "true" ]]; then
@@ -162,9 +164,9 @@ do_uninstall() {
   fi
 
   # ── Step 1: Clean hostPath dirs via privileged in-cluster Job ─────────────
-  # Runs a busybox container that mounts /app-data from the node directly —
-  # no SSH required. Must run BEFORE namespace deletion so the Job has
-  # a namespace to live in.
+  # Runs a busybox container that mounts the data directory from the node
+  # directly — no SSH required. Must run BEFORE namespace deletion so the
+  # Job has a namespace to live in.
   step "Running hostPath cleanup Job (no SSH required)"
   local job_name="patchpilot-hostpath-cleanup"
   local job_json
@@ -184,13 +186,13 @@ do_uninstall() {
           "name": "cleanup",
           "image": "busybox:1.36",
           "command": ["sh", "-c",
-            "find /app-data -maxdepth 1 -name 'patchpilot-*' ! -name 'patchpilot-backups' -exec rm -rf {} + 2>/dev/null; echo done"],
-          "securityContext": { "privileged": true, "runAsUser": 0 },
-          "volumeMounts": [{ "name": "app-data", "mountPath": "/app-data" }]
+            "find /data-dir -maxdepth 1 -name 'patchpilot-*' ! -name 'patchpilot-backups' -exec rm -rf {} + 2>/dev/null; echo done"],
+          "securityContext": { "runAsUser": 0 },
+          "volumeMounts": [{ "name": "data-dir", "mountPath": "/data-dir" }]
         }],
         "volumes": [{
-          "name": "app-data",
-          "hostPath": { "path": "/app-data", "type": "DirectoryOrCreate" }
+          "name": "data-dir",
+          "hostPath": { "path": "${data_dir}", "type": "DirectoryOrCreate" }
         }]
       }
     }
@@ -218,7 +220,7 @@ JOBEOF
   # ── Step 2: Delete namespace ───────────────────────────────────────────────
   # postgres-data and ansible-data PVs use reclaimPolicy: Delete — removed automatically.
   # patchpilot-backups PV uses reclaimPolicy: Retain — backup archives survive uninstall
-  # and remain at /app-data/patchpilot-backups for post-uninstall restore.
+  # and remain at ${data_dir}/patchpilot-backups for post-uninstall restore.
   info "Deleting namespace ${ns}..."
   kubectl delete namespace "${ns}" --ignore-not-found=true
 
@@ -235,8 +237,8 @@ JOBEOF
 
   if [[ "${job_succeeded}" == "false" ]]; then
     warn "hostPath cleanup Job did not complete — run on the k3s node:"
-    warn "  ssh ${node_ref} 'sudo rm -rf /app-data/patchpilot-*'"
-    echo "__NOTE_CLEANUP__ ssh ${node_ref} 'sudo rm -rf /app-data/patchpilot-*'"
+    warn "  ssh ${node_ref} 'sudo rm -rf ${data_dir}/patchpilot-*'"
+    echo "__NOTE_CLEANUP__ ssh ${node_ref} 'sudo rm -rf ${data_dir}/patchpilot-*'"
   fi
 
   # ── Step 4: Remove PatchPilot images from containerd via SSH ─────────────
@@ -499,11 +501,15 @@ load_config() {
   PP_ANSIBLE_STORAGE_CLASS="${PP_POSTGRES_STORAGE_CLASS}"
   PP_ANSIBLE_STORAGE_CLASS_SPEC="storageClassName: ${PP_ANSIBLE_STORAGE_CLASS}"
 
+  # ── Data directory on node — parent directory for all hostPath PVs ─────────
+  PP_DATA_DIR="$(yaml_get patchpilot.storage.dataDir /app-data)"
+  PP_DATA_DIR="${PP_DATA_DIR%/}"  # strip trailing slash
+
   # ── Build PV source blocks ─────────────────────────────────────────────────
   _build_pv_source() {
     local sc_name="$1" pv_name="$2"
     if [[ -z "${sc_name}" ]]; then
-      echo "  hostPath:"; echo "    path: /app-data/${pv_name}"; echo "    type: DirectoryOrCreate"
+      echo "  hostPath:"; echo "    path: ${PP_DATA_DIR}/${pv_name}"; echo "    type: DirectoryOrCreate"
       return
     fi
     local provisioner
@@ -513,7 +519,7 @@ load_config() {
         local node
         node="$(kubectl get nodes --field-selector='spec.unschedulable!=true' \
           -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
-        echo "  hostPath:"; echo "    path: /app-data/${pv_name}"; echo "    type: DirectoryOrCreate"
+        echo "  hostPath:"; echo "    path: ${PP_DATA_DIR}/${pv_name}"; echo "    type: DirectoryOrCreate"
         echo "  nodeAffinity:"; echo "    required:"; echo "      nodeSelectorTerms:"
         echo "      - matchExpressions:"
         echo "        - key: kubernetes.io/hostname"; echo "          operator: In"
@@ -525,7 +531,7 @@ load_config() {
         ;;
       *)
         warn "Unknown provisioner '${provisioner}' for SC '${sc_name}' — falling back to hostPath"
-        echo "  hostPath:"; echo "    path: /app-data/${pv_name}"; echo "    type: DirectoryOrCreate"
+        echo "  hostPath:"; echo "    path: ${PP_DATA_DIR}/${pv_name}"; echo "    type: DirectoryOrCreate"
         ;;
     esac
   }
@@ -555,6 +561,7 @@ load_config() {
   echo "  Primary host   : ${PP_HOSTNAME}"
   echo "  TLS enabled    : ${PP_TLS_ENABLED}"
   echo "  Backup storage : ${PP_BACKUP_STORAGE_TYPE}${PP_NFS_SERVER:+ (${PP_NFS_SERVER}:${PP_NFS_SHARE})}"
+  echo "  Data directory : ${PP_DATA_DIR}"
   echo ""
 }
 
@@ -668,7 +675,7 @@ generate_manifests() {
            PP_NFS_SERVER PP_NFS_SHARE PP_BACKUP_STORAGE_TYPE \
            PP_CLUSTER_ISSUER PP_TLS_SECRET_NAME PP_INGRESS_CLASS \
            PP_LE_EMAIL PP_CF_EMAIL PP_CF_API_TOKEN_SECRET \
-           PP_KUBECTL_BIN
+           PP_KUBECTL_BIN PP_DATA_DIR
     envsubst '$PP_NAMESPACE:$PP_VERSION:$PP_BACKEND_IMAGE:$PP_FRONTEND_IMAGE:'\
 '$PP_IMAGE_PULL_POLICY:$PP_PULL_SECRET_NAME:$PP_DB_USER:$PP_DB_PASSWORD:'\
 '$PP_DB_NAME:$PP_ENCRYPTION_KEY:$PP_BASE_URL:$PP_ALLOWED_ORIGINS:'\
@@ -683,7 +690,7 @@ generate_manifests() {
 '$PP_AUTO_REFRESH_INTERVAL:$PP_DEFAULT_SSH_USER:$PP_DEFAULT_SSH_PORT:'\
 '$PP_BACKUP_RETAIN_COUNT:$PP_MAX_BACKUP_SIZE_MB:'\
 '$PP_INGRESS_RULES:$PP_TLS_HOSTS:$PP_TLS_DNS_NAMES:'\
-'$PP_INGRESS_MIDDLEWARE_ANNOTATION:$PP_HOSTNAME:$PP_KUBECTL_BIN' \
+'$PP_INGRESS_MIDDLEWARE_ANNOTATION:$PP_HOSTNAME:$PP_KUBECTL_BIN:$PP_DATA_DIR' \
       < "$1" > "$2"
   }
 
@@ -877,6 +884,8 @@ wait_for_pvcs() {
 #      "sudo: a terminal is required to read the password"
 clean_node_data_dirs() {
   local node node_ip
+  local data_dir; data_dir="$(yaml_get patchpilot.storage.dataDir /app-data)"
+  data_dir="${data_dir%/}"
   node="$(kubectl get nodes --field-selector='spec.unschedulable!=true' \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
   node_ip="$(kubectl get node "${node}" \
@@ -887,22 +896,18 @@ clean_node_data_dirs() {
   step "Node data cleanup — ${node} (${node_ip})"
 
   # Exclude patchpilot-backups — it is intentionally retained for post-uninstall restore
-  local cleanup_cmd="ssh ${node_ip} sudo rm -rf /app-data/patchpilot-postgres-data /app-data/patchpilot-ansible-data"
+  local cleanup_cmd="ssh ${node_ip} sudo rm -rf ${data_dir}/patchpilot-postgres-data ${data_dir}/patchpilot-ansible-data"
 
   # ── Check whether stale dirs actually exist before doing anything ──────────
-  # Use BatchMode=yes (no password, no TTY) — we are only doing a read-only
-  # directory listing, not sudo. If the check itself fails (SSH not reachable,
-  # no key auth) we treat it as "unknown" and still pause to be safe.
   local dirs_exist="unknown"
   local ssh_target="${node_ip}"
 
   # Try by IP first, then by hostname
   for _target in "${node_ip}" "${node}"; do
-    if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes         "${_target}" "test -d /app-data" 2>/dev/null; then
+    if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes         "${_target}" "test -d ${data_dir}" 2>/dev/null; then
       ssh_target="${_target}"
-      # Count matching entries; exit 0 = found, exit 1 = none
       if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes \
-          "${_target}" "find /app-data -maxdepth 1 -name 'patchpilot-*' ! -name 'patchpilot-backups' -print -quit 2>/dev/null | grep -q ." 2>/dev/null; then
+          "${_target}" "find ${data_dir} -maxdepth 1 -name 'patchpilot-*' ! -name 'patchpilot-backups' -print -quit 2>/dev/null | grep -q ." 2>/dev/null; then
         dirs_exist="yes"
       else
         dirs_exist="no"
@@ -922,11 +927,11 @@ clean_node_data_dirs() {
     warn "Could not SSH to node ${node_ip} to check for stale data."
     warn "If this is a fresh install (not a reinstall) you can safely continue."
   else
-    warn "Stale /app-data/patchpilot-* found on node — must be removed before postgres can init."
+    warn "Stale ${data_dir}/patchpilot-* found on node — must be removed before postgres can init."
   fi
 
   # Update cleanup_cmd to use the reachable target if we found one
-  [[ "${dirs_exist}" == "yes" ]] && cleanup_cmd="ssh ${ssh_target} sudo rm -rf /app-data/patchpilot-postgres-data /app-data/patchpilot-ansible-data"
+  [[ "${dirs_exist}" == "yes" ]] && cleanup_cmd="ssh ${ssh_target} sudo rm -rf ${data_dir}/patchpilot-postgres-data ${data_dir}/patchpilot-ansible-data"
 
   if [[ "${NO_PROMPTS}" == "true" ]]; then
     # Web wizard path — emit structured pause marker and block on resume file
@@ -984,6 +989,91 @@ apply_manifests() {
       || warn "Could not patch ${backups_pv} PV — PVC may stay Pending"
   elif [[ -n "${pv_phase}" ]]; then
     info "${backups_pv} PV exists in phase '${pv_phase}' — no action needed"
+  fi
+
+  # ── Pre-check: reconcile PVs whose volume source changed ─────────────────
+  # PV spec.persistentVolumeSource is immutable after creation.  If the NFS
+  # server/path (or hostPath) changed since the last install, kubectl apply
+  # will fail.
+  #
+  # Strategy per PV:
+  #   postgres-data / ansible-data (reclaimPolicy: Delete) — disposable,
+  #       safe to delete and recreate when the source changes.
+  #   backups (reclaimPolicy: Retain) — NEVER delete.  This PV intentionally
+  #       survives uninstall so backup archives are available for reinstall.
+  #       If it already exists, re-adopt it as-is and strip it from the
+  #       generated manifest so kubectl apply doesn't try to mutate it.
+
+  _reconcile_pv() {
+    local pv_name="$1"
+    if ! kubectl get pv "${pv_name}" &>/dev/null; then
+      return 0   # doesn't exist yet — nothing to do
+    fi
+
+    # Extract the volume source from the *generated* manifest
+    local new_nfs_server new_nfs_path new_host_path
+    new_nfs_server="$(awk "/name: ${pv_name}\$/,/^---/{print}" "${GENERATED_DIR}/02-pvs.yaml" \
+      | grep -A1 '^ *nfs:' | awk '/server:/{print $2}')"
+    new_nfs_path="$(awk "/name: ${pv_name}\$/,/^---/{print}" "${GENERATED_DIR}/02-pvs.yaml" \
+      | grep -A2 '^ *nfs:' | awk '/path:/{print $2}')"
+    new_host_path="$(awk "/name: ${pv_name}\$/,/^---/{print}" "${GENERATED_DIR}/02-pvs.yaml" \
+      | grep -A1 '^ *hostPath:' | awk '/path:/{print $2}')"
+
+    # Extract current source from cluster
+    local cur_nfs_server cur_nfs_path cur_host_path
+    cur_nfs_server="$(kubectl get pv "${pv_name}" -o jsonpath='{.spec.nfs.server}' 2>/dev/null || true)"
+    cur_nfs_path="$(kubectl get pv "${pv_name}" -o jsonpath='{.spec.nfs.path}' 2>/dev/null || true)"
+    cur_host_path="$(kubectl get pv "${pv_name}" -o jsonpath='{.spec.hostPath.path}' 2>/dev/null || true)"
+
+    local changed=false
+    if [[ -n "${new_nfs_server}" && -n "${cur_host_path}" && -z "${cur_nfs_server}" ]]; then
+      changed=true; info "${pv_name}: source changed from hostPath to NFS"
+    elif [[ -n "${new_host_path}" && -n "${cur_nfs_server}" && -z "${cur_host_path}" ]]; then
+      changed=true; info "${pv_name}: source changed from NFS to hostPath"
+    elif [[ -n "${new_nfs_server}" && "${new_nfs_server}" != "${cur_nfs_server}" ]]; then
+      changed=true; info "${pv_name}: NFS server changed (${cur_nfs_server} → ${new_nfs_server})"
+    elif [[ -n "${new_nfs_path}" && "${new_nfs_path}" != "${cur_nfs_path}" ]]; then
+      changed=true; info "${pv_name}: NFS path changed (${cur_nfs_path} → ${new_nfs_path})"
+    elif [[ -n "${new_host_path}" && "${new_host_path}" != "${cur_host_path}" ]]; then
+      changed=true; info "${pv_name}: hostPath changed (${cur_host_path} → ${new_host_path})"
+    fi
+
+    if [[ "${changed}" == "true" ]]; then
+      info "Deleting stale PV ${pv_name} so it can be recreated with the new source..."
+      kubectl delete pv "${pv_name}" --wait=false 2>/dev/null || true
+      for _ in $(seq 1 10); do
+        kubectl get pv "${pv_name}" &>/dev/null || break
+        sleep 1
+      done
+      ok "PV ${pv_name} deleted — will be recreated on apply"
+    fi
+  }
+
+  # Only reconcile disposable PVs — NEVER touch patchpilot-backups
+  _reconcile_pv "patchpilot-postgres-data"
+  _reconcile_pv "patchpilot-ansible-data"
+
+  # ── Protect existing backups PV ─────────────────────────────────────────
+  # If patchpilot-backups PV already exists (Retain from prior install),
+  # strip it from the generated manifest so kubectl apply doesn't try to
+  # mutate the immutable volume source.  The re-adoption (claimRef clear)
+  # was already handled above.
+  if kubectl get pv "patchpilot-backups" &>/dev/null; then
+    info "patchpilot-backups PV already exists — stripping from manifest to preserve it"
+    # Use awk to remove the backups PV document from the multi-doc YAML.
+    # Each document starts with "---" and the backups PV contains "name: patchpilot-backups".
+    awk '
+      BEGIN { skip=0; buf="" }
+      /^---/ {
+        if (!skip && buf != "") printf "%s", buf
+        skip=0; buf=$0"\n"; next
+      }
+      { buf = buf $0 "\n" }
+      /name: patchpilot-backups/ { skip=1 }
+      END { if (!skip && buf != "") printf "%s", buf }
+    ' "${GENERATED_DIR}/02-pvs.yaml" > "${GENERATED_DIR}/02-pvs.yaml.tmp" \
+      && mv "${GENERATED_DIR}/02-pvs.yaml.tmp" "${GENERATED_DIR}/02-pvs.yaml"
+    ok "patchpilot-backups PV preserved (not re-applied)"
   fi
 
   # ── Apply each manifest, showing full kubectl output ─────────────────────

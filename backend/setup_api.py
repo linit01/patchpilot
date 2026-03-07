@@ -315,7 +315,7 @@ async def restore_from_backup(file: UploadFile = File(...)):
     Returns the same shape as /api/setup/complete so the frontend can reuse
     the same done-screen.
     """
-    pool = get_db_pool()
+    pool = await get_db_pool()
 
     # Gate: only allowed before setup is complete
     if await _setup_is_complete(pool):
@@ -324,8 +324,8 @@ async def restore_from_backup(file: UploadFile = File(...)):
             detail="Setup is already complete. Use Settings → Backup & Restore to restore.",
         )
 
-    if not file.filename.endswith(".tar.gz"):
-        raise HTTPException(400, detail="File must be a .tar.gz PatchPilot backup archive.")
+    if not (file.filename.endswith(".tar.gz") or file.filename.endswith(".tgz")):
+        raise HTTPException(400, detail="File must be a .tar.gz or .tgz PatchPilot backup archive.")
 
     content = await file.read()
     if len(content) == 0:
@@ -392,7 +392,7 @@ async def restore_from_backup(file: UploadFile = File(...)):
             """)
             # Close app pool before dropping DB
             try:
-                existing = get_db_pool()
+                existing = await get_db_pool()
                 if existing:
                     await existing.close()
             except Exception:
@@ -415,6 +415,29 @@ async def restore_from_backup(file: UploadFile = File(...)):
             if errors:
                 raise HTTPException(500, detail="pg_restore failed: " + "; ".join(errors[:3]))
             warnings.append("pg_restore had warnings (non-fatal).")
+
+        # ── 4b. Rebuild connection pools ───────────────────────────────────
+        # The pool was closed before dropping the DB.  Create a fresh one so
+        # all subsequent Depends(get_db_pool) calls work, and sync the
+        # backup_restore module's reference so its endpoints also have a live
+        # pool.
+        from dependencies import rebuild_pool as _rebuild_deps_pool
+        new_pool = await _rebuild_deps_pool()
+        try:
+            from backup_restore import set_pool as _br_set_pool, \
+                _db_client as _br_db_client
+            _br_set_pool(new_pool)
+            # Also rebuild the DatabaseClient pool used by host/package routes
+            if _br_db_client is not None:
+                try:
+                    if getattr(_br_db_client, 'pool', None):
+                        await _br_db_client.pool.close()
+                        _br_db_client.pool = None
+                    await _br_db_client.connect()
+                except Exception as dbc_e:
+                    logger.warning(f"DatabaseClient pool rebuild: {dbc_e}")
+        except Exception as br_e:
+            logger.warning(f"Could not sync backup_restore pool: {br_e}")
 
         # ── 5. Restore Ansible files ───────────────────────────────────────
         ansible_src = staging / "ansible"

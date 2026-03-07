@@ -148,6 +148,10 @@ spec:
         # PATH inside the slim Python container image.
         - name: KUBECTL_BIN
           value: "${PP_KUBECTL_BIN}"
+        # ── Data directory — parent for hostPath PVs on the node ─────────
+        # Used by the uninstall cleanup Job to find and remove PV dirs.
+        - name: PATCHPILOT_DATA_DIR
+          value: "${PP_DATA_DIR}"
 
         volumeMounts:
         - name: ansible-data

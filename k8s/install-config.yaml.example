@@ -46,6 +46,7 @@ patchpilot:
     backupRetainCount: 3
     maxBackupSizeMb: 500
   storage:
+    dataDir: /app-data               # Parent directory for hostPath PVs on the node
     type: local                     # local or nfs
     storageClass: local-path        # Change to match your cluster's StorageClass
     backupsSize: 10Gi

@@ -46,5 +46,9 @@ temp/
 # Generated k3s manifests (derived from templates — not committed)
 k8s/.generated/
 
+# User's install config (contains passwords, tokens, hostnames)
+# Copy the template to get started: cp k8s/install-config.yaml.example k8s/install-config.yaml
+k8s/install-config.yaml
+
 # Allow schema file despite *.sql rule
 !database-schema.sql
