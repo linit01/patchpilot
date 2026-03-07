@@ -596,7 +596,7 @@
                                 Drop backup archive here
                             </div>
                             <div style="font-size: 12px; color: var(--text-muted);">
-                                or click to browse &nbsp;·&nbsp; patchpilot_backup_*.tar.gz
+                                or click to browse &nbsp;·&nbsp; patchpilot_*.tgz
                             </div>
                         </div>
                         <input type="file" id="restore-file-input" accept=".tar.gz,.tgz"
@@ -946,7 +946,7 @@
         function handleRestoreFile(file) {
             if (!file) return;
             if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
-                showRestoreError('File must be a .tar.gz PatchPilot backup archive.');
+                showRestoreError('File must be a .tgz or .tar.gz PatchPilot backup archive.');
                 return;
             }
             _restoreFile = file;

@@ -25,6 +25,35 @@ async def create_pool():
     print("Database pool created for Settings API")
     return _pool
 
+def set_pool(pool: asyncpg.Pool):
+    """Replace the global pool reference (used after restore rebuilds pools)."""
+    global _pool
+    _pool = pool
+
+async def rebuild_pool() -> asyncpg.Pool:
+    """Close the current pool (if any) and create a fresh one.
+
+    Used after a database drop/recreate during restore so that all
+    endpoints using Depends(get_db_pool) get a live connection.
+    """
+    global _pool
+    if _pool:
+        try:
+            await _pool.close()
+        except Exception:
+            pass
+    _pool = await asyncpg.create_pool(
+        host=os.getenv("POSTGRES_HOST", "localhost"),
+        port=int(os.getenv("POSTGRES_PORT", "5432")),
+        user=os.getenv("POSTGRES_USER", "patchpilot"),
+        password=os.getenv("POSTGRES_PASSWORD", "patchpilot"),
+        database=os.getenv("POSTGRES_DB", "patchpilot"),
+        min_size=2,
+        max_size=10
+    )
+    print("Dependencies pool rebuilt successfully")
+    return _pool
+
 async def close_pool():
     """Close database connection pool"""
     global _pool

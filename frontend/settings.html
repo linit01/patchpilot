@@ -920,7 +920,7 @@
                                      ondrop="handleBackupDrop(event)">
                                     <div style="font-size:28px; margin-bottom:8px;">📂</div>
                                     <div style="font-size:13px;">Drag &amp; drop backup archive here<br>or click to browse</div>
-                                    <div style="font-size:11px; margin-top:6px; color:var(--text-muted);">.tar.gz files only</div>
+                                    <div style="font-size:11px; margin-top:6px; color:var(--text-muted);">.tgz or .tar.gz files</div>
                                 </div>
                                 <input type="file" id="backup-file-input" accept=".tar.gz,.tgz" style="display:none;" onchange="uploadBackup(this.files[0])">
                                 <div id="backup-upload-status" style="margin-top:10px; font-size:13px;"></div>
@@ -978,7 +978,7 @@
                                 <h2>🗄️ Available Backups</h2>
                                 <button class="btn-sm" onclick="loadBackupList()">🔄 Refresh</button>
                             </div>
-                            <div id="backup-list-container">
+                            <div id="backup-list-container" style="overflow-x:auto;">
                                 <div style="padding:40px; text-align:center; color:var(--text-muted);">Loading…</div>
                             </div>
                         </div>
@@ -2761,14 +2761,14 @@
                     return;
                 }
                 container.innerHTML = `
-                    <table style="width:100%;border-collapse:collapse;">
+                    <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
                         <thead>
                             <tr style="border-bottom:1px solid var(--border);">
-                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">File</th>
-                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Size</th>
-                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Created</th>
-                                <th style="text-align:left;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Description</th>
-                                <th style="text-align:right;padding:10px 16px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Actions</th>
+                                <th style="width:36%;text-align:left;padding:10px 12px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">File</th>
+                                <th style="width:8%;text-align:left;padding:10px 8px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Size</th>
+                                <th style="width:18%;text-align:left;padding:10px 8px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Created</th>
+                                <th style="width:20%;text-align:left;padding:10px 8px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Description</th>
+                                <th style="width:18%;text-align:right;padding:10px 12px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2777,14 +2777,14 @@
                                 const date = b.created_at ? new Date(b.created_at).toLocaleString() : '—';
                                 const desc = b.description || '—';
                                 return `<tr style="border-bottom:1px solid var(--border);">
-                                    <td style="padding:11px 16px;font-family:monospace;font-size:12px;color:var(--cyan);">${b.filename}</td>
-                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-secondary);">${sizeDisplay}</td>
-                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-secondary);">${date}</td>
-                                    <td style="padding:11px 16px;font-size:12px;color:var(--text-muted);">${desc}</td>
-                                    <td style="padding:11px 16px;text-align:right;white-space:nowrap;">
-                                        <button class="btn-sm" onclick="downloadBackup('${b.filename}')" title="Download">⬇️ Download</button>
-                                        <button class="btn-sm" onclick="startRestore('${b.filename}')" title="Restore" style="color:var(--amber);border-color:rgba(243,156,18,0.3);">🔁 Restore</button>
-                                        <button class="btn-sm btn-danger" onclick="deleteBackup('${b.filename}')" title="Delete">🗑️</button>
+                                    <td style="padding:10px 12px;font-family:monospace;font-size:12px;color:var(--cyan);word-break:break-all;">${b.filename}</td>
+                                    <td style="padding:10px 8px;font-size:12px;color:var(--text-secondary);">${sizeDisplay}</td>
+                                    <td style="padding:10px 8px;font-size:12px;color:var(--text-secondary);white-space:nowrap;">${date}</td>
+                                    <td style="padding:10px 8px;font-size:12px;color:var(--text-muted);word-break:break-word;">${desc}</td>
+                                    <td style="padding:10px 12px;text-align:right;white-space:nowrap;">
+                                        <button class="btn-sm" onclick="downloadBackup('${b.filename}')" title="Download" style="padding:5px 8px;">⬇️</button>
+                                        <button class="btn-sm" onclick="startRestore('${b.filename}')" title="Restore" style="padding:5px 8px;color:var(--amber);border-color:rgba(243,156,18,0.3);">🔁</button>
+                                        <button class="btn-sm btn-danger" onclick="deleteBackup('${b.filename}')" title="Delete" style="padding:5px 8px;">🗑️</button>
                                     </td>
                                 </tr>`;
                             }).join('')}
@@ -3007,12 +3007,13 @@
                     _updateStorageLabels(_installMode);
                 }
 
-                let envType = 'local', envServer = '', envShare = '';
+                let envType = 'local', envServer = '', envShare = '', envRetain = '';
                 if (healthRes.ok) {
                     const health = await healthRes.json();
                     envType   = health.env_backup_storage_type || 'local';
                     envServer = health.env_nfs_server || '';
                     envShare  = health.env_nfs_share || '';
+                    envRetain = health.env_backup_retain_count || '';
                     if (health.install_mode) {
                         _installMode = health.install_mode;
                         _updateStorageLabels(_installMode);
@@ -3028,35 +3029,45 @@
                     dbRetain = settings.backup_retain_count?.value || '10';
                 }
 
-                // Detect mismatch: env says NFS but DB says local
-                let type = dbType, server = dbServer, share = dbShare;
-                const mismatch = (envType === 'nfs' && dbType === 'local');
-                if (mismatch) {
-                    type = envType;
+                // Detect mismatch: env vars (set by install script / k8s manifest)
+                // disagree with DB-stored settings — env is the source of truth
+                // for the installation, so auto-correct the DB.
+                let type = dbType, server = dbServer, share = dbShare, retain = dbRetain;
+                const typeMismatch   = (envType !== dbType);
+                const retainMismatch = (envRetain && envRetain !== dbRetain);
+                const mismatch = typeMismatch || retainMismatch;
+                if (typeMismatch) {
+                    type   = envType;
                     server = envServer || dbServer;
                     share  = envShare  || dbShare;
+                }
+                if (retainMismatch) {
+                    retain = envRetain;
                 }
 
                 document.getElementById('backup-storage-type').value = type;
                 document.getElementById('backup-nfs-server').value = server;
                 document.getElementById('backup-nfs-share').value = share;
-                document.getElementById('backup-retain-count').value = dbRetain;
+                document.getElementById('backup-retain-count').value = retain;
 
-                _backupConfigOriginal = { type, server, share, retain: dbRetain };
+                _backupConfigOriginal = { type, server, share, retain };
                 toggleNfsFields();
 
                 // Show mismatch banner and auto-save correction
                 if (mismatch) {
                     const banner = document.getElementById('backup-config-hint');
                     const hintText = document.getElementById('backup-config-hint-text');
-                    hintText.innerHTML = '⚙️ <strong>Auto-correcting:</strong> Your installation uses NFS '
-                        + '(<code>' + server + ':' + share + '</code>) but the database had "local". '
-                        + 'Saving the correct values now…';
+                    const parts = [];
+                    if (typeMismatch) parts.push(`storage type → ${type}`);
+                    if (retainMismatch) parts.push(`retention → ${retain}`);
+                    const detail = parts.join(', ');
+                    hintText.innerHTML = '⚙️ <strong>Auto-correcting:</strong> Installation env vars differ from DB settings '
+                        + '(' + detail + '). Saving the correct values now…';
                     banner.style.display = 'block';
                     // Auto-save the correction
                     await saveBackupConfig();
-                    hintText.innerHTML = '✅ <strong>Corrected:</strong> Backup storage updated to NFS '
-                        + '(<code>' + server + ':' + share + '</code>). No further action needed.';
+                    hintText.innerHTML = '✅ <strong>Corrected:</strong> Backup config updated ('
+                        + detail + '). No further action needed.';
                     setTimeout(() => { banner.style.display = 'none'; }, 6000);
                 }
             } catch (e) {

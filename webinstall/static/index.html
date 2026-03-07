@@ -797,6 +797,9 @@ function streamOutput(url, context) {
           const url = getMode() === 'docker' ? 'http://localhost:8080'
             : (getTls() ? `https://${$('hostname').value}` : `http://${$('hostname').value}`);
           $('success-url').textContent = url; $('success-url').href = url;
+          // Auto-open the deployed URL after a brief pause so the user can
+          // see the success banner before the new tab/window opens.
+          setTimeout(() => { window.open(url, '_blank'); }, 2000);
         } else {
           statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
           $('fail-section').classList.remove('hidden');

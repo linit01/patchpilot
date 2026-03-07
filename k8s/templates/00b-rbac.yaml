@@ -5,8 +5,9 @@
 #
 # Role (namespaced) — resources that live inside the patchpilot namespace:
 #   secrets/patch      — patch PATCHPILOT_ENCRYPTION_KEY during restore
-#   deployments/patch  — trigger rollout restart after key update
-#   jobs               — create/get/delete the hostPath cleanup Job on uninstall
+#   deployments        — scale down postgres/frontend/backend during uninstall & restore
+#   pods               — list/watch for kubectl wait --for=delete during uninstall
+#   jobs               — create/get/list/watch/delete the hostPath cleanup Job on uninstall
 #
 # ClusterRole (cluster-scoped) — resources that live outside any namespace:
 #   namespaces/delete  — delete the patchpilot namespace on uninstall
@@ -39,13 +40,20 @@ rules:
     resources: ["secrets"]
     resourceNames: ["patchpilot-secrets"]
     verbs: ["get", "patch"]
+  # Scale down all deployments during uninstall and backup/restore
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    resourceNames: ["patchpilot-backend"]
-    verbs: ["patch"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch"]
+  # Watch pods for kubectl wait --for=delete during uninstall
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["get", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
