@@ -62,6 +62,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ── Application code ──────────────────────────────────────────────────────────
 COPY backend/ .
 COPY ansible/ /ansible-src/
+COPY VERSION .
 
 # ── Runtime directories ───────────────────────────────────────────────────────
 RUN mkdir -p /ansible /backups

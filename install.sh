@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
-# PatchPilot v0.9.5-alpha — Installer
+# PatchPilot — Installer (version read from VERSION file)
 # Supports: Docker Compose  |  K3s (Kubernetes)  |  Web Wizard
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PP_FILE_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+PP_FILE_VERSION="${PP_FILE_VERSION:-0.0.0-dev}"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -31,7 +33,7 @@ print_banner() {
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/  
 EOF
   echo -e "${NC}"
-  echo -e "${BLUE}System Update Management — v0.9.5-alpha${NC}"
+  echo -e "${BLUE}System Update Management — v${PP_FILE_VERSION}${NC}"
   echo ""
 }
 
@@ -220,7 +222,7 @@ docker_start_services() {
 docker_show_completion() {
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo -e "${GREEN}🎉  PatchPilot v0.9.5-alpha ready (Docker)!${NC}"
+  echo -e "${GREEN}🎉  PatchPilot v${PP_FILE_VERSION} ready (Docker)!${NC}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   echo -e "${BLUE}📊 Dashboard:${NC}  http://localhost:8080"

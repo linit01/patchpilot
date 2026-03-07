@@ -1,5 +1,5 @@
 """
-PatchPilot v0.9.7-alpha — Web Install Server
+PatchPilot — Web Install Server
 Collects configuration via browser wizard, writes config files,
 then streams ./install.sh output back to the browser via SSE.
 """
@@ -27,6 +27,17 @@ BUILD_SCRIPT    = K8S_DIR / "build-push.sh"
 RESUME_FILE     = Path("/tmp/patchpilot-install-resume")
 DEVELOPER_MODE  = os.environ.get("PATCHPILOT_DEVELOPER", "false").lower() == "true"
 
+# ── Version — single source of truth: VERSION file at repo root ───────────────
+def _read_version() -> str:
+    for path in (REPO_ROOT / "VERSION", WEBINSTALL_DIR / "VERSION"):
+        try:
+            return path.read_text().strip()
+        except FileNotFoundError:
+            continue
+    return "0.0.0-dev"
+
+PP_VERSION = _read_version()
+
 app = FastAPI(title="PatchPilot Web Installer")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -42,7 +53,7 @@ async def info():
     """Returns server capabilities so the UI can show/hide developer features."""
     return {
         "developer": DEVELOPER_MODE,
-        "version":   "0.9.7-alpha",
+        "version":   PP_VERSION,
         "repo_root": str(REPO_ROOT),
     }
 
@@ -95,7 +106,7 @@ class K3sConfig(BaseModel):
     dh_repo: str = "linit01/patchpilot"
     dh_username: str
     dh_token: str
-    image_tag: str = "0.9.7-alpha"
+    image_tag: str = PP_VERSION
     pull_policy: str = "Always"
     hostname: str
     additional_hostnames: str = ""
@@ -165,7 +176,7 @@ async def resume():
 @app.get("/api/build-stream")
 async def build_stream(
     repo: str = "linit01/patchpilot",
-    tag: str = "0.9.7-alpha",
+    tag: str = PP_VERSION,
     platform: str = "",
     no_cache: bool = False,
     push: bool = True,
@@ -323,7 +334,7 @@ def _write_k3s_config(cfg: K3sConfig):
     additional = [h.strip() for h in cfg.additional_hostnames.replace(",", " ").split() if h.strip()]
     data = {
         "patchpilot": {
-            "version": "0.9.7-alpha",
+            "version": PP_VERSION,
             "namespace": cfg.namespace,
             "image": {
                 "strategy": "registry",

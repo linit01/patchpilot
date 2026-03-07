@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# PatchPilot v0.9.7-alpha — K3s Installer
+# PatchPilot — K3s Installer (version read from VERSION file)
 #
 # Usage:
 #   ./k8s/install-k3s.sh                    # Uses k8s/install-config.yaml
@@ -22,6 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/install-config.yaml"
 GENERATED_DIR="${SCRIPT_DIR}/.generated"
+VERSION_FILE="${REPO_ROOT}/VERSION"
+PP_FILE_VERSION="$(cat "${VERSION_FILE}" 2>/dev/null | tr -d '[:space:]')"
+PP_FILE_VERSION="${PP_FILE_VERSION:-0.0.0-dev}"
 DRY_RUN=false
 INTERACTIVE=false
 NO_PROMPTS=false
@@ -67,7 +70,7 @@ print_banner() {
 /_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/
 EOF
   echo -e "${NC}"
-  echo -e "${BLUE}K3s Installer — v0.9.7-alpha${NC}"
+  echo -e "${BLUE}K3s Installer — v${PP_FILE_VERSION}${NC}"
   echo ""
 }
 
@@ -311,7 +314,7 @@ detect_target_platform() {
 load_config() {
   step "Loading configuration"
 
-  PP_VERSION="$(yaml_get patchpilot.version 0.9.7-alpha)"
+  PP_VERSION="$(yaml_get patchpilot.version "${PP_FILE_VERSION}")"
   PP_NAMESPACE="$(yaml_get patchpilot.namespace patchpilot)"
   PP_NAMESPACE="$(prompt_value "Kubernetes namespace" "${PP_NAMESPACE}")"
 
@@ -321,13 +324,13 @@ load_config() {
   PP_DH_REPO="${PP_DH_REPO%/}"
 
   PP_IMAGE_STRATEGY="$(yaml_get patchpilot.image.strategy registry)"
-  PP_IMAGE_TAG="$(yaml_get patchpilot.image.tag 0.9.7-alpha)"
+  PP_IMAGE_TAG="$(yaml_get patchpilot.image.tag "${PP_FILE_VERSION}")"
   PP_IMAGE_PULL_POLICY="$(yaml_get patchpilot.image.pullPolicy Always)"
   PP_PULL_SECRET_NAME="$(yaml_get patchpilot.image.pullSecretName dockerhub-pull-secret)"
 
   # Detect arch NOW so we can bake it into the image tags
   # This prevents arm64 Docker builds from overwriting amd64 k3s images (and vice versa)
-  # Tags become: linit01/patchpilot:backend-0.9.7-alpha-amd64
+  # Tags become: linit01/patchpilot:backend-<version>-amd64
   local target_platform
   target_platform="$(detect_target_platform)"
   PP_TARGET_ARCH="$(echo "${target_platform}" | sed 's|linux/||;s|/|-|')"  # amd64, arm64, arm-v7
