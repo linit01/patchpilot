@@ -1,6 +1,12 @@
 # Pin to bookworm (Debian 12 stable) — avoids trixie/testing apt slowness on ARM
 FROM python:3.11-slim-bookworm
 
+# ── Version injection ─────────────────────────────────────────────────────────
+# CI passes --build-arg PATCHPILOT_VERSION=x.y.z; dev builds fall back to the
+# VERSION file read at runtime in app.py (_read_version → APP_VERSION env).
+ARG PATCHPILOT_VERSION=""
+ENV APP_VERSION=${PATCHPILOT_VERSION}
+
 # ── System packages ───────────────────────────────────────────────────────────
 # apt-get upgrade runs first to pick up all Debian security backports available
 # for bookworm at build time. This addresses Category 2 CVEs where Debian HAS
@@ -16,6 +22,9 @@ FROM python:3.11-slim-bookworm
 # Debian 'ignored' / won't-fix entries — they appear in scanners forever
 # because Debian Security Team has explicitly decided not to patch them.
 # Switching to Alpine is the only way to eliminate those from scan results.
+# TARGETARCH is auto-injected by buildx (amd64, arm64, etc.)
+ARG TARGETARCH
+
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
@@ -35,7 +44,7 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli \
     && KUBECTL_VERSION=$(curl -fsSL https://dl.k8s.io/release/stable.txt) \
-    && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
          -o /usr/local/bin/kubectl \
     && chmod +x /usr/local/bin/kubectl \
     && rm -rf /var/lib/apt/lists/*
