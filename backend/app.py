@@ -149,7 +149,19 @@ _PATCH_FLAG_TIMEOUT = 1800  # 30 min — auto-clear if stuck longer than this
 _initial_check_done = asyncio.Event()
 
 # Create FastAPI app
-_APP_VERSION = os.getenv("APP_VERSION", "0.9.7-alpha")
+def _read_version() -> str:
+    """Read version from VERSION file (repo root or Docker /app/VERSION), env override wins."""
+    env_ver = os.getenv("APP_VERSION")
+    if env_ver:
+        return env_ver
+    for path in ("VERSION", "/app/VERSION", "../VERSION"):
+        try:
+            return open(path).read().strip()
+        except FileNotFoundError:
+            continue
+    return "0.0.0-dev"
+
+_APP_VERSION = _read_version()
 app = FastAPI(title="PatchPilot API", version=_APP_VERSION)
 
 # ── CORS configuration ────────────────────────────────────────────────────────

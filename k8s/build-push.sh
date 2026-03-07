@@ -7,21 +7,21 @@
 #   RELEASE (--release)
 #     Builds linux/amd64 + linux/arm64 in one shot via buildx and pushes a
 #     multi-arch manifest list to Docker Hub under a CLEAN tag:
-#       linit01/patchpilot:backend-0.9.5-alpha   ← what goes in install-config.yaml
-#       linit01/patchpilot:frontend-0.9.5-alpha
+#       linit01/patchpilot:backend-<version>   ← what goes in install-config.yaml
+#       linit01/patchpilot:frontend-<version>
 #     Both arches live under that single tag; Docker/k8s pull the right one
 #     automatically.  Also tags :backend-latest and :frontend-latest.
 #
 #   DEV (default)
 #     Detects target cluster arch, builds for that arch only (faster), tags
 #     with an arch suffix for clarity:
-#       linit01/patchpilot:backend-0.9.5-alpha-amd64
-#       linit01/patchpilot:frontend-0.9.5-alpha-amd64
+#       linit01/patchpilot:backend-<version>-amd64
+#       linit01/patchpilot:frontend-<version>-amd64
 #     Use --platform to override arch detection.
 #
 # Usage:
 #   ./k8s/build-push.sh --release                    # public multi-arch release
-#   ./k8s/build-push.sh --release --tag 0.9.7-alpha  # release with explicit tag
+#   ./k8s/build-push.sh --release --tag <version>  # release with explicit tag
 #   ./k8s/build-push.sh                              # dev: auto-detect cluster arch
 #   ./k8s/build-push.sh --platform linux/arm64       # dev: force arch
 #   ./k8s/build-push.sh --no-cache                   # force fresh layers
@@ -33,6 +33,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/install-config.yaml"
+PP_FILE_VERSION="$(cat "${REPO_ROOT}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+PP_FILE_VERSION="${PP_FILE_VERSION:-0.0.0-dev}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; PURPLE='\033[0;35m'; NC='\033[0m'
@@ -172,7 +174,7 @@ DH_REPO="${DH_REPO_OVERRIDE:-${DH_REPO}}"   # web UI / env override
 DH_REPO="${DH_REPO%/}"
 DH_USERNAME="$(yaml_get patchpilot.dockerHub.username)"
 DH_TOKEN="$(yaml_get patchpilot.dockerHub.token)"
-IMAGE_TAG="${OVERRIDE_TAG:-$(yaml_get patchpilot.image.tag 0.9.5-alpha)}"
+IMAGE_TAG="${OVERRIDE_TAG:-$(yaml_get patchpilot.image.tag "${PP_FILE_VERSION}")}"
 HOST_PLATFORM="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
 
 # ─────────────────────────────────────────────────────────────────────────────

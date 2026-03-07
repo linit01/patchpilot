@@ -1,5 +1,5 @@
 """
-uninstall_api.py — PatchPilot v0.9.5-alpha
+uninstall_api.py — PatchPilot
 Admin-only endpoints for uninstalling PatchPilot.
 
 Design constraints:
