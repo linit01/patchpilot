@@ -1525,6 +1525,7 @@ async def health():
     return {"status": "ok", "version": _APP_VERSION}
 
 @app.get("/")
+@app.get("/api")
 async def root():
     return {"message": "PatchPilot API", "version": _APP_VERSION}
 
