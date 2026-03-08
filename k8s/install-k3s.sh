@@ -328,16 +328,23 @@ load_config() {
   PP_IMAGE_PULL_POLICY="$(yaml_get patchpilot.image.pullPolicy Always)"
   PP_PULL_SECRET_NAME="$(yaml_get patchpilot.image.pullSecretName dockerhub-pull-secret)"
 
-  # Detect arch NOW so we can bake it into the image tags
-  # This prevents arm64 Docker builds from overwriting amd64 k3s images (and vice versa)
-  # Tags become: linit01/patchpilot:backend-<version>-amd64
+  # Detect cluster arch (used by developer mode for single-arch local builds)
   local target_platform
   target_platform="$(detect_target_platform)"
   PP_TARGET_ARCH="$(echo "${target_platform}" | sed 's|linux/||;s|/|-|')"  # amd64, arm64, arm-v7
   info "Cluster architecture: ${PP_TARGET_ARCH}"
 
-  PP_BACKEND_IMAGE="${PP_DH_REPO}:backend-${PP_IMAGE_TAG}-${PP_TARGET_ARCH}"
-  PP_FRONTEND_IMAGE="${PP_DH_REPO}:frontend-${PP_IMAGE_TAG}-${PP_TARGET_ARCH}"
+  if [[ "${DEVELOPER}" == "true" ]]; then
+    # Developer mode: arch-suffixed tags for local single-arch builds
+    # e.g. linit01/patchpilot:backend-0.9.8-alpha-amd64
+    PP_BACKEND_IMAGE="${PP_DH_REPO}:backend-${PP_IMAGE_TAG}-${PP_TARGET_ARCH}"
+    PP_FRONTEND_IMAGE="${PP_DH_REPO}:frontend-${PP_IMAGE_TAG}-${PP_TARGET_ARCH}"
+  else
+    # Registry mode: CI pushes multi-arch manifests without arch suffix
+    # e.g. linit01/patchpilot:backend-0.9.8-alpha
+    PP_BACKEND_IMAGE="${PP_DH_REPO}:backend-${PP_IMAGE_TAG}"
+    PP_FRONTEND_IMAGE="${PP_DH_REPO}:frontend-${PP_IMAGE_TAG}"
+  fi
   info "Backend image:  ${PP_BACKEND_IMAGE}"
   info "Frontend image: ${PP_FRONTEND_IMAGE}"
 

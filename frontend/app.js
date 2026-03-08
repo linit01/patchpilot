@@ -300,7 +300,7 @@ async function checkAuthAndInit() {
     await fetchRefreshInterval();
     startCountdown();
     // Fetch real version from API and update the sidebar version tag
-    fetch(`${API_BASE_URL.replace('/api', '')}/api`)
+    fetch(`${API_BASE_URL}/`)
         .then(r => r.json())
         .then(d => {
             if (d.version) {
