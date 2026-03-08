@@ -1,0 +1,27 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PatchPilot — Developer Compose Override
+#
+# Builds images from local source instead of pulling from Docker Hub.
+# Also mounts frontend source and nginx.conf as live volumes so UI changes
+# are reflected without a rebuild.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.developer.yml up --build
+#
+# Do NOT use this file in production.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: null
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: null
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro       # live reload for UI changes
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro

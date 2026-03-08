@@ -197,15 +197,16 @@ spec:
         image: busybox:1.36
         command: ['sh', '-c',
           'until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done']
-      - name: seed-ansible                          # ← ADD THIS BLOCK
-        image: your-registry/patchpilot-backend:latest   # same image as backend
+      # Seed ansible playbooks from the backend image into the shared PVC
+      - name: seed-ansible
+        image: linit01/patchpilot:backend-0.9.8-alpha
         command: ['sh', '-c', 'cp -rn /ansible-src/. /ansible/ && echo "Ansible seeded"']
         volumeMounts:
         - name: ansible-data
           mountPath: /ansible
       containers:
       - name: backend
-        image: your-registry/patchpilot-backend:latest   # ← change to your image
+        image: linit01/patchpilot:backend-0.9.8-alpha
         ports:
         - containerPort: 8000
         env:
@@ -310,6 +311,7 @@ spec:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Frontend (Nginx)
+# frontend files and nginx.conf are baked into the image — no ConfigMaps needed
 # ─────────────────────────────────────────────────────────────────────────────
 ---
 apiVersion: apps/v1
@@ -331,15 +333,9 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: nginx:alpine
+        image: linit01/patchpilot:frontend-0.9.8-alpha
         ports:
         - containerPort: 80
-        volumeMounts:
-        - name: frontend-files
-          mountPath: /usr/share/nginx/html
-        - name: nginx-config
-          mountPath: /etc/nginx/conf.d/default.conf
-          subPath: nginx.conf
         resources:
           requests:
             memory: "64Mi"
@@ -347,13 +343,6 @@ spec:
           limits:
             memory: "128Mi"
             cpu: "100m"
-      volumes:
-      - name: frontend-files
-        configMap:
-          name: patchpilot-frontend-files   # populate via kustomize or CI/CD
-      - name: nginx-config
-        configMap:
-          name: patchpilot-nginx-config
 
 ---
 apiVersion: v1
