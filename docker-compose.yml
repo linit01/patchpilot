@@ -23,6 +23,10 @@
 # The NFS server and share are also saved to the settings table during
 # first-run setup so you can retrieve the exact snippet from Settings →
 # Backup & Restore at any time.
+#
+# DEVELOPER MODE: To build images from local source instead of pulling
+# from Docker Hub, use the developer override:
+#   docker compose -f docker-compose.yml -f docker-compose.developer.yml up --build
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -48,7 +52,8 @@ services:
 
   # ── Backend (FastAPI) ───────────────────────────────────────────────────────
   backend:
-    build: .
+    image: linit01/patchpilot:backend-0.9.8-alpha
+    # build: .    # uncomment when using docker-compose.developer.yml
     container_name: patchpilot-backend-1
     restart: unless-stopped
     depends_on:
@@ -100,12 +105,11 @@ services:
 
   # ── Frontend (Nginx) ────────────────────────────────────────────────────────
   frontend:
-    image: nginx:alpine
+    image: linit01/patchpilot:frontend-0.9.8-alpha
+    # frontend files and nginx.conf are baked into the image
+    # use docker-compose.developer.yml to override with local source mounts
     container_name: patchpilot-frontend-1
     restart: unless-stopped
-    volumes:
-      - ./frontend:/usr/share/nginx/html:ro
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "0.0.0.0:8080:80"    # HTTP — accessible from any LAN device
     depends_on:
