@@ -1,11 +1,29 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # PatchPilot — Frontend Image
-# Bakes static UI files and nginx config into nginx:alpine.
-# No volume mounts or ConfigMaps required at runtime.
+# Bakes static UI files into nginx:alpine.
+#
+# nginx.conf contains $NGINX_BACKEND_HOST which is substituted at startup:
+#   Docker Compose : NGINX_BACKEND_HOST=backend           (compose service name)
+#   Kubernetes     : NGINX_BACKEND_HOST=patchpilot-backend (k8s Service name)
+#
+# The k8s installer sets NGINX_BACKEND_HOST=patchpilot-backend via the
+# Deployment env block, so the ConfigMap override in 05-frontend.yaml is no
+# longer needed (but kept as a fallback for manual deployments).
 # ─────────────────────────────────────────────────────────────────────────────
 FROM nginx:alpine
 
+# gettext provides envsubst (already present in nginx:alpine, but explicit)
+RUN apk add --no-cache gettext
+
 COPY frontend/ /usr/share/nginx/html/
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Store the template; entrypoint renders it to the live config at startup
+COPY nginx.conf /etc/nginx/conf.d/default.conf.tmpl
+
+# Default backend hostname — overridden at runtime via environment variable
+ENV NGINX_BACKEND_HOST=backend
+
+COPY docker/nginx-entrypoint.sh /docker-entrypoint.d/99-envsubst-backend.sh
+RUN chmod +x /docker-entrypoint.d/99-envsubst-backend.sh
 
 EXPOSE 80

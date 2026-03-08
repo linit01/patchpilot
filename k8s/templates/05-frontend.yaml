@@ -2,7 +2,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # PatchPilot — Frontend (Nginx)
 # Static assets are baked into the patchpilot-frontend image at build time.
-# nginx.conf is injected via ConfigMap so it can be updated without rebuilding.
+#
+# This ConfigMap supplies the nginx.conf TEMPLATE (nginx.conf.tmpl).
+# At container startup, the entrypoint script runs envsubst to substitute
+# $NGINX_BACKEND_HOST and writes the rendered config to default.conf.
+#
+# The NGINX_BACKEND_HOST env var in the Deployment (value: patchpilot-backend)
+# is the canonical source of the backend service name for k8s.
+# Docker Compose uses NGINX_BACKEND_HOST=backend (its service name).
 # ─────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ConfigMap
@@ -28,7 +35,7 @@ data:
 
         # ── Backend API ──────────────────────────────────────────────────────
         location /api/ {
-            proxy_pass         http://patchpilot-backend:8000/api/;
+            proxy_pass         http://${NGINX_BACKEND_HOST}:8000/api/;
             proxy_set_header   Host              $host;
             proxy_set_header   X-Real-IP         $remote_addr;
             proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -39,7 +46,7 @@ data:
 
         # ── WebSocket (live patch progress) ──────────────────────────────────
         location /ws/ {
-            proxy_pass            http://patchpilot-backend:8000/ws/;
+            proxy_pass            http://${NGINX_BACKEND_HOST}:8000/ws/;
             proxy_http_version    1.1;
             proxy_set_header      Upgrade    $http_upgrade;
             proxy_set_header      Connection "upgrade";
@@ -90,12 +97,15 @@ spec:
       - name: frontend
         image: ${PP_FRONTEND_IMAGE}
         imagePullPolicy: ${PP_IMAGE_PULL_POLICY}
+        env:
+        - name: NGINX_BACKEND_HOST
+          value: "patchpilot-backend"   # k8s Service name — rendered into nginx.conf at startup
         ports:
         - containerPort: 80
           name: http
         volumeMounts:
         - name: nginx-config
-          mountPath: /etc/nginx/conf.d/default.conf
+          mountPath: /etc/nginx/conf.d/default.conf.tmpl
           subPath: nginx.conf
         livenessProbe:
           httpGet:
