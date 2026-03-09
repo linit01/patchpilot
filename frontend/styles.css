@@ -191,6 +191,7 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-wrap: wrap;
 }
 .sidebar-version .version-label {
     font-size: 10px;
@@ -215,6 +216,36 @@ body {
     border: 1px solid rgba(245,158,11,0.3);
     border-radius: 3px;
     padding: 1px 4px;
+}
+.sidebar-version .update-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--cyan);
+    cursor: pointer;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(0, 200, 255, 0.08);
+    border: 1px solid rgba(0, 200, 255, 0.25);
+    transition: background 0.2s;
+    width: 100%;
+}
+.sidebar-version .update-badge:hover {
+    background: rgba(0, 200, 255, 0.15);
+}
+.sidebar-version .update-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--cyan);
+    animation: update-pulse 2s ease-in-out infinite;
+}
+@keyframes update-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
 }
 
 .sidebar-footer {
