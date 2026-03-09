@@ -569,6 +569,25 @@ async def _run_backup(description: str, include_encryption_key: bool,
         archive_size = archive_path.stat().st_size
         logger.info(f"Backup archive created: {archive_path} ({_human_size(archive_size)})")
 
+        # ── Step 6b: Write standalone encryption key file ─────────────────
+        # Written *beside* the tarball so the operator can grab it without
+        # cracking open the archive.  Retention policy never prunes .txt files.
+        if includes_key:
+            key_txt_name = (
+                archive_path.name
+                .replace(".tar.gz", "").replace(".tgz", "")
+                + "_ENCRYPTION_KEY.txt"
+            )
+            key_txt_path = BACKUP_DIR / key_txt_name
+            key_txt_path.write_text(
+                f"# PatchPilot Encryption Key\n"
+                f"# Backup: {archive_path.name}\n"
+                f"# Created: {datetime.now(timezone.utc).isoformat()}\n"
+                f"# WARNING: KEEP THIS FILE SECRET — it decrypts all stored SSH credentials\n\n"
+                f"PATCHPILOT_ENCRYPTION_KEY={enc_key}\n"
+            )
+            logger.info(f"Encryption key file written: {key_txt_path}")
+
     # ── Step 7: Enforce retention policy ──────────────────────────────────
     _set_progress("retention", 95, "Applying retention policy...")
     _enforce_retention()
@@ -577,11 +596,30 @@ async def _run_backup(description: str, include_encryption_key: bool,
     return archive_path.name
 
 
+def _backup_has_encryption_key(archive: Path) -> bool:
+    """Check if a backup archive includes the encryption key."""
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.endswith("backup_metadata.json"):
+                    f = tar.extractfile(member)
+                    if f:
+                        meta = json.loads(f.read().decode())
+                        return meta.get("includes_encryption_key", False)
+    except Exception:
+        pass
+    return False
+
+
 def _enforce_retention():
-    """Delete oldest backups beyond BACKUP_RETAIN_COUNT."""
+    """Delete oldest backups beyond BACKUP_RETAIN_COUNT.
+    Never delete backups that include the encryption key."""
     backups = _list_backup_archives(newest_first=True)
     for old_backup in backups[BACKUP_RETAIN_COUNT:]:
         try:
+            if _backup_has_encryption_key(old_backup):
+                logger.info(f"Retention skip (has encryption key): {old_backup.name}")
+                continue
             old_backup.unlink()
             logger.info(f"Deleted old backup: {old_backup.name}")
         except Exception as e:
