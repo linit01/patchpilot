@@ -472,6 +472,7 @@
                 <button class="tab-btn" onclick="switchTab('schedules')">🕐 Schedules</button>
                 <button class="tab-btn" onclick="switchTab('advanced')">🔧 Advanced</button>
                 <button class="tab-btn" onclick="switchTab('backup')">💾 Backup &amp; Restore</button>
+                <button class="tab-btn" onclick="switchTab('updates')">🔄 Updates</button>
             </div>
             
             <!-- Hosts Tab -->
@@ -1003,6 +1004,74 @@
             </div>
             <!-- END BACKUP TAB -->
 
+            <!-- UPDATES TAB -->
+            <div id="updates-tab" class="tab-content" style="padding: 24px;">
+
+                <h3 style="margin:0 0 6px; font-size:18px; font-weight:600;">Application Updates</h3>
+                <p style="color:var(--text-muted); font-size:13px; margin:0 0 24px;">
+                    Check for and apply PatchPilot updates from GitHub releases.
+                </p>
+
+                <!-- Current Status Card -->
+                <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                        <h4 style="margin:0; font-size:14px; font-weight:600;">Version Status</h4>
+                        <button class="btn-sm" onclick="checkForUpdatesNow()" id="update-check-btn">🔍 Check Now</button>
+                    </div>
+                    <div id="update-status-content" style="font-size:13px; color:var(--text-secondary);">
+                        Loading...
+                    </div>
+                </div>
+
+                <!-- Release Notes (shown when update available) -->
+                <div id="update-release-notes" style="display:none; background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <h4 style="margin:0 0 12px; font-size:14px; font-weight:600;">Release Notes</h4>
+                    <div id="update-release-body" style="font-size:13px; color:var(--text-secondary); white-space:pre-wrap; max-height:300px; overflow-y:auto;"></div>
+                    <div style="margin-top:16px; display:flex; gap:10px;">
+                        <a id="update-release-link" href="#" target="_blank" class="btn-sm" style="text-decoration:none;">📄 View on GitHub</a>
+                        <button class="btn-sm" onclick="applyUpdate()" id="update-apply-btn" style="color:var(--green-bright); border-color:rgba(16,185,129,0.4);">
+                            ⬆️ Update Now
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Update Progress (shown during update) -->
+                <div id="update-progress-panel" style="display:none; background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <h4 style="margin:0 0 12px; font-size:14px; font-weight:600;">Update Progress</h4>
+                    <div style="background:var(--bg-card); border-radius:6px; height:8px; overflow:hidden; margin-bottom:10px;">
+                        <div id="update-progress-bar" style="height:100%; background:var(--cyan); width:0%; transition:width 0.5s;"></div>
+                    </div>
+                    <div id="update-progress-msg" style="font-size:12px; color:var(--text-muted);"></div>
+                </div>
+
+                <!-- Settings -->
+                <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:20px;">
+                    <h4 style="margin:0 0 16px; font-size:14px; font-weight:600;">Update Settings</h4>
+                    <div style="display:flex; flex-direction:column; gap:14px;">
+                        <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px;">
+                            <input type="checkbox" id="update-check-enabled" style="width:auto; margin:0;" onchange="saveUpdateSettings()">
+                            <span>Automatically check for updates</span>
+                        </label>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <label style="font-size:13px; color:var(--text-secondary); min-width:120px;">Check interval:</label>
+                            <select id="update-check-interval" style="padding:6px 10px; background:var(--bg-card); border:1px solid var(--border); border-radius:6px; color:var(--text-primary); font-size:13px;" onchange="saveUpdateSettings()">
+                                <option value="3600">Every hour</option>
+                                <option value="21600">Every 6 hours</option>
+                                <option value="43200">Every 12 hours</option>
+                                <option value="86400" selected>Every 24 hours</option>
+                                <option value="604800">Every week</option>
+                            </select>
+                        </div>
+                        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+                            <span id="update-channel-info"></span>
+                            · <span id="update-mode-info"></span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            <!-- END UPDATES TAB -->
+
             <!-- Keep the closing div for .tabs that was already there -->
         </div>
     </div>
@@ -1295,6 +1364,7 @@
             // Load data for specific tabs
             if (tabName === 'users') loadUsers();
             if (tabName === 'schedules') loadSchedules();
+            if (tabName === 'updates') loadUpdateStatus();
         }
         
         // Handle hash-based navigation on page load
@@ -1307,7 +1377,8 @@
                 'users': 'users',
                 'schedules': 'schedules',
                 'advanced': 'advanced',
-                'backup': 'backup'
+                'backup': 'backup',
+                'updates': 'updates'
             };
             if (hash && tabMap[hash]) {
                 // Defer to let page render first
@@ -3117,6 +3188,194 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Save Backup Config';
+            }
+        }
+
+        // ================================================================
+        // UPDATES TAB
+        // ================================================================
+
+        const _UPDATES_API = '/api/updates';
+        let _updatePollTimer = null;
+
+        async function loadUpdateStatus() {
+            try {
+                const res = await fetch(`${_UPDATES_API}/status`, { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+                renderUpdateStatus(data);
+            } catch (e) {
+                document.getElementById('update-status-content').textContent = 'Failed to load update status.';
+            }
+        }
+
+        function renderUpdateStatus(data) {
+            const el = document.getElementById('update-status-content');
+            const notesPanel = document.getElementById('update-release-notes');
+            const channelInfo = document.getElementById('update-channel-info');
+            const modeInfo = document.getElementById('update-mode-info');
+
+            // Channel and mode info
+            const channelLabel = data.channel === 'latest' ? '🏷️ Channel: latest (auto-pull)' : '🏷️ Channel: pinned';
+            const modeLabel = data.install_mode === 'k3s' ? '☸️ Kubernetes' : '🐳 Docker Compose';
+            if (channelInfo) channelInfo.textContent = channelLabel;
+            if (modeInfo) modeInfo.textContent = modeLabel;
+
+            if (data.check_error) {
+                el.innerHTML = `
+                    <div style="color:var(--amber);">⚠️ ${data.check_error}</div>
+                    <div style="margin-top:8px;">Current: <strong style="color:var(--cyan);">v${data.current_version}</strong></div>
+                    ${data.last_checked ? `<div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Last checked: ${new Date(data.last_checked).toLocaleString()}</div>` : ''}
+                `;
+                notesPanel.style.display = 'none';
+                return;
+            }
+
+            if (data.update_available) {
+                el.innerHTML = `
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:18px;">🆕</span>
+                        <span>Update available: <strong style="color:var(--cyan);">v${data.current_version}</strong> → <strong style="color:var(--green-bright);">v${data.latest_version}</strong></span>
+                    </div>
+                    ${data.published_at ? `<div style="font-size:11px; color:var(--text-muted); margin-top:6px;">Released: ${new Date(data.published_at).toLocaleString()}</div>` : ''}
+                    ${data.last_checked ? `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Last checked: ${new Date(data.last_checked).toLocaleString()}</div>` : ''}
+                `;
+                // Show release notes
+                if (data.release_notes) {
+                    document.getElementById('update-release-body').textContent = data.release_notes;
+                    document.getElementById('update-release-link').href = data.release_url || '#';
+                    notesPanel.style.display = 'block';
+                }
+            } else {
+                el.innerHTML = `
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:18px;">✅</span>
+                        <span>You're up to date! Running <strong style="color:var(--cyan);">v${data.current_version}</strong></span>
+                    </div>
+                    ${data.last_checked ? `<div style="font-size:11px; color:var(--text-muted); margin-top:6px;">Last checked: ${new Date(data.last_checked).toLocaleString()}</div>` : ''}
+                `;
+                notesPanel.style.display = 'none';
+            }
+
+            // Load settings
+            loadUpdateSettings();
+        }
+
+        async function checkForUpdatesNow() {
+            const btn = document.getElementById('update-check-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Checking…';
+            try {
+                const res = await fetch(`${_UPDATES_API}/check`, { method: 'POST', credentials: 'include' });
+                if (!res.ok) throw new Error('Check failed');
+                const data = await res.json();
+                renderUpdateStatus(data);
+            } catch (e) {
+                alert('Update check failed: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🔍 Check Now';
+            }
+        }
+
+        async function applyUpdate() {
+            if (!confirm('Apply the update now? The application will restart and you may briefly lose connectivity.')) return;
+
+            const btn = document.getElementById('update-apply-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Updating…';
+
+            try {
+                const res = await fetch(`${_UPDATES_API}/apply`, { method: 'POST', credentials: 'include' });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Update failed');
+                }
+
+                // Show progress panel and start polling
+                document.getElementById('update-progress-panel').style.display = 'block';
+                _updatePollTimer = setInterval(pollUpdateProgress, 2000);
+            } catch (e) {
+                alert('Update failed: ' + e.message);
+                btn.disabled = false;
+                btn.textContent = '⬆️ Update Now';
+            }
+        }
+
+        async function pollUpdateProgress() {
+            try {
+                const res = await fetch(`${_UPDATES_API}/progress`, { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+
+                const msgEl = document.getElementById('update-progress-msg');
+                const barEl = document.getElementById('update-progress-bar');
+
+                msgEl.textContent = data.message || '';
+
+                // Estimate progress from step
+                const stepPct = {
+                    'preparing': 10, 'updating_images': 30, 'updating_tags': 30,
+                    'pulling': 50, 'restarting': 70, 'waiting': 85,
+                    'complete': 100, 'failed': 100,
+                };
+                barEl.style.width = (stepPct[data.step] || 0) + '%';
+
+                if (!data.active) {
+                    clearInterval(_updatePollTimer);
+                    if (data.step === 'complete') {
+                        barEl.style.background = 'var(--green-bright)';
+                        msgEl.textContent = 'Update complete! Reloading in 10 seconds...';
+                        setTimeout(() => window.location.reload(), 10000);
+                    } else if (data.step === 'failed') {
+                        barEl.style.background = 'var(--red)';
+                        msgEl.style.color = 'var(--red)';
+                        document.getElementById('update-apply-btn').disabled = false;
+                        document.getElementById('update-apply-btn').textContent = '⬆️ Update Now';
+                    }
+                }
+            } catch (_) {
+                // Backend may be restarting — keep polling
+            }
+        }
+
+        async function loadUpdateSettings() {
+            try {
+                const res = await fetch('/api/settings/app', { credentials: 'include' });
+                if (!res.ok) return;
+                const settings = await res.json();
+
+                const enabledEl = document.getElementById('update-check-enabled');
+                const intervalEl = document.getElementById('update-check-interval');
+
+                if (settings.update_check_enabled) {
+                    enabledEl.checked = settings.update_check_enabled.value === 'true';
+                }
+                if (settings.update_check_interval) {
+                    intervalEl.value = settings.update_check_interval.value;
+                }
+            } catch (_) {}
+        }
+
+        async function saveUpdateSettings() {
+            const enabled = document.getElementById('update-check-enabled').checked;
+            const interval = document.getElementById('update-check-interval').value;
+
+            try {
+                await fetch('/api/settings/app/update_check_enabled', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ value: enabled ? 'true' : 'false' }),
+                });
+                await fetch('/api/settings/app/update_check_interval', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ value: interval }),
+                });
+            } catch (e) {
+                console.error('Failed to save update settings:', e);
             }
         }
 

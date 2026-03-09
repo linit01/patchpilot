@@ -95,6 +95,7 @@ from schedules_api import router as schedules_router
 from backup_restore import router as backup_router, set_pool as backup_set_pool, set_db_client as backup_set_db_client, set_post_restore_callback as backup_set_post_restore_callback
 from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
+from update_checker import router as update_router, periodic_update_check
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -191,6 +192,7 @@ app.include_router(schedules_router)
 app.include_router(backup_router)
 app.include_router(setup_router)
 app.include_router(uninstall_router)
+app.include_router(update_router)
 
 # Pydantic models
 class PatchRequest(BaseModel):
@@ -264,6 +266,20 @@ async def startup_event():
     # Start background task for auto-patch schedules
     asyncio.create_task(schedule_checker_loop())
     print("[STARTUP] schedule_checker_loop launched")
+
+    # Start background task for update checker
+    async def _get_setting(key: str) -> Optional[str]:
+        """Read a single setting value from the DB for the update checker."""
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchval(
+                    "SELECT value FROM settings WHERE key = $1", key
+                )
+                return row
+        except Exception:
+            return None
+    asyncio.create_task(periodic_update_check(_get_setting))
+    print("[STARTUP] periodic_update_check loop launched")
 
     # Defer initial check until the DB has hosts to check.
     # After a restore + self-restart the pools need a few seconds to
@@ -538,6 +554,12 @@ async def ensure_settings_table(pool):
                 ('mas_timeout_seconds',  os.getenv('MAS_TIMEOUT_SECONDS', '7200'),
                  'Max seconds to wait for all App Store downloads per host (default 7200 = 2 h). '
                  'This is the Ansible async timeout — the overall ceiling for the task.'),
+                # ── Update checker settings ───────────────────────────────────
+                ('update_check_enabled', 'true',
+                 'Enable periodic checks for new PatchPilot releases via GitHub.'),
+                ('update_check_interval', '86400',
+                 'How often to check for updates, in seconds (default 86400 = 24 hours, '
+                 'minimum 3600 = 1 hour).'),
             ]
             await conn.executemany("""
                 INSERT INTO settings (key, value, description) VALUES ($1, $2, $3)

@@ -311,6 +311,8 @@ async function checkAuthAndInit() {
             }
         })
         .catch(() => {}); // silently keep the hardcoded fallback
+    // Check for available updates and show sidebar badge
+    checkForUpdateBadge();
     // Note: startCountdown already handles periodic loadDashboard at countdown=0
     // No duplicate setInterval needed
 }
@@ -1757,6 +1759,25 @@ async function fetchSidebarCounts() {
 // Run badge count fetch after auth check completes (delay to ensure auth state is ready)
 setTimeout(fetchSidebarCounts, 3000);
 
+
+// =========================================================================
+// UPDATE BADGE — sidebar notification for available updates
+// =========================================================================
+
+async function checkForUpdateBadge() {
+    try {
+        const res = await fetch(`${API_BASE_URL}/updates/status`, { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const badge = document.getElementById('sidebar-update-badge');
+        if (badge && data.update_available) {
+            badge.style.display = 'flex';
+            badge.title = `v${data.current_version} → v${data.latest_version}`;
+        }
+    } catch (_) {
+        // Silently ignore — update check is non-critical
+    }
+}
 
 // =========================================================================
 // CONSOLE STATUS BAR
