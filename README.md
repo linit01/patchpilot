@@ -1,3 +1,10 @@
+# Designed, built and owned by John R. Sanborn, 2026.
+# Code and design advise by Claude.AI and Ollama (local using multiple LLMs).
+# contact@getpatchpilot.app
+# Git repo: linit01/patchpilot
+# Docker hub: linit01/patchpilot
+# All rights to this code and design ideas are reserved by owner.
+
 # <img src="frontend/patchpilot-icon.jpeg" alt="" width="40"> PatchPilot
 
 **Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**

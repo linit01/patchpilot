@@ -305,7 +305,9 @@ async function checkAuthAndInit() {
         .then(d => {
             if (d.version) {
                 const el = document.getElementById('sidebar-app-version');
-                if (el) el.textContent = 'v' + d.version;
+                // Strip "-alpha"/"-beta" suffix — the HTML has a separate span for that
+                const ver = d.version.replace(/-(alpha|beta).*$/i, '');
+                if (el) el.textContent = 'v' + ver;
             }
         })
         .catch(() => {}); // silently keep the hardcoded fallback
