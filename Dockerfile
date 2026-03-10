@@ -42,7 +42,7 @@ RUN apt-get update \
          https://download.docker.com/linux/debian bookworm stable" \
          > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && KUBECTL_VERSION=$(curl -fsSL https://dl.k8s.io/release/stable.txt) \
     && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
          -o /usr/local/bin/kubectl \
