@@ -52,3 +52,6 @@ k8s/install-config.yaml
 
 # Allow schema file despite *.sql rule
 !database-schema.sql
+
+#Scripts
+scripts/push_new_build.sh
