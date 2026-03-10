@@ -124,8 +124,24 @@ def _is_newer(latest_tag: str, current: str) -> bool:
 
 
 def _detect_install_mode() -> str:
-    """Detect whether we're running in k3s or Docker."""
-    return os.getenv("PATCHPILOT_INSTALL_MODE", "docker").lower()
+    """Detect whether we're running in k3s or Docker.
+    Mirrors the detection logic in uninstall_api.py."""
+    env_mode = os.getenv("PATCHPILOT_INSTALL_MODE", "").lower()
+    if env_mode in ("k3s", "k8s"):
+        return "k3s"
+    if env_mode == "docker":
+        return "docker"
+    # k3s kubeconfig or in-cluster service account
+    if Path("/etc/rancher/k3s/k3s.yaml").exists():
+        return "k3s"
+    if Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists():
+        return "k3s"
+    # Docker markers
+    if Path("/.dockerenv").exists():
+        return "docker"
+    if Path("/var/run/docker.sock").exists():
+        return "docker"
+    return "docker"
 
 
 def _detect_update_channel() -> str:
