@@ -4,6 +4,7 @@ name: Build and Push Docker Images
 # Triggered on semver tag push (e.g. v0.9.8, v1.0.0)
 # Builds linux/amd64 + linux/arm64 for BOTH backend and frontend images
 # and pushes multi-arch manifest lists to Docker Hub.
+# Automatically creates a GitHub Release with auto-generated changelog.
 #
 # This is the CI equivalent of:  ./k8s/build-push.sh --release
 #
@@ -24,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout code
@@ -87,6 +88,14 @@ jobs:
             PATCHPILOT_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
+
+      # ── GitHub Release ────────────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
 
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Print image summary
