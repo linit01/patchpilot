@@ -498,20 +498,20 @@ async def _apply_update_docker(target_version: str):
         project_dir = str(compose_file.parent)
         compose_base += ["--project-directory", project_dir]
 
-        # Pull new images
+        # Pull new images (only backend and frontend, not postgres)
         _update_status["step"] = "pulling"
         _update_status["message"] = "Pulling new images..."
 
-        cmd = compose_base + ["pull"]
+        cmd = compose_base + ["pull", "backend", "frontend"]
         rc, out, err = _run(cmd, timeout=300)
         if rc != 0:
             raise RuntimeError(f"docker compose pull failed: {err}")
 
-        # Restart services
+        # Restart only backend and frontend services
         _update_status["step"] = "restarting"
         _update_status["message"] = "Restarting services..."
 
-        cmd = compose_base + ["up", "-d"]
+        cmd = compose_base + ["up", "-d", "--no-deps", "--force-recreate", "backend", "frontend"]
         rc, out, err = _run(cmd, timeout=120)
         if rc != 0:
             raise RuntimeError(f"docker compose up failed: {err}")
