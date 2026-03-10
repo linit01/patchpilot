@@ -171,6 +171,7 @@ def _detect_update_channel() -> str:
 
     # Docker path: check if the compose file uses :latest tags
     compose_paths = [
+        "/install/docker-compose.yml",
         "/app/docker-compose.yml",
         "../docker-compose.yml",
         "docker-compose.yml",
@@ -433,8 +434,8 @@ async def _apply_update_docker(target_version: str):
 
     # Find the compose file
     compose_file = None
-    for cp in ("/app/docker-compose.yml", "../docker-compose.yml",
-               "docker-compose.yml"):
+    for cp in ("/install/docker-compose.yml", "/app/docker-compose.yml",
+               "../docker-compose.yml", "docker-compose.yml"):
         if Path(cp).is_file():
             compose_file = Path(cp)
             break
@@ -491,11 +492,17 @@ async def _apply_update_docker(target_version: str):
             compose_file.write_text(content)
             logger.info("Updated image tags in %s", compose_file)
 
+        # Build base compose command with project context
+        compose_base = compose_cmd + ["-f", str(compose_file)]
+        # If compose file is in /install, set project directory so .env is found
+        project_dir = str(compose_file.parent)
+        compose_base += ["--project-directory", project_dir]
+
         # Pull new images
         _update_status["step"] = "pulling"
         _update_status["message"] = "Pulling new images..."
 
-        cmd = compose_cmd + ["-f", str(compose_file), "pull"] if compose_file else compose_cmd + ["pull"]
+        cmd = compose_base + ["pull"]
         rc, out, err = _run(cmd, timeout=300)
         if rc != 0:
             raise RuntimeError(f"docker compose pull failed: {err}")
@@ -504,7 +511,7 @@ async def _apply_update_docker(target_version: str):
         _update_status["step"] = "restarting"
         _update_status["message"] = "Restarting services..."
 
-        cmd = compose_cmd + ["-f", str(compose_file), "up", "-d"] if compose_file else compose_cmd + ["up", "-d"]
+        cmd = compose_base + ["up", "-d"]
         rc, out, err = _run(cmd, timeout=120)
         if rc != 0:
             raise RuntimeError(f"docker compose up failed: {err}")
