@@ -3285,6 +3285,16 @@
             btn.disabled = true;
             btn.textContent = '⏳ Updating…';
 
+            // Capture pre-update version
+            let preVersion = null;
+            try {
+                const statusRes = await fetch(`${_UPDATES_API}/status`, { credentials: 'include' });
+                if (statusRes.ok) {
+                    const d = await statusRes.json();
+                    preVersion = d.current_version;
+                }
+            } catch (_) {}
+
             try {
                 const res = await fetch(`${_UPDATES_API}/apply`, { method: 'POST', credentials: 'include' });
                 if (!res.ok) {
@@ -3292,50 +3302,72 @@
                     throw new Error(err.detail || 'Update failed');
                 }
 
-                // Show progress panel and start polling
-                document.getElementById('update-progress-panel').style.display = 'block';
-                _updatePollTimer = setInterval(pollUpdateProgress, 2000);
+                // Show progress panel with static message
+                const panel = document.getElementById('update-progress-panel');
+                const barEl = document.getElementById('update-progress-bar');
+                const msgEl = document.getElementById('update-progress-msg');
+                panel.style.display = 'block';
+                barEl.style.width = '60%';
+                msgEl.textContent = 'Update started — application is restarting...';
+
+                // Simple reconnect loop: ping the API until it responds with a new version
+                let attempts = 0;
+                const maxAttempts = 90; // ~3 minutes at 2s intervals
+                const poller = setInterval(async () => {
+                    attempts++;
+                    try {
+                        const r = await fetch(`${_UPDATES_API}/status`, { credentials: 'include' });
+                        if (r.ok) {
+                            const data = await r.json();
+                            // Backend is back — check version
+                            if (preVersion && data.current_version !== preVersion) {
+                                clearInterval(poller);
+                                barEl.style.width = '100%';
+                                barEl.style.background = 'var(--green-bright)';
+                                msgEl.textContent = `Updated to v${data.current_version}! Reloading...`;
+                                msgEl.style.color = 'var(--green-bright)';
+                                setTimeout(() => window.location.reload(), 3000);
+                                return;
+                            }
+                            // Backend is back but version same — image tags updated, deployment rolled
+                            if (!data.update_available) {
+                                clearInterval(poller);
+                                barEl.style.width = '100%';
+                                barEl.style.background = 'var(--green-bright)';
+                                msgEl.textContent = 'Update applied! Reloading...';
+                                msgEl.style.color = 'var(--green-bright)';
+                                setTimeout(() => window.location.reload(), 3000);
+                                return;
+                            }
+                        }
+                    } catch (_) {
+                        // Still down — update progress bar
+                    }
+
+                    // Animate progress bar while waiting
+                    const pct = Math.min(60 + (attempts / maxAttempts) * 35, 95);
+                    barEl.style.width = pct + '%';
+                    if (attempts < 5) {
+                        msgEl.textContent = 'Update started — application is restarting...';
+                    } else {
+                        msgEl.textContent = `Waiting for backend to restart... (${attempts}s)`;
+                    }
+
+                    if (attempts >= maxAttempts) {
+                        clearInterval(poller);
+                        barEl.style.width = '100%';
+                        barEl.style.background = 'var(--amber)';
+                        msgEl.textContent = 'Backend has not responded. Please refresh the page manually.';
+                        msgEl.style.color = 'var(--amber)';
+                        btn.disabled = false;
+                        btn.textContent = '⬆️ Update Now';
+                    }
+                }, 2000);
+
             } catch (e) {
                 alert('Update failed: ' + e.message);
                 btn.disabled = false;
                 btn.textContent = '⬆️ Update Now';
-            }
-        }
-
-        async function pollUpdateProgress() {
-            try {
-                const res = await fetch(`${_UPDATES_API}/progress`, { credentials: 'include' });
-                if (!res.ok) return;
-                const data = await res.json();
-
-                const msgEl = document.getElementById('update-progress-msg');
-                const barEl = document.getElementById('update-progress-bar');
-
-                msgEl.textContent = data.message || '';
-
-                // Estimate progress from step
-                const stepPct = {
-                    'preparing': 10, 'updating_images': 30, 'updating_tags': 30,
-                    'pulling': 50, 'restarting': 70, 'waiting': 85,
-                    'complete': 100, 'failed': 100,
-                };
-                barEl.style.width = (stepPct[data.step] || 0) + '%';
-
-                if (!data.active) {
-                    clearInterval(_updatePollTimer);
-                    if (data.step === 'complete') {
-                        barEl.style.background = 'var(--green-bright)';
-                        msgEl.textContent = 'Update complete! Reloading in 10 seconds...';
-                        setTimeout(() => window.location.reload(), 10000);
-                    } else if (data.step === 'failed') {
-                        barEl.style.background = 'var(--red)';
-                        msgEl.style.color = 'var(--red)';
-                        document.getElementById('update-apply-btn').disabled = false;
-                        document.getElementById('update-apply-btn').textContent = '⬆️ Update Now';
-                    }
-                }
-            } catch (_) {
-                // Backend may be restarting — keep polling
             }
         }
 
