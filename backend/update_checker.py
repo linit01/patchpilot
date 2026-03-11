@@ -511,59 +511,93 @@ async def _apply_update_docker(target_version: str):
         if rc != 0:
             raise RuntimeError(f"docker pull frontend failed: {err}")
 
-        # ── Restart services ──────────────────────────────────────────────
-        # Use docker compose to recreate individual services if available,
-        # otherwise fall back to raw docker restart.
+        # ── Restart services via helper container ─────────────────────────
+        # The backend can't restart itself.  Spawn a short-lived helper
+        # container (same pattern as uninstall_api.py) that:
+        #   1. Pulls new images (already done above, but the helper has
+        #      access to the host Docker daemon via the socket)
+        #   2. Stops the old frontend + backend containers
+        #   3. Starts new ones via docker compose up -d
+        # The helper runs detached so this process can return the status
+        # before it gets killed.
         _update_status["step"] = "restarting"
+        _update_status["message"] = "Launching updater to restart services..."
 
-        if compose_cmd and compose_file:
-            compose_base = compose_cmd + [
-                "-f", str(compose_file),
-                "--project-directory", str(compose_file.parent),
-            ]
+        compose_path = str(compose_file)
+        project_dir = str(compose_file.parent)
+        frontend_container = os.getenv("FRONTEND_CONTAINER_NAME", "patchpilot-frontend-1")
+        backend_container = os.getenv("BACKEND_CONTAINER_NAME", "patchpilot-backend-1")
 
-            # Restart frontend first (stateless, safe)
-            _update_status["message"] = "Restarting frontend..."
-            rc, out, err = _run(
-                compose_base + ["up", "-d", "--no-deps", "--force-recreate", "frontend"],
-                timeout=60,
+        # Resolve the HOST path of the compose file.
+        # Inside the container, the compose file is at /install/docker-compose.yml
+        # but the host path is whatever was mounted as .:/install.
+        # We can get it via `docker inspect` on our own container.
+        host_project_dir = None
+        try:
+            # Get our own container ID
+            with open("/proc/self/cgroup") as f:
+                for line in f:
+                    if "docker" in line or "containerd" in line:
+                        # Extract container ID from cgroup path
+                        parts = line.strip().split("/")
+                        for part in reversed(parts):
+                            if len(part) >= 12 and all(c in "0123456789abcdef" for c in part[:12]):
+                                our_container_id = part
+                                break
+                        break
+
+            if our_container_id:
+                rc, inspect_out, _ = _run(
+                    ["docker", "inspect", our_container_id,
+                     "--format", '{{range .Mounts}}{{if eq .Destination "/install"}}{{.Source}}{{end}}{{end}}'],
+                    timeout=10,
+                )
+                if rc == 0 and inspect_out:
+                    # Docker Desktop may prefix with /host_mnt
+                    host_project_dir = inspect_out.replace("/host_mnt", "")
+                    logger.info("Resolved host project dir: %s", host_project_dir)
+        except Exception as e:
+            logger.warning("Failed to resolve host project dir: %s", e)
+
+        if not host_project_dir:
+            # Fallback: check INSTALL_DIR env var
+            host_project_dir = os.getenv("INSTALL_DIR", "")
+
+        if not host_project_dir:
+            raise RuntimeError(
+                "Cannot determine host path for docker-compose.yml. "
+                "Set INSTALL_DIR in your .env to the host path of your PatchPilot directory."
             )
-            if rc != 0:
-                logger.warning("compose restart frontend failed: %s", err)
 
-            # Restart backend last — this kills our own process.
-            # The compose restart policy will bring us back with the new image.
-            _update_status["message"] = "Restarting backend (this container will restart)..."
-            logger.info("Restarting backend — this process will terminate")
+        host_compose_path = f"{host_project_dir}/docker-compose.yml"
 
-            # Use nohup-style: run in background so the response can be sent
-            # before the container dies
-            await asyncio.sleep(1)  # give time for status to propagate
+        # Build the updater script that runs inside the helper container
+        updater_script = (
+            f"echo '[updater] Waiting 3s for status response to flush...' && sleep 3"
+            f" && echo '[updater] Stopping frontend...' && docker stop {frontend_container}"
+            f" && docker rm {frontend_container}"
+            f" && echo '[updater] Stopping backend...' && docker stop {backend_container}"
+            f" && docker rm {backend_container}"
+            f" && echo '[updater] Starting services with new images...'"
+            f" && docker compose -f {host_compose_path} --project-directory {host_project_dir}"
+            f"    up -d --no-deps backend frontend"
+            f" && echo '[updater] Update complete!'"
+        )
 
-            rc, out, err = _run(
-                compose_base + ["up", "-d", "--no-deps", "--force-recreate", "backend"],
-                timeout=60,
-            )
-            # If we get here, the restart didn't kill us (shouldn't happen normally)
-            if rc != 0:
-                raise RuntimeError(f"compose restart backend failed: {err}")
-        else:
-            # Fallback: raw docker restart
-            _update_status["message"] = "Restarting containers..."
-            for name in ["patchpilot-frontend-1", "patchpilot-backend-1"]:
-                rc, _, err = _run(["docker", "stop", name], timeout=30)
-                if rc != 0:
-                    logger.warning("docker stop %s failed: %s", name, err)
-                rc, _, err = _run(["docker", "rm", name], timeout=15)
-                if rc != 0:
-                    logger.warning("docker rm %s failed: %s", name, err)
-            # Recreate from compose
-            if compose_file:
-                _run(compose_cmd + [
-                    "-f", str(compose_file),
-                    "--project-directory", str(compose_file.parent),
-                    "up", "-d", "backend", "frontend",
-                ], timeout=60)
+        rc, container_id, err = _run(
+            ["docker", "run", "--rm", "-d",
+             "-v", "/var/run/docker.sock:/var/run/docker.sock",
+             "-v", f"{host_project_dir}:{host_project_dir}:ro",
+             "--env-file", f"{project_dir}/.env",
+             "docker:cli",
+             "sh", "-c", updater_script],
+            timeout=30,
+        )
+
+        if rc != 0:
+            raise RuntimeError(f"Failed to launch updater container: {err}")
+
+        logger.info("Updater container started: %s", container_id[:12] if container_id else "ok")
 
         _update_status.update({
             "active": False,
