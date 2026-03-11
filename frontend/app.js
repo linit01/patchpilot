@@ -236,6 +236,9 @@ function startCountdown() {
             // Trigger a real Ansible scan (same as REFRESH button) — not just a DB poll.
             // The user's "Next check" countdown should mean an actual update scan.
             triggerCheckAndPoll();
+            // Also re-check for app updates so the sidebar badge appears
+            // without requiring a page refresh
+            checkForUpdateBadge();
         }
     }, 1000);
 }
