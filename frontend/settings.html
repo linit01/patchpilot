@@ -1029,7 +1029,7 @@
                     <div id="update-release-body" style="font-size:13px; color:var(--text-secondary); white-space:pre-wrap; max-height:300px; overflow-y:auto;"></div>
                     <div style="margin-top:16px; display:flex; gap:10px;">
                         <a id="update-release-link" href="#" target="_blank" class="btn-sm" style="text-decoration:none;">📄 View on GitHub</a>
-                        <button class="btn-sm" onclick="applyUpdate()" id="update-apply-btn" style="color:var(--green-bright); border-color:rgba(16,185,129,0.4);">
+                        <button type="button" class="btn-sm" id="update-apply-btn" style="color:var(--green-bright); border-color:rgba(16,185,129,0.4);">
                             ⬆️ Update Now
                         </button>
                     </div>
@@ -3410,6 +3410,18 @@
                 console.error('Failed to save update settings:', e);
             }
         }
+
+        // Bind Update Now button via event listener (inline onclick can be unreliable)
+        document.addEventListener('DOMContentLoaded', () => {
+            const applyBtn = document.getElementById('update-apply-btn');
+            if (applyBtn) {
+                applyBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    applyUpdate();
+                });
+            }
+        });
 
     </script>
     <!-- Host Patch Logs Modal -->
