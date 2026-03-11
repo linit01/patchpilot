@@ -1,1961 +1,2005 @@
-// API Configuration
-const API_BASE_URL = '/api';  // Use relative path in production
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.websockets import WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+from typing import List, Optional, Deque
+from datetime import datetime, timezone
+import zoneinfo, os
+from pathlib import Path
+import asyncio
+import logging
+import psutil
+import time
+from collections import deque
 
-// WebSocket Configuration
-const WS_BASE_URL = `ws${window.location.protocol === 'https:' ? 's' : ''}://${window.location.host}`;
+logger = logging.getLogger(__name__)
 
-// Auth State
-let currentUser = null;
-let isAuthenticated = false;
+# ---------------------------------------------------------------------------
+# In-memory ring buffer for backend log lines (last 2000 entries)
+# ---------------------------------------------------------------------------
+_LOG_RING_BUFFER: Deque[dict] = deque(maxlen=2000)
 
-// WebSocket for real-time patch progress
-let patchProgressWS = null;
-
-// Auto-check countdown (reads from settings, default 2 minutes)
-let AUTO_CHECK_INTERVAL = 120;
-let countdownSeconds = AUTO_CHECK_INTERVAL;
-let countdownInterval = null;
-
-function connectPatchProgressWebSocket() {
-    // Close stale connections
-    if (patchProgressWS) {
-        if (patchProgressWS.readyState === WebSocket.OPEN) {
-            return; // Already connected and open
-        }
-        // CONNECTING, CLOSING, or CLOSED — tear down and reconnect
-        try { patchProgressWS.close(); } catch(e) {}
-        patchProgressWS = null;
+class _RingBufferHandler(logging.Handler):
+    """Logging handler that pushes records into _LOG_RING_BUFFER."""
+    LEVEL_MAP = {
+        logging.DEBUG:    "debug",
+        logging.INFO:     "info",
+        logging.WARNING:  "warn",
+        logging.ERROR:    "error",
+        logging.CRITICAL: "error",
     }
+    # Substrings that indicate high-frequency noise — skip to preserve buffer space
+    _NOISE = ('"GET /health ', '"GET /api/hosts?', '"GET /api/stats?',
+              '"GET /api/stats/', '"GET /api/schedules/active')
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            # Skip high-frequency polling / health endpoints
+            if record.name == 'uvicorn.access':
+                for noise in self._NOISE:
+                    if noise in msg:
+                        return
+            _LOG_RING_BUFFER.append({
+                "ts":   datetime.now(timezone.utc).isoformat(),
+                "lvl":  self.LEVEL_MAP.get(record.levelno, "info"),
+                "name": record.name,
+                "msg":  msg,
+            })
+        except Exception:
+            pass
+
+# Attach ring-buffer handler to root logger so ALL loggers flow through it
+_ring_handler = _RingBufferHandler()
+_ring_handler.setFormatter(logging.Formatter("%(name)s — %(message)s"))
+_ring_handler.setLevel(logging.DEBUG)
+logging.getLogger().addHandler(_ring_handler)
+logging.getLogger().setLevel(logging.INFO)      # third-party libs at INFO
+logging.getLogger(__name__).setLevel(logging.DEBUG)  # our code at DEBUG
+
+# ---------------------------------------------------------------------------
+# Also intercept print() / sys.stdout so docker-style output lands in buffer
+# ---------------------------------------------------------------------------
+import sys as _sys
+
+class _StdoutInterceptor:
+    """Forwards write() calls to both the original stdout and the ring buffer."""
+    def __init__(self, orig):
+        self._orig = orig
+        self._buf = ""
+    def write(self, text):
+        self._orig.write(text)
+        self._orig.flush()
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.rstrip()
+            if line:
+                _LOG_RING_BUFFER.append({
+                    "ts":   datetime.now(timezone.utc).isoformat(),
+                    "lvl":  "info",
+                    "name": "stdout",
+                    "msg":  line,
+                })
+    def flush(self):
+        self._orig.flush()
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+_sys.stdout = _StdoutInterceptor(_sys.stdout)
+
+from database import DatabaseClient
+from ansible_runner import AnsibleRunner
+from settings_api import router as settings_router
+from auth import router as auth_router, require_auth, log_audit, cleanup_expired_sessions
+from schedules_api import router as schedules_router
+from backup_restore import router as backup_router, set_pool as backup_set_pool, set_db_client as backup_set_db_client, set_post_restore_callback as backup_set_post_restore_callback
+from setup_api import router as setup_router
+from uninstall_api import router as uninstall_router
+from update_checker import router as update_router, periodic_update_check
+
+# WebSocket connection manager for patch progress
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+# Initialize database client
+db = DatabaseClient()
+
+# Initialize Ansible runner
+ansible = AnsibleRunner(
+    playbook_path="/ansible/check-os-updates.yml",
+    inventory_path="/ansible/hosts",
+    db_client=db
+)
+
+# Track app start time for uptime
+APP_START_TIME = time.time()
+
+# Global lock — prevents two Ansible checks running simultaneously.
+# A concurrent periodic check + manual refresh would cause one run to see
+# all hosts as unreachable (SSH slots exhausted by the other run).
+_ansible_check_lock = asyncio.Lock()
+_ansible_check_lock_since: Optional[float] = None   # time.monotonic() when lock was acquired
+_CHECK_LOCK_TIMEOUT = 600  # 10 min — auto-clear if stuck longer than this
+
+# Flag set while a patch job (scheduled or manual) is actively running.
+# The periodic background check skips its cycle while this is True so it
+# doesn't race against the patch and produce false "unreachable" readings.
+_ansible_patch_running = False
+_ansible_patch_running_since: Optional[float] = None   # time.monotonic() when flag was set
+_PATCH_FLAG_TIMEOUT = 1800  # 30 min — auto-clear if stuck longer than this
+
+# Gate: scheduler waits until the first host check has completed on startup
+# so it has accurate host status / total_updates before evaluating schedules.
+_initial_check_done = asyncio.Event()
+
+# Create FastAPI app
+def _read_version() -> str:
+    """Read version from VERSION file (repo root or Docker /app/VERSION), env override wins."""
+    env_ver = os.getenv("APP_VERSION")
+    if env_ver:
+        return env_ver
+    for path in ("VERSION", "/app/VERSION", "../VERSION"):
+        try:
+            return open(path).read().strip()
+        except FileNotFoundError:
+            continue
+    return "0.0.0-dev"
+
+_APP_VERSION = _read_version()
+app = FastAPI(title="PatchPilot API", version=_APP_VERSION)
+
+# ── CORS configuration ────────────────────────────────────────────────────────
+# ALLOWED_ORIGINS env var: comma-separated list of allowed origins.
+# Examples:
+#   ALLOWED_ORIGINS=*                                          (open — dev/default)
+#   ALLOWED_ORIGINS=https://patchpilot.BLAH.com,https://patchpilot.lan
+#
+# When "*" is used, allow_credentials must be False per the CORS spec.
+# When specific origins are listed, credentials (session cookies) work correctly.
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "*").strip()
+_origins_list = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+_allow_creds = "*" not in _origins_list  # credentials require explicit origins
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins_list,
+    allow_credentials=_allow_creds,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(settings_router)
+app.include_router(auth_router)
+app.include_router(schedules_router)
+app.include_router(backup_router)
+app.include_router(setup_router)
+app.include_router(uninstall_router)
+app.include_router(update_router)
+
+# Pydantic models
+class PatchRequest(BaseModel):
+    hostnames: List[str]
+    become_password: Optional[str] = None
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    print("Starting PatchPilot...")
+    await db.connect()
+    print("Database connected (DatabaseClient)")
     
-    try {
-        patchProgressWS = new WebSocket(`${WS_BASE_URL}/ws/patch-progress`);
-        
-        patchProgressWS.onopen = () => {
-            console.log('Patch progress WebSocket connected');
-        };
-        
-        patchProgressWS.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handlePatchProgress(data);
-        };
-        
-        patchProgressWS.onerror = (error) => {
-            console.error('Patch progress WebSocket error:', error);
-        };
-        
-        patchProgressWS.onclose = () => {
-            console.log('Patch progress WebSocket closed');
-            patchProgressWS = null;
-            // If the patch progress modal is still open, the WS dropped mid-patch.
-            // Start polling /api/patch/status so we can close the modal when done.
-            const modal = document.getElementById('patch-progress-modal');
-            if (modal && modal.style.display === 'flex') {
-                _startPatchStatusPolling();
-            }
-        };
-    } catch (e) {
-        console.error('Failed to create WebSocket:', e);
-        patchProgressWS = null;
-    }
-}
-
-// Polling fallback — used when WebSocket drops during a long patch (e.g. large
-// App Store downloads). Polls /api/patch/status every 10 s and closes the modal
-// once the backend reports the patch is no longer running.
-let _patchStatusPollTimer = null;
-function _startPatchStatusPolling() {
-    if (_patchStatusPollTimer) return; // already polling
-    console.log('WS dropped mid-patch — starting poll fallback');
-    const progressDiv = document.getElementById('patch-progress-messages');
-    if (progressDiv) {
-        const el = document.createElement('div');
-        el.className = 'progress-message msg-warning';
-        el.textContent = `[${new Date().toLocaleTimeString()}] ⚠️ Connection interrupted — monitoring via polling...`;
-        progressDiv.appendChild(el);
-        progressDiv.scrollTop = progressDiv.scrollHeight;
-    }
-    _patchStatusPollTimer = setInterval(async () => {
-        try {
-            const res = await fetch('/api/patch/status', { credentials: 'include' });
-            if (!res.ok) return;
-            const data = await res.json();
-            if (!data.running) {
-                // Patch + post-check are both done
-                clearInterval(_patchStatusPollTimer);
-                _patchStatusPollTimer = null;
-                handlePatchProgress({
-                    type: 'complete',
-                    message: 'All operations complete! (recovered via polling)'
-                });
-            } else if (data.patch_running === false && data.check_running === true) {
-                // Patch done, post-check running — update UI
-                const progressDiv = document.getElementById('patch-progress-messages');
-                if (progressDiv && !progressDiv.querySelector('._poll-check-msg')) {
-                    const el = document.createElement('div');
-                    el.className = 'progress-message msg-info _poll-check-msg';
-                    el.textContent = `[${new Date().toLocaleTimeString()}] 🔍 Patch complete — running post-patch status check...`;
-                    progressDiv.appendChild(el);
-                    progressDiv.scrollTop = progressDiv.scrollHeight;
-                }
-            }
-        } catch (e) {
-            console.warn('Patch status poll failed:', e);
-        }
-    }, 10000); // poll every 10 s
-}
-
-function handlePatchProgress(data) {
-    const progressDiv = document.getElementById('patch-progress-messages');
-    const hostsDiv = document.getElementById('patch-progress-hosts');
-    if (!progressDiv) return;
+    # Create database pool for Settings API & Auth
+    from dependencies import create_pool
+    pool = await create_pool()
     
-    const timestamp = new Date().toLocaleTimeString();
-    let message = '';
-    let msgClass = 'progress-message';
+    # Wire pool into backup/restore router
+    backup_set_pool(pool)
+    # Wire DatabaseClient so restore can rebuild both pools after a DB drop/recreate
+    backup_set_db_client(db)
+    # Wire post-restore callback so restore triggers an immediate host check
+    backup_set_post_restore_callback(run_ansible_check_task)
     
-    switch(data.type) {
-        case 'start':
-            message = `[${timestamp}] ${data.message}`;
-            msgClass += ' msg-start';
-            // Build per-host status badges only if not already shown
-            if (data.hosts && hostsDiv && hostsDiv.children.length === 0) {
-                hostsDiv.innerHTML = data.hosts.map(h => 
-                    `<span id="patch-host-${h.replace(/[^a-zA-Z0-9]/g, '_')}" 
-                           style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:600;background:var(--bg-dark);border:1px solid var(--border);color:var(--text-muted);">
-                        <span class="host-status-icon">⏳</span> ${h}
-                    </span>`
-                ).join('');
-            }
-            // Show modal only if not already visible
-            if (document.getElementById('patch-progress-modal').style.display !== 'flex') {
-                showPatchProgressModal();
-            }
-            break;
-        case 'progress':
-            message = `[${timestamp}] ${data.message}`;
-            // Update per-host badge when we detect host-specific activity
-            if (data.hostname && hostsDiv) {
-                const safeId = data.hostname.replace(/[^a-zA-Z0-9]/g, '_');
-                const badge = document.getElementById(`patch-host-${safeId}`);
-                if (badge) {
-                    badge.style.borderColor = 'var(--blue)';
-                    badge.style.color = 'var(--blue)';
-                    badge.querySelector('.host-status-icon').textContent = '🔧';
-                }
-            }
-            // Color-code based on content
-            if (data.message.startsWith('TASK [')) msgClass += ' msg-task';
-            else if (data.message.startsWith('📦')) msgClass += ' msg-package';
-            else if (data.message.startsWith('✅')) msgClass += ' msg-success';
-            else if (data.message.startsWith('📡') || data.message.startsWith('📥')) msgClass += ' msg-download';
-            else if (data.message.startsWith('📋') || data.message.startsWith('🔍')) msgClass += ' msg-info';
-            else if (data.message.startsWith('🔧') || data.message.startsWith('⚙️') || data.message.startsWith('🔄')) msgClass += ' msg-config';
-            else if (data.message.startsWith('🐧') || data.message.startsWith('🐳')) msgClass += ' msg-info';
-            else if (data.message.startsWith('⏱️')) msgClass += ' msg-timing';
-            else if (data.message.startsWith('⚠️')) msgClass += ' msg-warning';
-            else if (data.message.startsWith('❌')) msgClass += ' msg-error';
-            else if (data.message.includes('skipping:')) msgClass += ' msg-skip';
-            else if (data.message.includes('PLAY RECAP')) msgClass += ' msg-task';
-            break;
-        case 'success':
-            message = `[${timestamp}] ✅ ${data.message}`;
-            msgClass += ' msg-success';
-            // Mark all host badges as success
-            if (hostsDiv) {
-                hostsDiv.querySelectorAll('[id^="patch-host-"]').forEach(badge => {
-                    badge.style.borderColor = 'var(--green-bright)';
-                    badge.style.color = 'var(--green-bright)';
-                    badge.querySelector('.host-status-icon').textContent = '✅';
-                });
-            }
-            break;
-        case 'complete':
-            message = `[${timestamp}] 🎉 ${data.message}`;
-            msgClass += ' msg-complete';
-            setTimeout(() => {
-                closePatchProgressModal();
-                loadHosts(); // Refresh
-            }, 3000);
-            break;
-        case 'error':
-            message = `[${timestamp}] ❌ ${data.message}`;
-            msgClass += ' msg-error';
-            // Mark host badges as error if we know which host
-            if (data.hostname && hostsDiv) {
-                const safeId = data.hostname.replace(/[^a-zA-Z0-9]/g, '_');
-                const badge = document.getElementById(`patch-host-${safeId}`);
-                if (badge) {
-                    badge.style.borderColor = 'var(--red)';
-                    badge.style.color = 'var(--red)';
-                    badge.querySelector('.host-status-icon').textContent = '❌';
-                }
-            }
-            break;
-    }
+    # ── STEP 0: Sync bundled playbook to ansible volume ──────────────────────
+    # The /ansible dir is a Docker volume mount from the host.  It may contain
+    # a stale version of the playbook from a previous install, a restore, or
+    # an old image.  Always overwrite with the version baked into this image
+    # so the container is always running the current playbook.
+    import shutil as _shutil
+    _src_playbook = Path("/ansible-src/check-os-updates.yml")
+    _dst_playbook = Path("/ansible/check-os-updates.yml")
+    if _src_playbook.exists():
+        try:
+            _dst_playbook.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(_src_playbook, _dst_playbook)
+            print(f"Playbook synced: {_src_playbook} → {_dst_playbook}")
+        except Exception as _e:
+            print(f"WARNING: Could not sync playbook: {_e}")
+    else:
+        print(f"WARNING: Bundled playbook not found at {_src_playbook}")
+
+    # ── STEP 1: Core schema (hosts, packages, patch_history) ─────────────────
+    # Must run BEFORE any column-check helpers that assume the tables exist.
+    await ensure_core_tables(pool)
+
+    # ── STEP 2: Auth tables (users, sessions, audit_log) ─────────────────────
+    await run_auth_migration(pool)
     
-    if (message) {
-        const msgEl = document.createElement('div');
-        msgEl.className = msgClass;
-        msgEl.textContent = message;
-        progressDiv.appendChild(msgEl);
-        progressDiv.scrollTop = progressDiv.scrollHeight;
-    }
-}
-
-// State
-let hostsData = [];
-let selectedHosts = new Set();
-
-// Countdown Timer Functions
-function startCountdown() {
-    // Restore countdown from sessionStorage if navigating back
-    const saved = sessionStorage.getItem('patchpilot-countdown');
-    const savedTime = sessionStorage.getItem('patchpilot-countdown-time');
-    if (saved && savedTime) {
-        const elapsed = Math.floor((Date.now() - parseInt(savedTime)) / 1000);
-        const remaining = parseInt(saved) - elapsed;
-        countdownSeconds = remaining > 0 ? remaining : AUTO_CHECK_INTERVAL;
-    } else {
-        countdownSeconds = AUTO_CHECK_INTERVAL;
-    }
-    updateCountdownDisplay();
+    # Cleanup expired sessions
+    await cleanup_expired_sessions(pool)
     
-    if (countdownInterval) {
-        clearInterval(countdownInterval);
-    }
+    # ── STEP 3: Settings table ────────────────────────────────────────────────
+    await ensure_settings_table(pool)
     
-    countdownInterval = setInterval(() => {
-        countdownSeconds--;
-        updateCountdownDisplay();
-        // Persist to sessionStorage for page navigation
-        sessionStorage.setItem('patchpilot-countdown', countdownSeconds);
-        sessionStorage.setItem('patchpilot-countdown-time', Date.now());
-        
-        if (countdownSeconds <= 0) {
-            countdownSeconds = AUTO_CHECK_INTERVAL;
-            // Trigger a real Ansible scan (same as REFRESH button) — not just a DB poll.
-            // The user's "Next check" countdown should mean an actual update scan.
-            triggerCheckAndPoll();
-            // Also re-check for app updates so the sidebar badge appears
-            // without requiring a page refresh
-            checkForUpdateBadge();
-        }
-    }, 1000);
-}
-
-function updateCountdownDisplay() {
-    const minutes = Math.floor(countdownSeconds / 60);
-    const seconds = countdownSeconds % 60;
-    const display = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-    const element = document.getElementById('countdown-timer');
-    if (element) {
-        element.textContent = display;
-    }
-}
-
-function resetCountdown() {
-    countdownSeconds = AUTO_CHECK_INTERVAL;
-    sessionStorage.setItem('patchpilot-countdown', countdownSeconds);
-    sessionStorage.setItem('patchpilot-countdown-time', Date.now());
-    updateCountdownDisplay();
-}
-// Initialize dashboard on load
-document.addEventListener('DOMContentLoaded', () => {
-    checkAuthAndInit();
-});
-
-// Check authentication and initialize
-async function checkAuthAndInit() {
-    // ── Setup guard: redirect to wizard if no users exist ──────────────────
-    try {
-        const setupRes = await fetch(`${API_BASE_URL}/auth/check-setup`);
-        const setupData = await setupRes.json();
-        if (setupData.setup_required || !setupData.has_users) {
-            window.location.replace('setup.html');
-            return;
-        }
-    } catch (e) {
-        // backend not ready yet — continue and let auth check handle it
-    }
-
-    try {
-        const res = await fetch(`${API_BASE_URL}/auth/me`, { credentials: 'include' });
-        const data = await res.json();
-        
-        if (data.authenticated) {
-            isAuthenticated = true;
-            currentUser = data.user;
-            showAuthenticatedUI();
-        } else {
-            isAuthenticated = false;
-            currentUser = null;
-            showUnauthenticatedUI();
-        }
-    } catch (e) {
-        console.error('Auth check failed:', e);
-        isAuthenticated = false;
-        showUnauthenticatedUI();
-    }
+    # ── STEP 4: Additive column migrations for existing installs ──────────────
+    await ensure_audit_log_columns(pool)
+    await ensure_hosts_columns(pool)
+    await ensure_patch_history_columns(pool)
     
-    // Always load dashboard (public read-only data)
-    initializeEventListeners();
-    loadDashboard();
-    await fetchRefreshInterval();
-    startCountdown();
-    // Fetch real version from API and update the sidebar version tag
-    fetch(`${API_BASE_URL}/`)
-        .then(r => r.json())
-        .then(d => {
-            if (d.version) {
-                const el = document.getElementById('sidebar-app-version');
-                // Strip "-alpha"/"-beta" suffix — the HTML has a separate span for that
-                const ver = d.version.replace(/-(alpha|beta).*$/i, '');
-                if (el) el.textContent = 'v' + ver;
-            }
-        })
-        .catch(() => {}); // silently keep the hardcoded fallback
-    // Check for available updates and show sidebar badge
-    checkForUpdateBadge();
-    // Note: startCountdown already handles periodic loadDashboard at countdown=0
-    // No duplicate setInterval needed
-}
+    # ── STEP 5: Scheduling tables ─────────────────────────────────────────────
+    await ensure_schedules_tables(pool)
 
-// Fetch refresh interval from settings
-async function fetchRefreshInterval() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/settings/app`, { credentials: 'include' });
-        if (response.ok) {
-            const settings = await response.json();
-            if (settings.refresh_interval && settings.refresh_interval.value) {
-                AUTO_CHECK_INTERVAL = parseInt(settings.refresh_interval.value);
-                if (AUTO_CHECK_INTERVAL < 30) AUTO_CHECK_INTERVAL = 30; // Floor
-                console.log(`Refresh interval set to ${AUTO_CHECK_INTERVAL}s`);
-            }
-        }
-    } catch (e) {
-        console.log('Could not fetch refresh interval, using default');
-    }
-}
-
-// Show UI for authenticated users
-function showAuthenticatedUI() {
-    const sidebarUser = document.getElementById('sidebar-user');
-    const sidebarLogin = document.getElementById('sidebar-login');
-    const mgmtLabel = document.getElementById('mgmt-section-label');
-    const refreshBtn = document.getElementById('refresh-btn');
-    const patchBtn = document.getElementById('patch-selected-btn');
-    const mgmtNavIds = ['nav-hosts-mgmt','nav-general','nav-ssh-keys','nav-users','nav-schedules','nav-advanced'];
-
-    if (sidebarUser) {
-        sidebarUser.style.display = 'flex';
-        document.getElementById('sidebar-username').textContent = currentUser.username;
-        document.getElementById('sidebar-role').textContent = currentUser.role;
-        const initials = currentUser.username.substring(0, 2).toUpperCase();
-        document.getElementById('user-avatar-initials').textContent = initials;
-    }
-    if (sidebarLogin) sidebarLogin.style.display = 'none';
-    if (mgmtLabel) mgmtLabel.style.display = '';
-    mgmtNavIds.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.style.display = '';
-    });
-    if (refreshBtn) refreshBtn.style.display = '';
-    if (patchBtn) patchBtn.style.display = '';
-
-    // Enable checkboxes
-    document.querySelectorAll('.host-checkbox, #select-all').forEach(cb => {
-        cb.disabled = false;
-    });
-}
-
-// Show UI for unauthenticated users (read-only)
-function showUnauthenticatedUI() {
-    const sidebarUser = document.getElementById('sidebar-user');
-    const sidebarLogin = document.getElementById('sidebar-login');
-    const mgmtLabel = document.getElementById('mgmt-section-label');
-    const refreshBtn = document.getElementById('refresh-btn');
-    const patchBtn = document.getElementById('patch-selected-btn');
-    const mgmtNavIds = ['nav-hosts-mgmt','nav-general','nav-ssh-keys','nav-users','nav-schedules','nav-advanced'];
-
-    if (sidebarUser) sidebarUser.style.display = 'none';
-    if (sidebarLogin) sidebarLogin.style.display = 'flex';
-    if (mgmtLabel) mgmtLabel.style.display = 'none';
-    mgmtNavIds.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.style.display = 'none';
-    });
-    if (refreshBtn) refreshBtn.style.display = 'none';
-    if (patchBtn) patchBtn.style.display = 'none';
-}
-
-// Handle logout
-async function handleLogout() {
-    try {
-        await fetch(`${API_BASE_URL}/auth/logout`, {
-            method: 'POST',
-            credentials: 'include'
-        });
-    } catch (e) {
-        console.error('Logout error:', e);
-    }
-    window.location.href = 'login.html';
-}
-
-// Event Listeners
-function initializeEventListeners() {
-    document.getElementById('refresh-btn').addEventListener('click', handleRefresh);
-    document.getElementById('patch-selected-btn').addEventListener('click', handlePatchSelected);
-    document.getElementById('select-all').addEventListener('click', handleSelectAll);
-}
-
-// Load Dashboard Data
-async function loadDashboard() {
-    try {
-        await Promise.all([
-            loadStats(),
-            loadHosts(),
-            loadChartData(),
-            loadSidebarStats()
-        ]);
-    } catch (error) {
-        showStatus('Error loading dashboard: ' + error.message, 'error');
-    }
-}
-
-// Load Sidebar Stats (load avg, uptime, badges)
-async function loadSidebarStats() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/stats/sidebar?t=${Date.now()}`, {
-            cache: 'no-store'
-        });
-        if (!response.ok) return;
-        const data = await response.json();
-        
-        // Load average
-        const loadEl = document.getElementById('sidebar-load');
-        if (loadEl) {
-            loadEl.textContent = `Load: ${data.load_1} / ${data.load_5} / ${data.load_15}`;
-        }
-        // Color the load dot based on load average
-        const loadDot = document.getElementById('sidebar-load-dot');
-        if (loadDot) {
-            if (data.load_1 > 4) loadDot.className = 'status-dot red';
-            else if (data.load_1 > 1.5) loadDot.className = 'status-dot amber';
-            else loadDot.className = 'status-dot green';
-        }
-        
-        // Uptime
-        const uptimeEl = document.getElementById('sidebar-uptime');
-        if (uptimeEl) {
-            uptimeEl.textContent = `Uptime: ${data.uptime}`;
-        }
-        
-        // Badge: Hosts
-        updateBadge('sidebar-hosts-badge', data.host_count);
-        // Badge: Packages
-        updateBadge('sidebar-packages-badge', data.package_count);
-        // Badge: Patch History
-        updateBadge('sidebar-history-badge', data.history_count);
-        // Badge: Alerts
-        updateBadge('sidebar-alerts-badge', data.alert_count);
-        
-    } catch (error) {
-        console.error('Error loading sidebar stats:', error);
-    }
-}
-
-function updateBadge(elementId, count) {
-    const el = document.getElementById(elementId);
-    if (!el) return;
-    if (count > 0) {
-        el.textContent = count;
-        el.style.display = '';
-    } else {
-        el.style.display = 'none';
-    }
-}
-
-// Scroll to section when clicking sidebar nav
-function scrollToSection(sectionId) {
-    const el = document.getElementById(sectionId);
-    if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-}
-
-// Load Statistics
-async function loadStats() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/stats?t=${Date.now()}`, {
-            cache: 'no-store',
-            headers: {
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache'
-            }
-        });
-        const stats = await response.json();
-        
-        document.getElementById('total-hosts').textContent = stats.total_hosts;
-        document.getElementById('up-to-date').textContent = stats.up_to_date;
-        document.getElementById('need-updates').textContent = stats.need_updates;
-        document.getElementById('unreachable').textContent = stats.unreachable;
-        document.getElementById('total-updates').textContent = stats.total_pending_updates;
-        
-        // Update sidebar
-        const sidebarCount = document.getElementById('sidebar-host-count');
-        if (sidebarCount) sidebarCount.textContent = `${stats.total_hosts} hosts monitored`;
-        
-        // Update table subtitle
-        const subtitle = document.getElementById('table-subtitle');
-        if (subtitle) subtitle.textContent = `${stats.total_hosts} systems · ${stats.total_pending_updates} pending updates`;
-        
-        // Update sidebar status dot based on unreachable count
-        const sidebarHostDot = document.getElementById('sidebar-host-dot');
-        if (sidebarHostDot) {
-            sidebarHostDot.className = 'status-dot ' + (stats.unreachable > 0 ? (stats.unreachable === stats.total_hosts ? 'red' : 'amber') : 'green');
-        }
-    } catch (error) {
-        console.error('Error loading stats:', error);
-    }
-}
-
-// Load Hosts
-async function loadHosts() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/hosts?t=${Date.now()}`, {
-            cache: 'no-store',
-            headers: {
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache'
-            }
-        });
-        const parsed = await response.json();
-        hostsData = Array.isArray(parsed) ? parsed : [];
-
-        // Track newest last_checked across all hosts so triggerCheckAndPoll
-        // knows when fresh Ansible results have landed in the DB.
-        const newestCheck = hostsData.reduce((max, h) => {
-            const t = h.last_checked ? new Date(h.last_checked).getTime() : 0;
-            return t > max ? t : max;
-        }, 0);
-        if (newestCheck > _lastCheckTimestamp) _lastCheckTimestamp = newestCheck;
-
-        renderHostsTable();
-    } catch (error) {
-        console.error('Error loading hosts:', error);
-        showStatus('Error loading hosts: ' + error.message, 'error');
-    }
-}
-
-// Render Hosts Table
-function renderHostsTable() {
-    const tbody = document.getElementById('hosts-table-body');
+    # ── STEP 6: Saved SSH keys table ──────────────────────────────────────────
+    await ensure_saved_ssh_keys_table(pool)
     
-    if (hostsData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="loading">No hosts found</td></tr>';
-        return;
-    }
-    
-    tbody.innerHTML = hostsData.map(host => {
-        const isSelected = selectedHosts.has(host.hostname);
-        const statusClass = getStatusClass(host.status);
-        const lastChecked = host.last_checked 
-            ? new Date(host.last_checked).toLocaleTimeString()
-            : 'Never';
-        
-        return `
-            <tr class="${isSelected ? 'selected' : ''}" data-hostname="${host.hostname}">
-                <td>
-                    <input 
-                        type="checkbox" 
-                        class="host-checkbox" 
-                        data-hostname="${host.hostname}"
-                        ${isSelected ? 'checked' : ''}
-                        ${!isAuthenticated ? 'disabled' : ''}
-                        onchange="handleHostCheckbox('${host.hostname}')"
-                    />
-                </td>
-                <td>
-                    <strong style="color:var(--text-primary)">${host.hostname}</strong>
-                    ${host.is_control_node ? '<span class="control-node-badge">CONTROL</span>' : ''}
-                </td>
-                <td><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-muted)">${host.ip_address || 'N/A'}</span></td>
-                <td>${host.os_family || 'Unknown'}</td>
-                <td>
-                    <span class="status-badge status-${statusClass}">
-                        ${host.status === 'up-to-date' ? '✓' : host.status === 'updates-available' ? '⚠' : '✕'} ${host.status}
-                    </span>
-                </td>
-                <td>
-                    ${host.total_updates > 0 
-                        ? `<span style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--amber)">${host.total_updates} pkg${host.total_updates > 1 ? 's' : ''}</span>`
-                        : '<span style="color:var(--text-muted)">—</span>'
-                    }
-                </td>
-                <td><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">${lastChecked}</span></td>
-                <td>
-                    <button class="action-btn" onclick="showHostDetails('${host.hostname}')">
-                        Details
-                    </button>
-                </td>
-            </tr>
-        `;
-    }).join('');
-    
-    updateSelectedCount();
-}
+    # Start background task for periodic checks
+    asyncio.create_task(periodic_ansible_check())
+    print("[STARTUP] periodic_ansible_check loop launched")
 
-// Get Status CSS Class
-function getStatusClass(status) {
-    const statusMap = {
-        'up-to-date': 'up-to-date',
-        'updates-available': 'updates-available',
-        'unreachable': 'unreachable',
-        'unknown': 'unknown'
-    };
-    return statusMap[status] || 'unknown';
-}
+    # Start background task for auto-patch schedules
+    asyncio.create_task(schedule_checker_loop())
+    print("[STARTUP] schedule_checker_loop launched")
 
-// Handle Refresh
-// Shared function used by both the REFRESH button and the countdown timer.
-// Triggers a real Ansible scan via POST /api/check, then polls until the
-// lock clears and updates the dashboard. Prevents the two entry-points from
-// having divergent behaviour.
-async function triggerCheckAndPoll() {
-    if (!isAuthenticated) return;
+    # Start background task for update checker
+    async def _get_setting(key: str) -> Optional[str]:
+        """Read a single setting value from the DB for the update checker."""
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchval(
+                    "SELECT value FROM settings WHERE key = $1", key
+                )
+                return row
+        except Exception:
+            return None
+    asyncio.create_task(periodic_update_check(_get_setting))
+    print("[STARTUP] periodic_update_check loop launched")
 
-    const btn = document.getElementById('refresh-btn');
-    const timerEl = document.getElementById('countdown-timer');
+    # Defer initial check until the DB has hosts to check.
+    # After a restore + self-restart the pools need a few seconds to
+    # reconnect and the restored data to become visible.  Rather than a
+    # fixed sleep, poll until hosts exist (up to 60s ceiling).
+    async def _deferred_initial_check():
+        print("[STARTUP] Deferred initial check: waiting for hosts in DB...")
+        for _ in range(12):          # 12 × 5s = 60s max wait
+            await asyncio.sleep(5)
+            try:
+                hosts = await db.get_all_hosts()
+                if hosts:
+                    print(f"[STARTUP] Found {len(hosts)} host(s) — running initial Ansible check")
+                    break
+            except Exception:
+                pass                 # pool not ready yet — retry
+        try:
+            await run_ansible_check_task()
+            print(f"[STARTUP] Initial Ansible check completed")
+        except Exception as e:
+            print(f"[STARTUP] ERROR in initial Ansible check: {type(e).__name__}: {e}")
+            logger.error(f"Deferred initial check error: {e}", exc_info=True)
+        finally:
+            _initial_check_done.set()
+            print("[STARTUP] _initial_check_done event set — scheduler unblocked")
+    asyncio.create_task(_deferred_initial_check())
 
-    // Disable REFRESH button and freeze countdown display while scanning
-    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="btn-icon">⏳</span> Scanning...'; }
-    if (timerEl) timerEl.textContent = '⏳ scanning';
+@app.on_event("shutdown")
+async def shutdown_event():
+    await db.close()
+    from dependencies import close_pool
+    await close_pool()
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/check`, {
-            method: 'POST',
-            credentials: 'include'
-        });
 
-        if (!response.ok) throw new Error('Failed to trigger check');
+async def ensure_core_tables(pool):
+    """
+    Create the canonical core tables on a fresh install.
+    Uses IF NOT EXISTS so it is safe to run on every startup.
+    All current columns are included here — the ensure_*_columns helpers
+    below only handle ADDITIVE migrations for existing older installs.
+    """
+    try:
+        async with pool.acquire() as conn:
+            # hosts — central table, created first (others FK to it)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS hosts (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    hostname          VARCHAR(255) UNIQUE NOT NULL,
+                    ip_address        VARCHAR(45),
+                    os_type           VARCHAR(50),
+                    os_family         VARCHAR(50),
+                    last_checked      TIMESTAMP WITH TIME ZONE,
+                    status            VARCHAR(50)   DEFAULT 'unknown',
+                    total_updates     INTEGER       DEFAULT 0,
+                    reboot_required   BOOLEAN       DEFAULT FALSE,
+                    allow_auto_reboot BOOLEAN       DEFAULT TRUE,
+                    ssh_user          VARCHAR(100)  DEFAULT 'root',
+                    ssh_port          INTEGER       DEFAULT 22,
+                    ssh_key_type               VARCHAR(50)   DEFAULT 'default',
+                    ssh_private_key_encrypted  BYTEA,
+                    ssh_password_encrypted     BYTEA,
+                    notes             TEXT,
+                    tags              VARCHAR(255),
+                    is_control_node   BOOLEAN       DEFAULT FALSE,
+                    created_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hosts_hostname ON hosts(hostname)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hosts_status ON hosts(status)"
+            )
 
-        const data = await response.json();
-        const queued = data.status === 'queued';
+            # packages
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS packages (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    host_id           UUID REFERENCES hosts(id) ON DELETE CASCADE,
+                    package_name      VARCHAR(255) NOT NULL,
+                    current_version   VARCHAR(100),
+                    available_version VARCHAR(100),
+                    update_type       VARCHAR(50),
+                    detected_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    UNIQUE(host_id, package_name)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_packages_host_id ON packages(host_id)"
+            )
 
-        document.dispatchEvent(new CustomEvent('patchpilot:refresh-start'));
+            # patch_history (includes output column from v0.9.1)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS patch_history (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    host_id           UUID REFERENCES hosts(id) ON DELETE CASCADE,
+                    execution_time    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    packages_updated  TEXT[],
+                    success           BOOLEAN,
+                    error_message     TEXT,
+                    duration_seconds  INTEGER,
+                    output            TEXT DEFAULT ''
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_patch_history_host_id "
+                "ON patch_history(host_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_patch_history_execution_time "
+                "ON patch_history(execution_time)"
+            )
 
-        // Poll the backend every 5 s. Stop when:
-        //  - a host's last_checked timestamp is newer than when we started, OR
-        //  - we've waited up to 5 minutes (fallback)
-        const startedAt = Date.now();
-        const MAX_WAIT_MS = 300000; // 5 min
-        const pollInterval = setInterval(async () => {
-            await loadDashboard();
-            const elapsed = Date.now() - startedAt;
-            const anyUpdated = _lastCheckTimestamp && _lastCheckTimestamp > startedAt;
-            if (anyUpdated || elapsed >= MAX_WAIT_MS) {
-                clearInterval(pollInterval);
-                if (btn) { btn.disabled = false; btn.innerHTML = '<span class="btn-icon">🔄</span> Refresh Status'; }
-                resetCountdown();
-                document.dispatchEvent(new CustomEvent('patchpilot:refresh-done'));
-            }
-        }, 5000);
-    } catch (error) {
-        showStatus('Error triggering check: ' + error.message, 'error');
-        if (btn) { btn.disabled = false; btn.innerHTML = '<span class="btn-icon">🔄</span> Refresh Status'; }
-        resetCountdown();
-    }
-}
+            print("Core tables ready (hosts, packages, patch_history)")
+    except Exception as e:
+        print(f"Core table creation FAILED: {e}")
+        raise  # Fatal — cannot continue without schema
 
-// Track the most recent last_checked timestamp seen across all hosts so
-// triggerCheckAndPoll knows when new results have arrived from Ansible.
-let _lastCheckTimestamp = 0;
 
-async function handleRefresh() {
-    if (!isAuthenticated) {
-        showStatus('Please sign in to trigger a refresh', 'error');
-        return;
-    }
-    resetCountdown();
-    triggerCheckAndPoll();
-}
+async def run_auth_migration(pool):
+    """Create auth tables (users, sessions, audit_log) if they don't exist.
 
-async function _handleRefresh_UNUSED() {
-    // kept for reference — replaced by triggerCheckAndPoll above
-    if (!isAuthenticated) {
-        showStatus('Please sign in to trigger a refresh', 'error');
-        return;
-    }
-    
-    const btn = document.getElementById('refresh-btn');
-    btn.disabled = true;
-    resetCountdown();
-    btn.innerHTML = '<span class="btn-icon">⏳</span> Checking...';
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}/check`, {
-            method: 'POST',
-            credentials: 'include'
-        });
-        
-        if (response.ok) {
-            showStatus('Update check initiated. Waiting for completion...', 'success');
-            document.dispatchEvent(new CustomEvent('patchpilot:refresh-start'));
-            
-            // Poll every 5 seconds for up to 3 minutes
-            let elapsed = 0;
-            const pollInterval = setInterval(async () => {
-                elapsed += 5000;
-                await loadDashboard();
-                
-                if (elapsed >= 180000) {
-                    clearInterval(pollInterval);
-                   btn.disabled = false;
-                   btn.innerHTML = '<span class="btn-icon">🔄</span> Refresh Status';
-                   showStatus('Dashboard refreshed', 'success');
-                   document.dispatchEvent(new CustomEvent('patchpilot:refresh-done'));
-                }
-            }, 5000);
-        } else {
-            throw new Error('Failed to trigger check');
-        }
-    } catch (error) {
-        showStatus('Error triggering check: ' + error.message, 'error');
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">🔄</span> Refresh Status';
-    }
-}
-
-// Handle Host Checkbox
-function handleHostCheckbox(hostname) {
-    if (selectedHosts.has(hostname)) {
-        selectedHosts.delete(hostname);
-    } else {
-        selectedHosts.add(hostname);
-    }
-    updateSelectedCount();
-    renderHostsTable();
-}
-
-// Handle Select All
-function handleSelectAll() {
-    const selectAllCheckbox = document.getElementById('select-all');
-    
-    if (selectAllCheckbox.checked) {
-        hostsData.forEach(host => selectedHosts.add(host.hostname));
-    } else {
-        selectedHosts.clear();
-    }
-    
-    updateSelectedCount();
-    renderHostsTable();
-}
-
-// Update Selected Count
-function updateSelectedCount() {
-    const count = selectedHosts.size;
-    document.getElementById('selected-count').textContent = count;
-    document.getElementById('patch-selected-btn').disabled = count === 0;
-}
-
-// Handle Patch Selected
-function handlePatchSelected() {
-    if (selectedHosts.size === 0) return;
-    
-    // Clear any stale single-host selection from "Patch This Host"
-    window.selectedHostsForPatch = Array.from(selectedHosts);
-    
-    const hostsList = document.getElementById('patch-hosts-list');
-    hostsList.innerHTML = window.selectedHostsForPatch
-        .map(hostname => `<li><strong>${hostname}</strong></li>`)
-        .join('');
-    
-    document.getElementById('patch-modal').style.display = 'flex';
-}
-
-// Confirm Patch
-async function confirmPatch() {
-    const password = document.getElementById('become-password').value;
-    
-    if (!password) {
-        alert('Please enter sudo password');
-        return;
-    }
-    
-    // Build the definitive hosts list
-    const hostsToPatc = window.selectedHostsForPatch || Array.from(selectedHosts);
-    
-    if (hostsToPatc.length === 0) {
-        alert('No hosts selected for patching');
-        return;
-    }
-    
-    // Warn about control node (but allow patching)
-    const controlNodes = hostsToPatc.filter(hostname => {
-        const host = hostsData.find(h => h.hostname === hostname);
-        return host && host.is_control_node;
-    });
-    
-    if (controlNodes.length > 0) {
-        const proceed = confirm(
-            `⚠️ NOTICE: You are patching the CONTROL NODE (${controlNodes.join(', ')}).\n\n` +
-            `This host runs PatchPilot. If a reboot is required after patching, ` +
-            `you'll need to manually reboot it to avoid service disruption.\n\n` +
-            `Continue with patching?`
+    SQL is inlined here — no dependency on a migrations/ file that may not
+    be present inside the Docker image.
+    """
+    AUTH_MIGRATION_SQL = """
+        -- Users table for authentication
+        CREATE TABLE IF NOT EXISTS users (
+            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            username      VARCHAR(50)  UNIQUE NOT NULL,
+            email         VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            role          VARCHAR(20)  NOT NULL DEFAULT 'viewer',
+            is_active     BOOLEAN      DEFAULT true,
+            created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            last_login    TIMESTAMP WITH TIME ZONE
         );
-        if (!proceed) {
-            return;
-        }
-    }
-    
-    // 1. Close confirm modal
-    closePatchModal();
-    
-    // 2. Show progress modal IMMEDIATELY — never wait on WebSocket
-    showPatchProgressModal();
-    const hostsDiv = document.getElementById('patch-progress-hosts');
-    if (hostsDiv) {
-        hostsDiv.innerHTML = hostsToPatc.map(h => 
-            `<span id="patch-host-${h.replace(/[^a-zA-Z0-9]/g, '_')}" 
-                   style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:600;background:var(--bg-dark);border:1px solid var(--border);color:var(--text-muted);">
-                <span class="host-status-icon">⏳</span> ${h}
-            </span>`
-        ).join('');
-    }
-    const progressDiv = document.getElementById('patch-progress-messages');
-    if (progressDiv) {
-        const ts = new Date().toLocaleTimeString();
-        const msgEl = document.createElement('div');
-        msgEl.className = 'progress-message msg-start';
-        msgEl.textContent = `[${ts}] Starting patch for ${hostsToPatc.length} host(s)...`;
-        progressDiv.appendChild(msgEl);
-    }
-    
-    // 3. Connect WebSocket in background — enhances the modal but doesn't block it
-    connectPatchProgressWebSocket();
-    
-    // Fire activity bar event
-    document.dispatchEvent(new CustomEvent('patchpilot:patch-start', { detail: { hosts: hostsToPatc } }));
-    
-    const btn = document.getElementById('patch-selected-btn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="btn-icon">⏳</span> Patching...';
-    
-    try {
-        // 4. Fire patch request
-        const response = await fetch(`${API_BASE_URL}/patch`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                hostnames: hostsToPatc,
-                become_password: password
-            })
-        });
-        
-        if (response.ok) {
-            showStatus(
-                `Patch operation initiated for ${hostsToPatc.length} host(s). This may take several minutes...`,
-                'success'
-            );
-            document.dispatchEvent(new CustomEvent('patchpilot:patch-done', { detail: { success: true } }));
+
+        -- Sessions table
+        CREATE TABLE IF NOT EXISTS sessions (
+            id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id    UUID REFERENCES users(id) ON DELETE CASCADE,
+            token      VARCHAR(255) UNIQUE NOT NULL,
+            expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            ip_address VARCHAR(45),
+            user_agent TEXT
+        );
+
+        -- Audit log
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id       UUID REFERENCES users(id) ON DELETE SET NULL,
+            username      VARCHAR(50),
+            action        VARCHAR(100) NOT NULL,
+            resource_type VARCHAR(50),
+            resource_id   VARCHAR(255),
+            details       JSONB,
+            ip_address    VARCHAR(45),
+            user_agent    TEXT,
+            success       BOOLEAN DEFAULT true,
+            timestamp     TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+
+        -- Indexes
+        CREATE INDEX IF NOT EXISTS idx_users_username      ON users(username);
+        CREATE INDEX IF NOT EXISTS idx_users_email         ON users(email);
+        CREATE INDEX IF NOT EXISTS idx_sessions_token      ON sessions(token);
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_id    ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_user_id   ON audit_log(user_id);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_action    ON audit_log(action);
+
+        -- Row Level Security (permissive — enforced at application layer)
+        ALTER TABLE users     ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE sessions   ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE audit_log  ENABLE ROW LEVEL SECURITY;
+    """
+
+    # RLS policies must be created outside a multi-statement string on some PG versions
+    RLS_POLICIES = [
+        ("users",     "Allow all operations on users",     "users"),
+        ("sessions",  "Allow all operations on sessions",  "sessions"),
+        ("audit_log", "Allow all operations on audit_log", "audit_log"),
+    ]
+
+    try:
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'users'
+                )
+            """)
+            if not exists:
+                print("Running authentication migration (inlined)...")
+                await conn.execute(AUTH_MIGRATION_SQL)
+                # Create RLS policies only if they don't already exist
+                for table, policy_name, _ in RLS_POLICIES:
+                    policy_exists = await conn.fetchval("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM pg_policies
+                            WHERE tablename = $1 AND policyname = $2
+                        )
+                    """, table, policy_name)
+                    if not policy_exists:
+                        await conn.execute(
+                            f'CREATE POLICY "{policy_name}" ON {table} FOR ALL USING (true)'
+                        )
+                print("Authentication tables created successfully")
+            else:
+                print("Authentication tables already exist")
+    except Exception as e:
+        print(f"Auth migration failed: {e}")
+        raise  # Fatal — cannot create users without this schema
+
+
+async def ensure_settings_table(pool):
+    """Create settings table if it doesn't exist and seed defaults"""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key VARCHAR(100) PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT '',
+                    description TEXT,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            # Seed defaults — runs for both new and existing installs (ON CONFLICT DO NOTHING)
+            count = await conn.fetchval("SELECT COUNT(*) FROM settings")
+            _default_settings = [
+                ('refresh_interval',  '300',  'Dashboard auto-refresh interval in seconds'),
+                ('default_ssh_user',  'root', 'Default SSH username for new hosts'),
+                ('default_ssh_port',  '22',   'Default SSH port for new hosts'),
+                ('schedule_timezone', 'UTC',  'Timezone for auto-patch schedule windows '
+                                              '(e.g. America/Chicago, America/New_York, America/Los_Angeles)'),
+                # ── Network / HTTPS settings ───────────────────────────────────
+                ('app_base_url',     os.getenv('APP_BASE_URL', ''),
+                 'Public base URL of this PatchPilot instance '
+                 '(e.g. https://patchpilot.BLAH.com). '
+                 'Used for CORS and self-referencing links.'),
+                ('allowed_origins',  os.getenv('ALLOWED_ORIGINS', '*'),
+                 'Comma-separated CORS origins. Use * for dev/open access or list '
+                 'explicit URLs for production '
+                 '(e.g. https://patchpilot.BLAH.com,https://patchpilot.lan). '
+                 'Changes require a container restart to take effect.'),
+                # ── macOS / System update settings ────────────────────────────
+                ('macos_system_updates_enabled', os.getenv('MACOS_SYSTEM_UPDATES_ENABLED', 'false'),
+                 'Enable macOS system (OS) updates via CLI during patch runs. Defaults to '
+                 'false — softwareupdate over SSH is unreliable on newer macOS because the '
+                 'daemon often hands off to the GUI notification manager and hangs. When '
+                 'false, PatchPilot still detects available system updates but skips '
+                 'installing them. Users install via System Settings instead.'),
+                # ── macOS / App Store (mas) settings ──────────────────────────
+                ('mas_enabled',          os.getenv('MAS_ENABLED', 'false'),
+                 'Enable App Store (mas) updates on macOS hosts. Defaults to false — '
+                 'mas in a headless SSH session requires an active GUI login and App Store '
+                 'sign-in on the target Mac and will hang silently if those conditions '
+                 'are not met. Set to true only after confirming mas works interactively.'),
+                ('mas_excluded_ids',     os.getenv('MAS_EXCLUDED_IDS', '497799835'),
+                 'Comma-separated App Store app IDs to skip during automated updates. '
+                 'Default excludes Xcode (497799835) — it is enormous and rarely needs '
+                 'automated updates. Add more IDs as needed.'),
+                ('mas_per_app_timeout',  os.getenv('MAS_PER_APP_TIMEOUT', '600'),
+                 'Hard per-app timeout in seconds on the remote host (default 600 = 10 min). '
+                 'A timeout binary on the Mac kills a hung mas process so the run does not '
+                 'block forever. Increase for very large apps.'),
+                ('mas_timeout_seconds',  os.getenv('MAS_TIMEOUT_SECONDS', '7200'),
+                 'Max seconds to wait for all App Store downloads per host (default 7200 = 2 h). '
+                 'This is the Ansible async timeout — the overall ceiling for the task.'),
+                # ── Update checker settings ───────────────────────────────────
+                ('update_check_enabled', 'true',
+                 'Enable periodic checks for new PatchPilot releases via GitHub.'),
+                ('update_check_interval', '86400',
+                 'How often to check for updates, in seconds (default 86400 = 24 hours, '
+                 'minimum 3600 = 1 hour).'),
+            ]
+            await conn.executemany("""
+                INSERT INTO settings (key, value, description) VALUES ($1, $2, $3)
+                ON CONFLICT (key) DO NOTHING
+            """, _default_settings)
+            _status = "created" if count == 0 else "existing"
+            print(f"Settings table ready ({_status}, new keys merged)")
+    except Exception as e:
+        print(f"Settings table init failed: {e}")
+
+
+async def ensure_audit_log_columns(pool):
+    """Add missing columns to audit_log if table predates auth migration"""
+    columns_to_add = [
+        ("user_id", "UUID REFERENCES users(id) ON DELETE SET NULL"),
+        ("username", "VARCHAR(50)"),
+        ("ip_address", "VARCHAR(45)"),
+        ("user_agent", "TEXT"),
+        ("success", "BOOLEAN DEFAULT true"),
+    ]
+    try:
+        async with pool.acquire() as conn:
+            for col_name, col_type in columns_to_add:
+                exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'audit_log' AND column_name = $1
+                    )
+                """, col_name)
+                if not exists:
+                    await conn.execute(f"ALTER TABLE audit_log ADD COLUMN {col_name} {col_type}")
+                    print(f"Added column '{col_name}' to audit_log")
+    except Exception as e:
+        print(f"Audit log column check failed: {e}")
+
+
+async def ensure_patch_history_columns(pool):
+    """Auto-add newer columns to patch_history so fresh deployments don't need manual migrations"""
+    columns_to_add = [
+        ("output", "TEXT DEFAULT ''"),
+    ]
+    try:
+        async with pool.acquire() as conn:
+            for col_name, col_type in columns_to_add:
+                exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'patch_history' AND column_name = $1
+                    )
+                """, col_name)
+                if not exists:
+                    await conn.execute(f"ALTER TABLE patch_history ADD COLUMN {col_name} {col_type}")
+                    print(f"Added column '{col_name}' to patch_history")
+                else:
+                    print(f"patch_history.{col_name} already present")
+    except Exception as e:
+        print(f"patch_history column check failed: {e}")
+
+
+async def ensure_hosts_columns(pool):
+    """Add missing columns to hosts table and rename legacy column names."""
+    columns_to_add = [
+        ("allow_auto_reboot", "BOOLEAN DEFAULT TRUE"),
+    ]
+    try:
+        async with pool.acquire() as conn:
+            for col_name, col_type in columns_to_add:
+                exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'hosts' AND column_name = $1
+                    )
+                """, col_name)
+                if not exists:
+                    await conn.execute(f"ALTER TABLE hosts ADD COLUMN {col_name} {col_type}")
+                    print(f"Added column '{col_name}' to hosts table")
+
+            # Rename ssh_private_key -> ssh_private_key_encrypted for existing installs
+            old_key = await conn.fetchval("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_name='hosts' AND column_name='ssh_private_key')
+            """)
+            if old_key:
+                await conn.execute("ALTER TABLE hosts RENAME COLUMN ssh_private_key TO ssh_private_key_encrypted")
+                await conn.execute("ALTER TABLE hosts ALTER COLUMN ssh_private_key_encrypted TYPE BYTEA USING ssh_private_key_encrypted::bytea")
+                print("Migrated hosts.ssh_private_key -> ssh_private_key_encrypted (BYTEA)")
+
+            # Rename ssh_password -> ssh_password_encrypted for existing installs
+            old_pwd = await conn.fetchval("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_name='hosts' AND column_name='ssh_password')
+            """)
+            if old_pwd:
+                await conn.execute("ALTER TABLE hosts RENAME COLUMN ssh_password TO ssh_password_encrypted")
+                await conn.execute("ALTER TABLE hosts ALTER COLUMN ssh_password_encrypted TYPE BYTEA USING ssh_password_encrypted::bytea")
+                print("Migrated hosts.ssh_password -> ssh_password_encrypted (BYTEA)")
+
+    except Exception as e:
+        print(f"Hosts column check failed: {e}")
+
+
+async def ensure_schedules_tables(pool):
+    """Create auto-patch scheduling tables if they don't exist, and migrate column types"""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS patch_schedules (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name VARCHAR(100) NOT NULL,
+                    enabled BOOLEAN DEFAULT TRUE,
+                    day_of_week TEXT NOT NULL DEFAULT 'sunday',
+                    start_time TIME NOT NULL DEFAULT '02:00',
+                    end_time TIME NOT NULL DEFAULT '04:00',
+                    auto_reboot BOOLEAN DEFAULT FALSE,
+                    become_password_encrypted TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    last_run TIMESTAMP WITH TIME ZONE,
+                    last_status TEXT
+                )
+            """)
+            # Migrate column types - swallow errors for already-correct columns
+            type_migrations = [
+                "ALTER TABLE patch_schedules ALTER COLUMN become_password_encrypted TYPE TEXT",
+                "ALTER TABLE patch_schedules ALTER COLUMN day_of_week TYPE TEXT",
+                "ALTER TABLE patch_schedules ALTER COLUMN last_status TYPE TEXT",
+            ]
+            for sql in type_migrations:
+                try:
+                    await conn.execute(sql)
+                except Exception:
+                    pass
+
+            # Add retry_host_ids column with explicit existence check.
+            # We do NOT silently swallow this one — we need to know if it worked.
+            retry_col_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'patch_schedules'
+                      AND column_name  = 'retry_host_ids'
+                )
+            """)
+            if not retry_col_exists:
+                await conn.execute(
+                    "ALTER TABLE patch_schedules ADD COLUMN retry_host_ids UUID[]"
+                )
+                print("Added retry_host_ids column to patch_schedules")
+            else:
+                print("retry_host_ids column already present")
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS patch_schedule_hosts (
+                    schedule_id UUID REFERENCES patch_schedules(id) ON DELETE CASCADE,
+                    host_id UUID REFERENCES hosts(id) ON DELETE CASCADE,
+                    PRIMARY KEY (schedule_id, host_id)
+                )
+            """)
+            print("Patch schedules tables ready")
+    except Exception as e:
+        print(f"Schedule tables init failed: {e}")
+
+
+async def ensure_saved_ssh_keys_table(pool):
+    """Create saved_ssh_keys table if it doesn't exist (missing from original core schema)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS saved_ssh_keys (
+                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name        VARCHAR(100) NOT NULL UNIQUE,
+                    ssh_key_encrypted BYTEA NOT NULL,
+                    is_default  BOOLEAN DEFAULT FALSE,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_saved_ssh_keys_name ON saved_ssh_keys(name)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_saved_ssh_keys_default ON saved_ssh_keys(is_default)"
+            )
+            # Ensure only one default key (use DO block to skip if index already exists)
+            await conn.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_one_default_key'
+                    ) THEN
+                        CREATE UNIQUE INDEX idx_one_default_key
+                            ON saved_ssh_keys(is_default)
+                            WHERE is_default = TRUE;
+                    END IF;
+                END $$;
+            """)
+            print("saved_ssh_keys table ready")
+    except Exception as e:
+        print(f"saved_ssh_keys table init failed: {e}")
+
+
+# Background task to run Ansible check
+async def run_ansible_check_task(limit_hosts: list = None):
+    """Background task to run Ansible check and update database.
+
+    Uses a module-level asyncio.Lock so a manual refresh and the periodic
+    background check can never run concurrently.  Without this, two Ansible
+    processes hit the same SSH endpoints simultaneously — the slower one sees
+    all connections occupied and reports every host as unreachable, writing
+    that bad state to the DB before the first run can correct it.
+    """
+    global _ansible_patch_running, _ansible_patch_running_since, _ansible_check_lock_since
+    if _ansible_check_lock.locked():
+        # Auto-clear stuck check lock after timeout
+        if _ansible_check_lock_since and (time.monotonic() - _ansible_check_lock_since) > _CHECK_LOCK_TIMEOUT:
+            elapsed = int(time.monotonic() - _ansible_check_lock_since)
+            print(f"[{datetime.now()}] WARNING: _ansible_check_lock stuck for {elapsed}s — force-releasing")
+            try:
+                _ansible_check_lock.release()
+            except RuntimeError:
+                pass  # already released by another path
+            _ansible_check_lock_since = None
+            # Don't proceed immediately — let the next periodic tick pick up
+            # a clean run so we don't race with the old stuck coroutine.
+            return
+        else:
+            print(f"[{datetime.now()}] Ansible check already running — skipping duplicate invocation")
+            return
+
+    if _ansible_patch_running:
+        # Auto-clear stuck flag after timeout
+        if _ansible_patch_running_since and (time.monotonic() - _ansible_patch_running_since) > _PATCH_FLAG_TIMEOUT:
+            elapsed = int(time.monotonic() - _ansible_patch_running_since)
+            print(f"[{datetime.now()}] WARNING: _ansible_patch_running stuck for {elapsed}s — auto-clearing")
+            _ansible_patch_running = False
+            _ansible_patch_running_since = None
+        else:
+            print(f"[{datetime.now()}] Patch in progress — skipping background check to avoid SSH conflicts")
+            return
+
+    async with _ansible_check_lock:
+        _ansible_check_lock_since = time.monotonic()
+        try:
+            if limit_hosts:
+                logger.debug(f"Running check for specific hosts: {limit_hosts}")
+            else:
+                logger.debug(f"Running check for all hosts")
+            print(f"[{datetime.now()}] Running Ansible check...")
+            # Ensure we're connected
+            await db.connect()
+
+            success, hosts_data = await ansible.run_check(limit_hosts=limit_hosts)
+        finally:
+            _ansible_check_lock_since = None
+    if not success:
+        print(f"Ansible check failed: {hosts_data.get('error', 'Unknown error')}")
+        return
+    # Log parsed results before writing so failed status is visible in logs
+    for hostname, data in hosts_data.items():
+        print(f"[CHECK] {hostname} → status={data.get('status')} updates={data.get('total_updates')} "
+              f"os={data.get('os_family','?')}")
+    # Update database with results
+    for hostname, data in hosts_data.items():
+        try:
+            host = await db.upsert_host(
+                hostname=hostname,
+                ip_address=data.get("ip_address", ""),
+                os_type=data.get("os_type", ""),
+                os_family=data.get("os_family", ""),
+                status=data.get("status", "unknown"),
+                total_updates=data.get("total_updates", 0),
+                reboot_required=data.get("reboot_required", False)
+            )
             
-            // Start auto-refresh polling for all hosts
-            hostsToPatc.forEach(hostname => pollForStatusChange(hostname));
-          
-            // Clear password field
-            document.getElementById('become-password').value = '';
+            # Always clear old packages for this host
+            if host:
+                await db.delete_packages_for_host(host['id'])
+                
+                # Store new package details if any exist
+                if data.get("update_details"):
+                    for package in data.get("update_details", []):
+                        await db.upsert_package(
+                            host_id=host['id'],
+                            package_name=package.get("package_name", ""),
+                            current_version=package.get("current_version", ""),
+                            available_version=package.get("available_version", ""),
+                            update_type=package.get("update_type", "apt")
+                        )
             
-            // Clear selections
-            selectedHosts.clear();
-            updateSelectedCount();
-            renderHostsTable();
-            
-            // Reload dashboard after 2 minutes
-            setTimeout(loadDashboard, 2 * 60 * 1000);
-        } else {
-            throw new Error('Failed to trigger patch');
-        }
-    } catch (error) {
-        showStatus('Error triggering patch: ' + error.message, 'error');
-    } finally {
-        // Clean up stale state
-        window.selectedHostsForPatch = null;
-        
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">⚡</span> Patch Selected (<span id="selected-count">0</span>)';
-        updateSelectedCount();
-    }
-}
+            print(f"Updated host: {hostname} - Status: {data.get('status')} - Updates: {data.get('total_updates')}")
+        except Exception as e:
+            print(f"Error updating host {hostname}: {e}")
 
-// Show Host Details
-async function showHostDetails(hostname) {
-    const modal = document.getElementById('host-modal');
-    const loading = document.getElementById('host-details-loading');
-    const content = document.getElementById('host-details-content');
+    # ── Mark unchecked hosts as unreachable ─────────────────────────────────
+    # If Ansible aborted early (e.g. a host was unreachable before
+    # ignore_unreachable was added, or a fatal error stopped the play),
+    # hosts that were never evaluated still carry their old stale status.
+    # Compare the set of hosts we asked Ansible to check against what it
+    # actually returned and mark the gap as unreachable.
+    try:
+        if limit_hosts:
+            expected_hosts = set(limit_hosts)
+        else:
+            all_db_hosts = await db.get_all_hosts()
+            expected_hosts = {h['hostname'] for h in all_db_hosts}
+        checked_hosts = set(hosts_data.keys())
+        unchecked = expected_hosts - checked_hosts
+        if unchecked:
+            print(f"[CHECK] {len(unchecked)} host(s) not in Ansible output — marking unreachable: {unchecked}")
+            for hostname in unchecked:
+                try:
+                    existing = await db.get_host_by_hostname(hostname)
+                    if existing:
+                        await db.upsert_host(
+                            hostname=hostname,
+                            ip_address=existing.get('ip_address', ''),
+                            os_type=existing.get('os_type', ''),
+                            os_family=existing.get('os_family', ''),
+                            status='unreachable',
+                            total_updates=0,
+                            reboot_required=False,
+                        )
+                        await db.delete_packages_for_host(existing['id'])
+                        print(f"Updated host: {hostname} - Status: unreachable - Updates: 0 (not in Ansible output)")
+                except Exception as e:
+                    print(f"Error marking unchecked host {hostname}: {e}")
+    except Exception as e:
+        print(f"Warning: Failed to check for unchecked hosts: {e}")
+
+    print(f"[{datetime.now()}] Ansible check completed")
+
+
+# Background task to run ansible patch
+async def run_ansible_patch_task(hostnames: List[str], become_password: Optional[str] = None):
+    """Background task to run Ansible patch on specified hosts"""
+    global _ansible_patch_running, _ansible_patch_running_since
+    print(f"[{datetime.now()}] Running Ansible patch on: {', '.join(hostnames)}")
+    await db.connect()
     
-    document.getElementById('modal-hostname').textContent = hostname;
-    loading.style.display = 'block';
-    content.style.display = 'none';
-    modal.style.display = 'flex';
-    
-    try {
-        // Get host details
-        const hostResponse = await fetch(`${API_BASE_URL}/hosts/${hostname}`);
-        const host = await hostResponse.json();
-        
-        // Get packages
-        const packagesResponse = await fetch(`${API_BASE_URL}/hosts/${hostname}/packages`);
-        const packages = await packagesResponse.json();
-        
-        // Populate modal
-        document.getElementById('detail-ip').textContent = host.ip_address || 'N/A';
-        document.getElementById('detail-os').textContent = 
-            `${host.os_family || 'Unknown'} ${host.os_type ? `(${host.os_type})` : ''}`;
-        
-        const statusBadge = document.getElementById('detail-status');
-        statusBadge.textContent = host.status;
-        statusBadge.className = `status-badge status-${getStatusClass(host.status)}`;
-        
-        document.getElementById('detail-last-checked').textContent = 
-            host.last_checked ? new Date(host.last_checked).toLocaleString() : 'Never';
+    _ansible_patch_running = True
+    _ansible_patch_running_since = time.monotonic()
+    try:
+        # Broadcast start
+        await manager.broadcast({
+            "type": "start",
+            "hosts": hostnames,
+            "message": f"Starting patch for {len(hostnames)} host(s)..."
+        })
 
-        // Reboot status and auto-reboot setting
-        const rebootStatus = document.getElementById('detail-reboot-status');
-        if (rebootStatus) {
-            rebootStatus.textContent = host.reboot_required ? '⚠️ Yes' : '✅ No';
-            rebootStatus.style.color = host.reboot_required ? '#f59e0b' : '#10b981';
-        }
-        
-        const autoRebootCheckbox = document.getElementById('detail-auto-reboot');
-        if (autoRebootCheckbox) {
-            autoRebootCheckbox.checked = host.allow_auto_reboot || false;
-            autoRebootCheckbox.disabled = !isAuthenticated;
-            autoRebootCheckbox.onclick = async () => {
-                if (!isAuthenticated) return;
-                await updateAutoReboot(hostname, autoRebootCheckbox.checked);
-            };
-        }
-        
-        // Render packages
-        const packagesList = document.getElementById('packages-list');
-        if (packages.length === 0) {
-            packagesList.innerHTML = '<p>No pending updates</p>';
-        } else {
-            packagesList.innerHTML = packages.map(pkg => `
-                <div class="package-item">
-                    <div>
-                        <div class="package-name">${pkg.package_name}</div>
-                        <div class="package-version">
-                            ${pkg.current_version || 'N/A'} → ${pkg.available_version || 'N/A'}
-                        </div>
-                    </div>
-                    <span class="status-badge status-updates-available">
-                        ${pkg.update_type || 'update'}
-                    </span>
-                </div>
-            `).join('');
-        }
-        
-        loading.style.display = 'none';
-        content.style.display = 'block';
-         // Show/hide patch button based on status AND auth
-        const patchBtn = document.getElementById('patch-host-btn');
-        if (host.status === 'updates-available' && isAuthenticated) {
-            patchBtn.style.display = 'inline-block';
-        } else {
-            patchBtn.style.display = 'none';
-        }
-    } catch (error) {
-        loading.innerHTML = '<p style="color: #ef4444;">Error loading host details: ' + error.message + '</p>';
-    }
-}
-
-// Close Host Modal
-function closeHostModal() {
-    document.getElementById('host-modal').style.display = 'none';
-}
-
-// Close Patch Modal
-function closePatchModal() {
-    document.getElementById('patch-modal').style.display = 'none';
-}
-
-// Patch Progress Modal Controls
-function showPatchProgressModal() {
-    const modal = document.getElementById('patch-progress-modal');
-    const messagesDiv = document.getElementById('patch-progress-messages');
-    const hostsDiv = document.getElementById('patch-progress-hosts');
-    messagesDiv.innerHTML = ''; // Clear previous messages
-    if (hostsDiv) hostsDiv.innerHTML = ''; // Clear previous host badges
-    modal.style.display = 'flex';
-}
-
-function closePatchProgressModal() {
-    const modal = document.getElementById('patch-progress-modal');
-    modal.style.display = 'none';
-    // Cancel any polling fallback that may be running
-    if (_patchStatusPollTimer) {
-        clearInterval(_patchStatusPollTimer);
-        _patchStatusPollTimer = null;
-    }
-}
-
-// Update auto-reboot setting for a host
-async function updateAutoReboot(hostname, allowAutoReboot) {
-    try {
-        const host = hostsData.find(h => h.hostname === hostname);
-        if (!host) return;
-        
-        const response = await fetch(`${API_BASE_URL}/settings/hosts/${host.id}`, {
-            method: 'PUT',
-            credentials: 'include',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                allow_auto_reboot: allowAutoReboot
+        # Patch each host
+        for hostname in hostnames:
+            await manager.broadcast({
+                "type": "progress",
+                "hostname": hostname,
+                "message": f"Patching {hostname}..."
             })
-        });
         
-        if (response.ok) {
-            showStatus(`Auto-reboot ${allowAutoReboot ? 'enabled' : 'disabled'} for ${hostname}`, 'success');
-        } else {
-            throw new Error('Failed to update setting');
-        }
-    } catch (error) {
-        showStatus('Error updating auto-reboot setting: ' + error.message, 'error');
-    }
-}
-
-// Show Status Message
-function showStatus(message, type = 'info') {
-    const statusDiv = document.getElementById('status-message');
-    statusDiv.textContent = message;
-    statusDiv.className = `status-message ${type}`;
-    statusDiv.style.display = 'flex';
-    
-    // Auto-hide after 5 seconds
-    setTimeout(() => {
-        statusDiv.style.display = 'none';
-    }, 5000);
-}
-
-// Close modals on background click
-window.onclick = function(event) {
-    const hostModal = document.getElementById('host-modal');
-    const patchModal = document.getElementById('patch-modal');
-    const historyModal = document.getElementById('patch-history-modal');
-    const packagesModal = document.getElementById('packages-modal');
-    const alertsModal = document.getElementById('alerts-modal');
-    
-    if (event.target === hostModal) closeHostModal();
-    if (event.target === patchModal) closePatchModal();
-    if (event.target === historyModal) historyModal.style.display = 'none';
-    if (event.target === packagesModal) packagesModal.style.display = 'none';
-    if (event.target === alertsModal) alertsModal.style.display = 'none';
-}
-async function patchSingleHost() {
-    const hostname = document.getElementById('modal-hostname').textContent;
-    const statusBadge = document.getElementById('detail-status');
-    const status = statusBadge.textContent;
-    
-    // Don't allow patching if up-to-date or unreachable
-    if (status === 'UP-TO-DATE') {
-        alert('This host is already up-to-date!');
-        return;
-    }
-    
-    if (status === 'UNREACHABLE') {
-        alert('This host is unreachable and cannot be patched!');
-        return;
-    }
-    
-    // Close the host details modal
-    closeHostModal();
-    
-    // Open the patch confirmation modal with this host
-    const patchModal = document.getElementById('patch-modal');
-    const hostsList = document.getElementById('patch-hosts-list');
-    hostsList.innerHTML = `<li>${hostname}</li>`;
-    
-    // Store the hostname for the confirmPatch function
-    window.selectedHostsForPatch = [hostname];
-    
-    patchModal.style.display = 'flex';
-}
-async function pollForStatusChange(hostname) {
-    let attempts = 0;
-    const maxAttempts = 20; // 20 attempts = 100 seconds max
-    
-    const checkStatus = async () => {
-        attempts++;
-        await loadHosts();
+        start_time = datetime.now()
         
-        if (attempts < maxAttempts) {
-            setTimeout(checkStatus, 5000); // Check every 5 seconds
-        }
-    };
-    
-    setTimeout(checkStatus, 5000); // Start checking after 5 seconds
-}
-
-// =========================================================================
-// DASHBOARD CHARTS
-// =========================================================================
-
-const CHART_COLORS = ['#3498db', '#f39c12', '#2ecc71', '#e74c3c', '#9b59b6', '#00c0ef', '#ff7799', '#ffaa77'];
-
-async function loadChartData() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/stats/charts?t=${Date.now()}`, {
-            cache: 'no-store'
-        });
-        const data = await response.json();
-
-        // Build a stable OS → color map from the same order the donut chart uses,
-        // so patch activity bars share exactly the same colors as the OS Distribution legend.
-        const osColorMap = {};
-        (data.os_distribution || []).forEach((item, i) => {
-            osColorMap[item.os] = CHART_COLORS[i % CHART_COLORS.length];
-        });
-
-        renderPatchActivity(data.patch_activity || [], osColorMap, data.os_distribution || []);
-        renderDonut('os-distribution-chart', data.os_distribution || [], 'os', 'Hosts');
-        renderDonut('update-types-chart', data.update_types || [], 'type', 'Packages');
-    } catch (error) {
-        console.error('Error loading chart data:', error);
-    }
-}
-
-function renderPatchActivity(activity, osColorMap, osDistribution) {
-    const container = document.getElementById('patch-activity-chart');
-    if (!container) return;
-
-    osColorMap = osColorMap || {};
-
-    const totalPatched = activity.reduce((s, d) => s + (d.patched || 0), 0);
-    const totalFailed  = activity.reduce((s, d) => s + (d.failed  || 0), 0);
-    const hasAny = totalPatched + totalFailed > 0;
-
-    if (!hasAny) {
-        container.innerHTML = '<div class="chart-empty">No patch activity recorded yet. Run your first patch to see data here.</div>';
-        return;
-    }
-
-    // Collect all OS families that appear in the activity data (in donut order)
-    const osOrder = (osDistribution || []).map(d => d.os);
-    const activeOSes = new Set();
-    activity.forEach(d => Object.keys(d.by_os || {}).forEach(os => activeOSes.add(os)));
-    // Any OS not in donut order goes at the end
-    const allOSes = [...osOrder.filter(o => activeOSes.has(o)),
-                     ...[...activeOSes].filter(o => !osOrder.includes(o))];
-
-    // Fallback color for "failed" bucket
-    const FAILED_COLOR = '#e74c3c';
-
-    const maxVal = Math.max(...activity.map(d => (d.patched || 0) + (d.failed || 0)), 1);
-    const BAR_MAX_H = 100; // px — leave headroom for count labels
-
-    const barsHTML = activity.map(d => {
-        const patched = d.patched || 0;
-        const failed  = d.failed  || 0;
-        const total   = patched + failed;
-        const byOs    = d.by_os  || {};
-        const dayLabel = new Date(d.day + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-        const countLabel = total > 0
-            ? `<div class="chart-bar-count" title="${patched} patched, ${failed} failed">${total}</div>`
-            : `<div class="chart-bar-count chart-bar-count--empty"></div>`;
-
-        // Stack OS segments bottom-to-top (CSS column-reverse)
-        let segmentsHTML = '';
-
-        if (total > 0) {
-            // Failed segment (always red, on top visually = last in DOM with column-reverse)
-            if (failed > 0) {
-                const h = Math.max((failed / maxVal) * BAR_MAX_H, 4);
-                segmentsHTML += `<div class="chart-bar-seg" style="height:${h}px;background:${FAILED_COLOR}" title="${failed} failed"></div>`;
+        # Create progress callback for real-time updates
+        async def progress_callback(message):
+            hostname = None
+            import re
+            host_match = re.search(r'(?:changed|ok|fatal|unreachable|skipping|failed):\s*\[([^\]]+)\]', message)
+            if host_match:
+                hostname = host_match.group(1)
+            broadcast_data = {
+                "type": "progress",
+                "message": message
             }
-            // Per-OS success segments
-            allOSes.forEach(os => {
-                const count = byOs[os] || 0;
-                if (count === 0) return;
-                const color = osColorMap[os] || CHART_COLORS[osOrder.indexOf(os) % CHART_COLORS.length] || '#aaaaaa';
-                const h = Math.max((count / maxVal) * BAR_MAX_H, 4);
-                segmentsHTML += `<div class="chart-bar-seg" style="height:${h}px;background:${color}" title="${count} patched (${os})"></div>`;
-            });
-            // Any patched not attributed to a known OS
-            const osTotal = Object.values(byOs).reduce((a, b) => a + b, 0);
-            const unattributed = patched - osTotal;
-            if (unattributed > 0) {
-                const h = Math.max((unattributed / maxVal) * BAR_MAX_H, 4);
-                segmentsHTML += `<div class="chart-bar-seg" style="height:${h}px;background:#aaaaaa" title="${unattributed} patched (Unknown)"></div>`;
-            }
-        }
+            if hostname:
+                broadcast_data["hostname"] = hostname
+            await manager.broadcast(broadcast_data)
+        
+        success, results = await ansible.run_patch(
+            limit_hosts=hostnames, 
+            become_password=become_password,
+            progress_callback=progress_callback
+        )
+        end_time = datetime.now()
+        execution_seconds = (end_time - start_time).total_seconds()
 
-        return `
-            <div class="chart-bar-group">
-                ${countLabel}
-                <div class="chart-bar-stack">${segmentsHTML}</div>
-                <div class="chart-bar-label">${dayLabel}</div>
-            </div>`;
-    }).join('');
+        # Determine per-host actual patch success from Ansible output.
+        ansible_output = results.get("output", "") if isinstance(results, dict) else ""
+        actually_patched = _detect_hosts_actually_patched(ansible_output, hostnames)
+        print(f"[INFO] actually_patched={actually_patched}, ansible_success={success}")
 
-    // Legend: OS colors + failed, only show OSes that actually appear
-    const legendItems = allOSes.map(os => {
-        const color = osColorMap[os] || '#aaaaaa';
-        return `<span class="activity-legend-item"><span class="activity-legend-swatch" style="background:${color}"></span>${os}</span>`;
-    });
-    if (totalFailed > 0) {
-        legendItems.push(`<span class="activity-legend-item"><span class="activity-legend-swatch" style="background:${FAILED_COLOR}"></span>Failed</span>`);
-    }
+        # Record patch history for each host
+        try:
+            pool = db.pool
+            async with pool.acquire() as conn:
+                for hostname in hostnames:
+                    host_row = await conn.fetchrow("SELECT id FROM hosts WHERE hostname = $1", hostname)
+                    if host_row:
+                        is_success = hostname in actually_patched
+                        duration_secs = int(execution_seconds)
+                        error_msg = None if is_success else (results.get("error", "Unknown error") if isinstance(results, dict) else str(results))
+                        pkgs_updated = _extract_packages_updated(ansible_output, hostname)
+                        print(f"[INFO] packages extracted for {hostname}: {len(pkgs_updated)} pkgs")
+                        await conn.execute("""
+                            INSERT INTO patch_history (host_id, success, packages_updated, duration_seconds, error_message, output)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                        """, host_row["id"], is_success, pkgs_updated, duration_secs, error_msg, ansible_output)
+                        print(f"[INFO] Recorded patch_history for {hostname}: success={is_success}, pkgs={len(pkgs_updated)})")
+        except Exception as e:
+            print(f"[WARN] Failed to record patch history: {e}")
 
-    // Summary strip
-    const summaryHTML = `
-        <div class="chart-activity-summary">
-            <span class="summary-patched">✅ ${totalPatched} patched</span>
-            ${totalFailed > 0 ? `<span class="summary-failed">❌ ${totalFailed} failed</span>` : ''}
-            <span class="summary-window">— last 7 days</span>
-            <span class="activity-legend">${legendItems.join('')}</span>
-        </div>`;
-
-    container.innerHTML = barsHTML + summaryHTML;
-}
-
-function renderDonut(elementId, items, keyField, label) {
-    const container = document.getElementById(elementId);
-    if (!container) return;
-    
-    if (items.length === 0) {
-        container.innerHTML = `<div class="chart-empty">No data available</div>`;
-        return;
-    }
-    
-    const total = items.reduce((sum, item) => sum + item.count, 0);
-    
-    // Build conic-gradient segments
-    let gradientParts = [];
-    let angle = 0;
-    items.forEach((item, i) => {
-        const color = CHART_COLORS[i % CHART_COLORS.length];
-        const slice = (item.count / total) * 360;
-        gradientParts.push(`${color} ${angle}deg ${angle + slice}deg`);
-        angle += slice;
-    });
-    
-    // Build legend
-    const legendHTML = items.map((item, i) => {
-        const color = CHART_COLORS[i % CHART_COLORS.length];
-        const name = item[keyField] || 'Unknown';
-        return `<div class="donut-legend-item">
-            <div class="swatch" style="background:${color}"></div>
-            ${name}
-            <span class="count">${item.count}</span>
-        </div>`;
-    }).join('');
-    
-    container.innerHTML = `
-        <div class="donut-chart" style="background: conic-gradient(${gradientParts.join(', ')});">
-            <div class="donut-hole">
-                <div class="donut-total">${total}</div>
-                <div class="donut-label">${label}</div>
-            </div>
-        </div>
-        <div class="donut-legend">${legendHTML}</div>`;
-}
-
-// =========================================================================
-// USER PROFILE
-// =========================================================================
-
-function openUserProfileModal() {
-    if (!isAuthenticated || !currentUser) return;
-    
-    document.getElementById('profile-username').textContent = currentUser.username;
-    document.getElementById('profile-role').textContent = currentUser.role;
-    document.getElementById('current-password').value = '';
-    document.getElementById('new-password').value = '';
-    document.getElementById('confirm-new-password').value = '';
-    document.getElementById('profile-error').style.display = 'none';
-    document.getElementById('profile-success').style.display = 'none';
-    document.getElementById('user-profile-modal').style.display = 'flex';
-}
-
-function closeUserProfileModal() {
-    document.getElementById('user-profile-modal').style.display = 'none';
-}
-
-async function changePassword() {
-    const currentPw = document.getElementById('current-password').value;
-    const newPw = document.getElementById('new-password').value;
-    const confirmPw = document.getElementById('confirm-new-password').value;
-    const errorDiv = document.getElementById('profile-error');
-    const successDiv = document.getElementById('profile-success');
-    
-    errorDiv.style.display = 'none';
-    successDiv.style.display = 'none';
-    
-    if (!currentPw || !newPw || !confirmPw) {
-        errorDiv.textContent = 'All fields are required';
-        errorDiv.style.display = 'block';
-        return;
-    }
-    
-    if (newPw.length < 8) {
-        errorDiv.textContent = 'New password must be at least 8 characters';
-        errorDiv.style.display = 'block';
-        return;
-    }
-    
-    if (newPw !== confirmPw) {
-        errorDiv.textContent = 'New passwords do not match';
-        errorDiv.style.display = 'block';
-        return;
-    }
-    
-    try {
-        const res = await fetch(`${API_BASE_URL}/auth/change-password`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-                current_password: currentPw,
-                new_password: newPw
+        if success or actually_patched:
+            print(f"[{end_time}] Ansible patch completed (success={success}, patched={actually_patched})")
+            await manager.broadcast({
+                "type": "success",
+                "message": "Patching completed successfully. Refreshing status..."
             })
-        });
-        
-        const data = await res.json();
-        
-        if (!res.ok) {
-            errorDiv.textContent = data.detail || 'Failed to change password';
-            errorDiv.style.display = 'block';
-            return;
-        }
-        
-        successDiv.textContent = '✓ Password changed successfully';
-        successDiv.style.display = 'block';
-        document.getElementById('current-password').value = '';
-        document.getElementById('new-password').value = '';
-        document.getElementById('confirm-new-password').value = '';
-    } catch (e) {
-        errorDiv.textContent = 'Connection error';
-        errorDiv.style.display = 'block';
-    }
-}
+        else:
+            print(f"[{end_time}] Ansible patch failed: {results.get('error', 'Unknown error')}")
+            await manager.broadcast({
+                "type": "error",
+                "message": f"Patch failed: {results.get('error', 'Unknown error') if isinstance(results, dict) else str(results)}"
+            })
 
-// =========================================================================
-// PATCH HISTORY MODAL
-// =========================================================================
+    finally:
+        _ansible_patch_running = False
+        _ansible_patch_running_since = None
 
-async function showPatchHistoryModal() {
-    const modal = document.getElementById('patch-history-modal');
-    const loading = document.getElementById('patch-history-loading');
-    const content = document.getElementById('patch-history-content');
-    const empty = document.getElementById('patch-history-empty');
-    const tbody = document.getElementById('patch-history-tbody');
+
+    # Always re-run the check after patching — even on failure — so the dashboard
+    # reflects the actual host state (up-to-date vs still needs updates).
+    # Delay 30 s: softwareupdate/brew can leave SSH temporarily unresponsive
+    # immediately after completing. Without the delay the check races in,
+    # gets failed=1 in the RECAP, and stamps the host as "failed".
+    await asyncio.sleep(30)
+    await run_ansible_check_task(hostnames)
+    await manager.broadcast({
+        "type": "complete",
+        "message": "All operations complete!"
+    })
+
+
+# Periodic check task
+async def periodic_ansible_check():
+    """Run Ansible check periodically, reading interval from settings"""
+    while True:
+        # Read interval from settings (default 120s)
+        interval = 120
+        try:
+            pool = db.pool
+            async with pool.acquire() as conn:
+                row = await conn.fetchval(
+                    "SELECT value FROM settings WHERE key = 'refresh_interval'"
+                )
+                if row:
+                    interval = max(30, int(row))  # Floor at 30s
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+        try:
+            print(f"[{datetime.now()}] Periodic check loop firing (interval={interval}s)")
+            await run_ansible_check_task()
+        except Exception as e:
+            print(f"[{datetime.now()}] ERROR in periodic_ansible_check: {type(e).__name__}: {e}")
+            logger.error(f"Periodic check loop error: {e}", exc_info=True)
+
+
+# =========================================================================
+# AUTO-PATCH SCHEDULE CHECKER
+# =========================================================================
+
+async def schedule_checker_loop():
+    """Background loop that checks for due auto-patch schedules every 60 seconds"""
+    # Wait until the initial host check has completed so the scheduler has
+    # accurate host status and total_updates before evaluating any schedule.
+    # Falls back to a 120s ceiling so a broken initial check can't block forever.
+    try:
+        await asyncio.wait_for(_initial_check_done.wait(), timeout=120)
+        logger.info("[Scheduler] Initial host check complete — scheduler starting")
+    except asyncio.TimeoutError:
+        logger.warning("[Scheduler] Timed out waiting for initial host check (120s) — starting anyway")
+    while True:
+        try:
+            await check_and_run_schedules()
+        except Exception as e:
+            logger.error(f"Schedule checker error: {e}")
+        await asyncio.sleep(60)
+
+
+def _parse_unreachable_hostnames(output: str, attempted_hostnames: list) -> list:
+    """Parse ansible PLAY RECAP output and return hostnames that were unreachable."""
+    import re
+    unreachable = []
+    for line in output.splitlines():
+        m = re.match(r'^([^\s:]+)\s*:\s*ok=\d+.*unreachable=(\d+)', line)
+        if m and int(m.group(2)) > 0:
+            hostname = m.group(1)
+            # Match against attempted list (ansible may truncate long names)
+            for h in attempted_hostnames:
+                if h == hostname or h.startswith(hostname) or hostname.startswith(h.split('.')[0]):
+                    if h not in unreachable:
+                        unreachable.append(h)
+                    break
+    return unreachable
+
+
+def _detect_hosts_actually_patched(output: str, hostnames: list) -> set:
+    """
+    Determine which hosts actually had their packages updated, even when Ansible
+    exits non-zero due to a post-update SSH failure (e.g. temp key race condition).
+
+    Logic: scan the output task-by-task. If a host has a 'changed:' or 'ok:' line
+    inside the 'Apply updates' task block, the apt/yum/brew command ran to completion
+    on that host — regardless of whether subsequent tasks (reboot check, etc.) were
+    UNREACHABLE because the SSH connection dropped after the packages were installed.
+
+    Returns a set of hostname strings that were successfully patched.
+    """
+    import re
+    patched = set()
+    in_apply_task = False
+
+    for line in output.splitlines():
+        stripped = line.strip()
+
+        # Detect the "Apply updates" task header
+        if re.match(r'^TASK\s*\[', stripped):
+            in_apply_task = 'apply' in stripped.lower() and 'update' in stripped.lower()
+            continue
+
+        if in_apply_task:
+            # ONLY count changed: — ok: means apt ran but installed nothing.
+            # This happens when the check playbook read a stale apt cache that showed
+            # packages pending, but the patch playbook runs apt-get update first and
+            # gets a fresh view where nothing needs upgrading.
+            # Accepting ok: here was the root cause of false-positive "patched" reports.
+            m = re.match(r'^changed:\s*\[([^\]]+)\]', stripped)
+            if m:
+                ansible_host = m.group(1)
+                for h in hostnames:
+                    if h == ansible_host or ansible_host == h:
+                        patched.add(h)
+                        break
+                else:
+                    patched.add(ansible_host)
+            # Log ok: explicitly so the stale-cache condition is visible in logs
+            m_ok = re.match(r'^ok:\s*\[([^\]]+)\]', stripped)
+            if m_ok:
+                print(f"[WARN] apt task reported ok (no changes) for {m_ok.group(1)} — "
+                      f"host may have stale check cache or packages already current")
+
+    return patched
+
+
+def _extract_packages_updated(output: str, hostname: str) -> list:
+    """
+    Parse the raw Ansible output and return a list of package names that were
+    installed/upgraded on the given host during the patch run.
+
+    Ansible with -v emits lines like:
+        changed: [192.168.1.50] => {"changed": true, "stdout": "...", "stdout_lines": [...]}
+
+    The stdout_lines array contains apt output including:
+        "Setting up libssl3:amd64 (3.0.2-0ubuntu1.18) ..."
+        "Unpacking libssl3:amd64 (3.0.2-0ubuntu1.18) ..."
+
+    We collect unique package names from "Setting up" lines (which means the
+    package was fully installed), falling back to "Unpacking" if nothing else
+    is found. Strip arch suffixes (:amd64, :arm64, etc.) for a clean name.
+    """
+    import re as _re
+    import json as _json
+
+    packages = []
+    seen = set()
+
+    # Strategy 1: find the JSON blob for this host in the Apply updates task
+    # The line starts with "changed: [hostname] =>" and may be very long
+    in_apply_task = False
+    for line in output.splitlines():
+        stripped = line.strip()
+
+        if _re.match(r'^TASK\s*\[', stripped):
+            in_apply_task = 'apply' in stripped.lower() and 'update' in stripped.lower()
+            continue
+
+        if not in_apply_task:
+            continue
+
+        # Match "changed: [hostname] => {json...}"
+        m = _re.match(r'^(?:changed|ok):\s*\[([^\]]+)\]\s*=>\s*(\{.*)', stripped)
+        if not m:
+            continue
+
+        task_host = m.group(1)
+        # Accept if the hostname matches by IP or name
+        if task_host != hostname and not hostname.startswith(task_host) and not task_host.startswith(hostname.split('.')[0]):
+            continue
+
+        json_str = m.group(2)
+        try:
+            data = _json.loads(json_str)
+        except Exception:
+            # JSON is truncated on one line — try to scrape stdout_lines directly
+            data = {}
+
+        stdout_lines = data.get('stdout_lines', [])
+
+        for sline in stdout_lines:
+            s = sline.strip()
+            # "Setting up pkg:arch (ver) ..."  — package fully installed
+            pkg_m = _re.match(r'^Setting up\s+([\w\-\.+]+)(?::\w+)?\s+\(([^)]+)\)', s)
+            if pkg_m:
+                pkg = pkg_m.group(1)
+                ver = pkg_m.group(2)
+                key = f"{pkg}={ver}"
+                if key not in seen:
+                    seen.add(key)
+                    packages.append(f"{pkg} ({ver})")
+
+        # If "Setting up" found nothing, fall back to "Unpacking"
+        if not packages:
+            for sline in stdout_lines:
+                s = sline.strip()
+                pkg_m = _re.match(r'^Unpacking\s+([\w\-\.+]+)(?::\w+)?\s+\(([^)]+)\)', s)
+                if pkg_m:
+                    pkg = pkg_m.group(1)
+                    ver = pkg_m.group(2)
+                    key = f"{pkg}={ver}"
+                    if key not in seen:
+                        seen.add(key)
+                        packages.append(f"{pkg} ({ver})")
+
+        if packages:
+            return packages
+
+    # Strategy 2: scan raw output for "Setting up" if JSON parsing missed it
+    # (occurs when Ansible stdout callback emits multi-line output)
+    for line in output.splitlines():
+        pkg_m = _re.match(r'^\s*Setting up\s+([\w\-\.+]+)(?::\w+)?\s+\(([^)]+)\)', line)
+        if pkg_m:
+            pkg = pkg_m.group(1)
+            ver = pkg_m.group(2)
+            key = f"{pkg}={ver}"
+            if key not in seen:
+                seen.add(key)
+                packages.append(f"{pkg} ({ver})")
+
+    return packages
+
+
+async def check_and_run_schedules():
+    """Check if any schedules are due to run, and retry unreachable hosts within the same window."""
+    from encryption_utils import decrypt_credential
+
+    pool = db.pool
+
+    # Determine timezone: DB setting > TZ env var > UTC
+    try:
+        async with pool.acquire() as _c:
+            tz_row = await _c.fetchrow("SELECT value FROM settings WHERE key = 'schedule_timezone'")
+        tz_name = (tz_row['value'].strip() if tz_row and tz_row['value'] else None) or os.environ.get('TZ', 'UTC')
+        local_tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz_name = 'UTC'
+        local_tz = zoneinfo.ZoneInfo('UTC')
+
+    now_utc = datetime.now(timezone.utc)          # for DB timestamps
+    now = now_utc.astimezone(local_tz)            # local wall-clock time
+    current_day = now.strftime('%A').lower()
+    current_time = now.time().replace(tzinfo=None)
+
+    # Log the scheduler heartbeat every cycle so it's easy to confirm it's running
+    # and using the correct timezone.  This also makes timezone misconfiguration obvious.
+    logger.info(
+        f"[Scheduler] tick — tz={tz_name}  local={now.strftime('%Y-%m-%d %H:%M:%S')}  "
+        f"day={current_day}  utc={now_utc.strftime('%H:%M:%S')}"
+    )
+
+    async with pool.acquire() as conn:
+        schedules = await conn.fetch("""
+            SELECT s.*,
+                   array_agg(sh.host_id) FILTER (WHERE sh.host_id IS NOT NULL) as host_ids
+            FROM patch_schedules s
+            LEFT JOIN patch_schedule_hosts sh ON s.id = sh.schedule_id
+            WHERE s.enabled = TRUE
+            GROUP BY s.id
+        """)
+
+        for sched in schedules:
+            # If a patch is already in progress, skip all schedule evaluation
+            # this tick — we'll pick it up on the next 60s cycle.
+            if _ansible_patch_running:
+                logger.debug(
+                    f"[Scheduler] Patch already in progress — "
+                    f"deferring all schedule evaluation to next tick"
+                )
+                break
+
+            # Must be the right day
+            sched_days = [d.strip().lower() for d in sched['day_of_week'].split(',')]
+            if current_day not in sched_days:
+                logger.debug(f"[Scheduler] '{sched['name']}' skipped — today={current_day} not in {sched_days}")
+                continue
+
+            # Must be within the configured time window
+            in_window = sched['start_time'] <= current_time <= sched['end_time']
+            logger.info(
+                f"[Scheduler] '{sched['name']}' window={sched['start_time']}–{sched['end_time']}  "
+                f"now={current_time}  in_window={in_window}"
+            )
+            if not in_window:
+                # Window closed — clear any pending retry list so it doesn't carry to tomorrow
+                # Use dict() cast so key access is safe regardless of asyncpg Record version
+                sched_dict = dict(sched)
+                if sched_dict.get('retry_host_ids'):
+                    try:
+                        await conn.execute(
+                            "UPDATE patch_schedules SET retry_host_ids = NULL WHERE id = $1", sched['id']
+                        )
+                    except Exception:
+                        pass
+                continue
+
+            # --- Determine which hosts need patching this cycle ---
+            # The scheduler is stateless per-tick: it looks at each host's
+            # CURRENT status and decides whether to patch.  No "already ran
+            # today" gate — if a host picks up new updates mid-window it
+            # gets patched again.
+            host_ids = sched['host_ids'] or []
+            if not host_ids:
+                continue
+
+            # Also honour the explicit retry list from a prior 'partial' run
+            # (hosts that were unreachable last attempt).
+            sched_dict = dict(sched)
+            retry_ids = set(sched_dict.get('retry_host_ids') or [])
+
+            needs_patch_ids = []
+            for hid in host_ids:
+                # If host is on the retry list, always attempt it regardless
+                # of DB status — Ansible will determine reachability.
+                if hid in retry_ids:
+                    needs_patch_ids.append(hid)
+                    continue
+
+                # Otherwise, check current host state
+                host_row = await conn.fetchrow("""
+                    SELECT total_updates, status
+                    FROM hosts WHERE id = $1
+                """, hid)
+                if not host_row:
+                    continue
+                if host_row['status'] in ('offline', 'unreachable'):
+                    continue
+                if (host_row['total_updates'] or 0) <= 0:
+                    continue
+                needs_patch_ids.append(hid)
+
+            if not needs_patch_ids:
+                logger.debug(
+                    f"Schedule '{sched['name']}': no hosts need patching "
+                    f"(all patched, offline, or 0 updates) — skipping"
+                )
+                continue
+
+            logger.info(
+                f"Schedule '{sched['name']}': {len(needs_patch_ids)}/{len(host_ids)} "
+                f"host(s) need patching this cycle"
+            )
+            target_host_ids = needs_patch_ids
+
+            # Resolve host IDs → hostnames.
+            # For retries we intentionally do NOT filter on DB status — the check scan
+            # runs every 5+ minutes so its status may be stale.  Let Ansible determine
+            # actual reachability; if the host is still down it will appear in PLAY RECAP
+            # as unreachable and get stored back into retry_host_ids for the next cycle.
+            hostnames = []
+            target_host_ids_for_patch = []
+            for hid in target_host_ids:
+                row = await conn.fetchrow(
+                    "SELECT hostname FROM hosts WHERE id = $1", hid
+                )
+                if not row:
+                    continue
+                hostnames.append(row['hostname'])
+                target_host_ids_for_patch.append(hid)
+
+            if not hostnames:
+                logger.info(f"Schedule '{sched['name']}': no valid hosts resolved, skipping cycle")
+                continue
+
+            # Decrypt become password
+            become_password = None
+            if sched['become_password_encrypted']:
+                try:
+                    become_password = decrypt_credential(sched['become_password_encrypted'])
+                except Exception as e:
+                    logger.error(f"Failed to decrypt schedule password: {e}")
+                    await conn.execute(
+                        "UPDATE patch_schedules SET last_run = $1, last_status = 'error' WHERE id = $2",
+                        now_utc, sched['id']
+                    )
+                    try:
+                        await conn.execute(
+                            "UPDATE patch_schedules SET retry_host_ids = NULL WHERE id = $1", sched['id']
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+            # Mark as running and update last_run timestamp.
+            # CRITICAL: last_run and last_status are set in their own statement first
+            # so a missing retry_host_ids column can never prevent them from being written.
+            await conn.execute(
+                "UPDATE patch_schedules SET last_run = $1, last_status = 'running' WHERE id = $2",
+                now_utc, sched['id']
+            )
+            # Clear retry list separately — safe to fail if column not yet present
+            try:
+                await conn.execute(
+                    "UPDATE patch_schedules SET retry_host_ids = NULL WHERE id = $1",
+                    sched['id']
+                )
+            except Exception as _e:
+                logger.debug(f"retry_host_ids clear skipped (column may not exist yet): {_e}")
+
+            logger.info(f"Auto-patch schedule '{sched['name']}' triggered for: {hostnames}")
+
+            asyncio.create_task(
+                run_scheduled_patch(sched['id'], hostnames, become_password, pool, local_tz)
+            )
+
+
+async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, local_tz=None):
+    """Run a scheduled patch, then store any unreachable host IDs for in-window retry."""
+    global _ansible_patch_running, _ansible_patch_running_since
+    if local_tz is None:
+        local_tz = zoneinfo.ZoneInfo('UTC')
+
+    _ansible_patch_running = True
+    _ansible_patch_running_since = time.monotonic()
+    final_status = 'error'  # default — overwritten on success
+    try:
+        logger.info(f"[Schedule {schedule_id}] Ansible patch starting for: {hostnames}")
+        success, results = await _run_patch_and_return_results(hostnames, become_password)
+        logger.info(f"[Schedule {schedule_id}] Ansible patch returned: success={success}")
+
+        output = results.get('output', '') if isinstance(results, dict) else ''
+        unreachable_names = _parse_unreachable_hostnames(output, hostnames)
+
+        if unreachable_names:
+            final_status = 'partial'
+        else:
+            final_status = 'success'
+
+        logger.info(f"[Schedule {schedule_id}] Final status will be: {final_status} "
+                    f"(unreachable={unreachable_names})")
+
+        # ── Record patch_history for each host (mirrors manual-patch logic) ──
+        try:
+            elapsed = int(time.monotonic() - _ansible_patch_running_since) if _ansible_patch_running_since else 0
+            actually_patched = _detect_hosts_actually_patched(output, hostnames)
+            async with pool.acquire() as conn:
+                for hostname in hostnames:
+                    host_row = await conn.fetchrow(
+                        "SELECT id FROM hosts WHERE hostname = $1", hostname
+                    )
+                    if host_row:
+                        is_success = hostname in actually_patched
+                        error_msg = None if is_success else (
+                            results.get("error", "Unknown error")
+                            if isinstance(results, dict) else str(results)
+                        )
+                        pkgs_updated = _extract_packages_updated(output, hostname)
+                        await conn.execute("""
+                            INSERT INTO patch_history
+                                (host_id, success, packages_updated,
+                                 duration_seconds, error_message, output)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                        """, host_row["id"], is_success, pkgs_updated,
+                            elapsed, error_msg, output)
+                        logger.info(
+                            f"[Schedule {schedule_id}] Recorded patch_history "
+                            f"for {hostname}: success={is_success}, "
+                            f"pkgs={len(pkgs_updated)}"
+                        )
+        except Exception as hist_err:
+            logger.error(
+                f"[Schedule {schedule_id}] Failed to record patch_history: {hist_err}"
+            )
+
+        # Store unreachable host IDs for in-window retry
+        if unreachable_names:
+            unreachable_ids = []
+            async with pool.acquire() as conn:
+                for name in unreachable_names:
+                    row = await conn.fetchrow("SELECT id FROM hosts WHERE hostname = $1", name)
+                    if row:
+                        unreachable_ids.append(row['id'])
+                try:
+                    await conn.execute(
+                        "UPDATE patch_schedules SET retry_host_ids = $2 WHERE id = $1",
+                        schedule_id, unreachable_ids if unreachable_ids else None
+                    )
+                except Exception as _e:
+                    logger.warning(f"Could not write retry_host_ids: {_e}")
+
+    except Exception as e:
+        logger.error(f"[Schedule {schedule_id}] Exception during patch: {e}", exc_info=True)
+        final_status = 'error'
+    finally:
+        _ansible_patch_running = False
+        _ansible_patch_running_since = None
+        # Always write the final status — this runs even if an exception occurred above.
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE patch_schedules SET last_status = $1 WHERE id = $2",
+                    final_status, schedule_id
+                )
+                if final_status != 'partial':
+                    try:
+                        await conn.execute(
+                            "UPDATE patch_schedules SET retry_host_ids = NULL WHERE id = $1",
+                            schedule_id
+                        )
+                    except Exception:
+                        pass
+            logger.info(f"[Schedule {schedule_id}] Status written: {final_status}")
+        except Exception as _db_e:
+            logger.error(f"[Schedule {schedule_id}] FAILED to write final status '{final_status}': {_db_e}")
+
+        # Post-patch check: now that _ansible_patch_running is False the check can proceed
+        asyncio.create_task(run_ansible_check_task(hostnames))
+
+
+async def _run_patch_and_return_results(hostnames, become_password):
+    """Run an ansible patch using the global runner and return (success, results).
+    Callers are responsible for setting/clearing _ansible_patch_running.
+    """
+    await manager.broadcast({
+        "type": "start",
+        "hosts": hostnames,
+        "message": f"[Scheduled] Starting patch for {len(hostnames)} host(s)..."
+    })
+
+    async def progress_callback(message):
+        import re
+        host_match = re.search(r'(?:changed|ok|fatal|unreachable|skipping|failed):\s*\[([^\]]+)\]', message)
+        hostname = host_match.group(1) if host_match else None
+        data = {"type": "progress", "message": message}
+        if hostname:
+            data["hostname"] = hostname
+        await manager.broadcast(data)
+
+    success, results = await ansible.run_patch(
+        limit_hosts=hostnames,
+        become_password=become_password,
+        progress_callback=progress_callback
+    )
+
+    if success:
+        await manager.broadcast({"type": "success", "message": "Scheduled patch completed."})
+        await manager.broadcast({"type": "complete", "message": "All operations complete!"})
+    else:
+        await manager.broadcast({
+            "type": "error",
+            "message": f"Scheduled patch failed: {results.get('error', '') if isinstance(results, dict) else str(results)}"
+        })
+
+    return success, results
+
+
+
+# API Endpoints
+# WebSocket endpoint for real-time patch progress
+@app.websocket("/ws/patch-progress")
+async def websocket_patch_progress(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+@app.get("/health")
+async def health():
+    """Kubernetes liveness/readiness probe endpoint."""
+    return {"status": "ok", "version": _APP_VERSION}
+
+@app.get("/")
+@app.get("/api")
+@app.get("/api/")
+async def root():
+    return {"message": "PatchPilot API", "version": _APP_VERSION}
+
+# =========================================================================
+# PUBLIC ENDPOINTS (read-only, no auth required)
+# =========================================================================
+
+@app.get("/api/hosts")
+async def get_hosts(background_tasks: BackgroundTasks):
+    """Get all hosts with their update status (PUBLIC - read only).
+
+    If all hosts have stale or missing last_checked timestamps (e.g. after a
+    restore or long downtime), automatically triggers a background Ansible
+    check so the dashboard self-heals without requiring a manual refresh.
+    """
+    hosts = await db.get_all_hosts()
+
+    # Auto-trigger a check if data looks stale and nothing is running
+    if hosts and not _ansible_check_lock.locked() and not _ansible_patch_running:
+        try:
+            pool = db.pool
+            async with pool.acquire() as conn:
+                interval = await conn.fetchval(
+                    "SELECT value FROM settings WHERE key = 'refresh_interval'"
+                )
+                interval_secs = max(30, int(interval)) if interval else 300
+            # Check if the most recent last_checked across all hosts is older
+            # than 2× the refresh interval (i.e. at least one full cycle was missed)
+            from datetime import timedelta
+            now = datetime.now(timezone.utc)
+            threshold = now - timedelta(seconds=interval_secs * 2)
+            newest_check = None
+            for h in hosts:
+                lc = h.get('last_checked')
+                if lc is not None:
+                    # Ensure timezone-aware comparison
+                    if lc.tzinfo is None:
+                        lc = lc.replace(tzinfo=timezone.utc)
+                    if newest_check is None or lc > newest_check:
+                        newest_check = lc
+            if newest_check is None or newest_check < threshold:
+                logger.info(f"Host data is stale (newest_check={newest_check}) — auto-triggering check")
+                background_tasks.add_task(run_ansible_check_task)
+        except Exception as e:
+            logger.debug(f"Auto-check trigger skipped: {e}")
+
+    return hosts
+
+@app.get("/api/hosts/{hostname}")
+async def get_host(hostname: str):
+    """Get details for a specific host (PUBLIC - read only)"""
+    host = await db.get_host_by_hostname(hostname)
+    if not host:
+        raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    return host
+
+@app.get("/api/hosts/{hostname}/packages")
+async def get_host_packages(hostname: str):
+    """Get pending updates for a specific host (PUBLIC - read only)"""
+    host = await db.get_host_by_hostname(hostname)
+    if not host:
+        raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    packages = await db.get_packages_for_host(host['id'])
+    return packages
+
+@app.get("/api/stats")
+async def get_stats():
+    """Get summary statistics (PUBLIC - read only)"""
+    stats = await db.get_stats()
+    return stats
+
+@app.get("/api/stats/charts")
+async def get_chart_data():
+    """Get dashboard chart data: OS distribution, update types, patch activity (PUBLIC)"""
+    pool = db.pool
     
-    modal.style.display = 'flex';
-    loading.style.display = 'block';
-    content.style.display = 'none';
-    empty.style.display = 'none';
+    # OS Distribution
+    os_rows = await pool.fetch("""
+        SELECT COALESCE(os_family, 'Unknown') as os, COUNT(*) as count
+        FROM hosts GROUP BY os_family ORDER BY count DESC
+    """)
+    os_distribution = [{"os": r['os'], "count": r['count']} for r in os_rows]
     
-    try {
-        const res = await fetch(`${API_BASE_URL}/patch-history?limit=100`);
-        const history = await res.json();
-        
-        loading.style.display = 'none';
-        
-        if (!history.length) {
-            empty.style.display = 'block';
-            return;
-        }
-        
-        tbody.innerHTML = history.map(h => {
-            const status = h.status === 'success' ? '✅ success' : '❌ ' + h.status;
-            const statusColor = h.status === 'success' ? 'var(--green-bright)' : 'var(--red)';
-            const duration = h.execution_time ? `${parseFloat(h.execution_time).toFixed(1)}s` : '—';
-            const date = h.created_at ? new Date(h.created_at).toLocaleString() : '—';
-            return `<tr>
-                <td><strong style="color:var(--text-primary)">${h.hostname || 'Unknown'}</strong></td>
-                <td><span style="color:${statusColor};font-weight:600">${status}</span></td>
-                <td>${h.packages_updated || 0}</td>
-                <td style="font-family:monospace;font-size:12px">${duration}</td>
-                <td style="font-family:monospace;font-size:11px;color:var(--text-muted)">${date}</td>
-            </tr>`;
-        }).join('');
-        
-        content.style.display = 'block';
-    } catch (err) {
-        loading.innerHTML = '<span style="color:var(--red)">Error loading patch history</span>';
-    }
-}
-
-// =========================================================================
-// PACKAGES MODAL
-// =========================================================================
-
-async function showPackagesModal() {
-    const modal = document.getElementById('packages-modal');
-    const loading = document.getElementById('packages-modal-loading');
-    const content = document.getElementById('packages-modal-content');
-    const empty = document.getElementById('packages-modal-empty');
-    const tbody = document.getElementById('packages-modal-tbody');
+    # Update Types
+    pkg_rows = await pool.fetch("""
+        SELECT COALESCE(p.update_type, 'unknown') as type, COUNT(*) as count
+        FROM packages p
+        JOIN hosts h ON p.host_id = h.id
+        GROUP BY p.update_type ORDER BY count DESC
+    """)
+    update_types = [{"type": r['type'], "count": r['count']} for r in pkg_rows]
     
-    modal.style.display = 'flex';
-    loading.style.display = 'block';
-    content.style.display = 'none';
-    empty.style.display = 'none';
+    # Patch Activity - last 7 days (always returns all 7 days even with no data)
+    # Also returns per-OS breakdown so the frontend can draw OS-colored stacked bars
+    activity = []
+    try:
+        activity_rows = await pool.fetch("""
+            SELECT
+                gs.day::date                                                   AS day,
+                COALESCE(COUNT(ph.id) FILTER (WHERE ph.success = TRUE),  0)   AS patched,
+                COALESCE(COUNT(ph.id) FILTER (WHERE ph.success = FALSE
+                                                 OR ph.success IS NULL),  0)  AS failed
+            FROM generate_series(
+                     CURRENT_DATE - INTERVAL '6 days',
+                     CURRENT_DATE,
+                     INTERVAL '1 day'
+                 ) AS gs(day)
+            LEFT JOIN patch_history ph
+                   ON DATE(ph.execution_time AT TIME ZONE 'UTC') = gs.day::date
+            GROUP BY gs.day
+            ORDER BY gs.day
+        """)
+
+        # Per-OS successful patch counts per day
+        os_rows = await pool.fetch("""
+            SELECT
+                DATE(ph.execution_time AT TIME ZONE 'UTC') AS day,
+                COALESCE(h.os_family, 'Unknown')           AS os_family,
+                COUNT(*)                                   AS count
+            FROM patch_history ph
+            LEFT JOIN hosts h ON ph.host_id = h.id
+            WHERE ph.success = TRUE
+              AND ph.execution_time >= CURRENT_DATE - INTERVAL '6 days'
+            GROUP BY DATE(ph.execution_time AT TIME ZONE 'UTC'), h.os_family
+            ORDER BY day
+        """)
+
+        # Index os breakdown by day string
+        os_by_day: dict = {}
+        for r in os_rows:
+            day_str = str(r['day'])
+            if day_str not in os_by_day:
+                os_by_day[day_str] = {}
+            os_by_day[day_str][r['os_family']] = r['count']
+
+        activity = [
+            {
+                "day":    str(r['day']),
+                "patched": r['patched'],
+                "failed":  r['failed'],
+                "by_os":   os_by_day.get(str(r['day']), {})
+            }
+            for r in activity_rows
+        ]
+    except Exception as e:
+        print(f"[WARN] patch_activity query failed: {e}")
     
-    try {
-        // Aggregate packages from all hosts we already have
-        const res = await fetch(`${API_BASE_URL}/hosts`);
-        const _hosts = await res.json();
-        const hosts = Array.isArray(_hosts) ? _hosts : [];
-        
-        const allPackages = [];
-        for (const host of hosts) {
-            if (host.total_updates > 0) {
-                try {
-                    const pkgRes = await fetch(`${API_BASE_URL}/hosts/${host.hostname}/packages`);
-                    const pkgs = await pkgRes.json();
-                    pkgs.forEach(p => allPackages.push({ ...p, hostname: host.hostname }));
-                } catch (_) {}
-            }
-        }
-        
-        loading.style.display = 'none';
-        
-        if (!allPackages.length) {
-            empty.style.display = 'block';
-            return;
-        }
-        
-        tbody.innerHTML = allPackages.map(p => `
-            <tr>
-                <td><span style="font-family:monospace;font-size:12px;color:var(--text-muted)">${p.hostname}</span></td>
-                <td><strong style="color:var(--text-primary)">${p.package_name}</strong></td>
-                <td style="font-family:monospace;font-size:11px;color:var(--text-muted)">${p.current_version || '—'}</td>
-                <td style="font-family:monospace;font-size:11px;color:var(--cyan)">${p.available_version || '—'}</td>
-                <td><span class="status-badge status-updates-available">${p.update_type || 'update'}</span></td>
-            </tr>
-        `).join('');
-        
-        content.style.display = 'block';
-    } catch (err) {
-        loading.innerHTML = '<span style="color:var(--red)">Error loading packages</span>';
+    return {
+        "os_distribution": os_distribution,
+        "update_types": update_types,
+        "patch_activity": activity
     }
-}
 
-// =========================================================================
-// ALERTS MODAL
-// =========================================================================
 
-async function showAlertsModal() {
-    const modal = document.getElementById('alerts-modal');
-    const loading = document.getElementById('alerts-modal-loading');
-    const list = document.getElementById('alerts-modal-list');
-    const empty = document.getElementById('alerts-modal-empty');
+@app.get("/api/stats/sidebar")
+async def get_sidebar_stats():
+    """Get sidebar-specific stats: load average, uptime, counts for badges (PUBLIC)"""
+    pool = db.pool
     
-    modal.style.display = 'flex';
-    loading.style.display = 'block';
-    list.style.display = 'none';
-    empty.style.display = 'none';
+    # System load average
+    try:
+        load_avg = psutil.getloadavg()
+        load_1, load_5, load_15 = round(load_avg[0], 2), round(load_avg[1], 2), round(load_avg[2], 2)
+    except Exception:
+        load_1, load_5, load_15 = 0, 0, 0
     
-    try {
-        const res = await fetch(`${API_BASE_URL}/alerts`);
-        const alerts = await res.json();
-        
-        loading.style.display = 'none';
-        
-        if (!alerts.length) {
-            empty.style.display = 'block';
-            return;
-        }
-        
-        list.innerHTML = alerts.map(a => {
-            const icon = a.severity === 'error' ? '❌' : a.severity === 'info' ? 'ℹ️' : '⚠️';
-            const color = a.severity === 'error' ? 'var(--red)' : a.severity === 'info' ? 'var(--blue, #3b82f6)' : 'var(--amber)';
-            const border = a.severity === 'error' ? '#ef444430' : a.severity === 'info' ? '#3b82f630' : '#f59e0b30';
-            const checked = a.last_checked ? new Date(a.last_checked).toLocaleString() : 'Never';
-            const dismissBtn = a.type === 'reboot_required'
-                ? `<button onclick="dismissRebootAlert('${a.hostname}')" style="
-                        background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.3);
-                        color:var(--amber);border-radius:5px;padding:4px 10px;font-size:11px;
-                        cursor:pointer;white-space:nowrap;" title="Mark host as rebooted / clear this alert">
-                        ✓ Mark Rebooted</button>`
-                : '';
-            return `<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;margin-bottom:8px;background:var(--bg-dark);border:1px solid ${border};border-left:3px solid ${color};border-radius:8px;">
-                <span style="font-size:18px">${icon}</span>
-                <div style="flex:1;">
-                    <div style="font-weight:600;color:var(--text-primary);margin-bottom:2px;">${a.message}</div>
-                    <div style="font-size:11px;color:var(--text-muted);font-family:monospace">Last checked: ${checked}</div>
-                </div>
-                ${dismissBtn}
-            </div>`;
-        }).join('');
-        
-        list.style.display = 'block';
-    } catch (err) {
-        loading.innerHTML = '<span style="color:var(--red)">Error loading alerts</span>';
-    }
-}
-
-async function dismissRebootAlert(hostname) {
-    try {
-        const res = await fetch(`${API_BASE_URL}/hosts/${hostname}/dismiss-reboot`, {
-            method: 'POST',
-            credentials: 'include'
-        });
-        if (res.ok) {
-            showAlertsModal();          // Refresh alert list
-            loadSidebarStats();         // Refresh alert badge
-        } else {
-            const d = await res.json().catch(() => ({}));
-            alert('Could not dismiss alert: ' + (d.detail || res.status));
-        }
-    } catch (e) {
-        alert('Error dismissing alert: ' + e.message);
-    }
-}
-
-// =========================================================================
-// PANEL COLLAPSE/EXPAND
-// =========================================================================
-
-function togglePanel(panelId) {
-    const panel = document.getElementById(panelId);
-    if (!panel) return;
-    panel.classList.toggle('collapsed');
-    const btn = panel.querySelector('.panel-toggle');
-    if (btn) btn.textContent = panel.classList.contains('collapsed') ? '▸' : '▾';
-    // Save state to localStorage
-    try {
-        const states = JSON.parse(localStorage.getItem('patchpilot-panels') || '{}');
-        states[panelId] = panel.classList.contains('collapsed');
-        localStorage.setItem('patchpilot-panels', JSON.stringify(states));
-    } catch(e) {}
-}
-
-// Restore collapsed panel states on load
-(function restorePanelStates() {
-    try {
-        const states = JSON.parse(localStorage.getItem('patchpilot-panels') || '{}');
-        Object.entries(states).forEach(([id, collapsed]) => {
-            if (collapsed) {
-                const panel = document.getElementById(id);
-                if (panel) {
-                    panel.classList.add('collapsed');
-                    const btn = panel.querySelector('.panel-toggle');
-                    if (btn) btn.textContent = '▸';
-                }
-            }
-        });
-    } catch(e) {}
-})();
-
-// ============================================================================
-// ACTIVITY STATUS BAR
-// Pillbox-style live feed of application events in the top bar.
-// Polls schedule status and hooks into patch events.
-// ============================================================================
-
-const activityPills = new Map(); // key -> { el, timer }
-
-function addActivityPill(key, label, variant = 'running', autoClearMs = 0) {
-    const container = document.getElementById('activity-pills');
-    if (!container) return;
-
-    // Remove existing pill for same key
-    removeActivityPill(key);
-
-    const pill = document.createElement('div');
-    pill.className = `activity-pill pill-${variant}`;
-    pill.dataset.key = key;
-    pill.innerHTML = `<span class="pill-dot"></span>${label}`;
-    container.appendChild(pill);
-
-    let timer = null;
-    if (autoClearMs > 0) {
-        timer = setTimeout(() => removeActivityPill(key), autoClearMs);
-    }
-    activityPills.set(key, { el: pill, timer });
-}
-
-function removeActivityPill(key) {
-    const entry = activityPills.get(key);
-    if (entry) {
-        if (entry.timer) clearTimeout(entry.timer);
-        entry.el.remove();
-        activityPills.delete(key);
-    }
-}
-
-function updateActivityPill(key, label, variant) {
-    const entry = activityPills.get(key);
-    if (entry) {
-        entry.el.className = `activity-pill pill-${variant}`;
-        entry.el.innerHTML = `<span class="pill-dot"></span>${label}`;
-    } else {
-        addActivityPill(key, label, variant);
-    }
-}
-
-// Persistent last-seen status across poll cycles so we detect transitions
-// even when a schedule starts AND finishes between two polls.
-const _schedLastSeen = new Map(); // scheduleId -> { status, retry_count, name }
-
-// Poll schedule status every 60 seconds (uses lightweight /active endpoint)
-async function pollScheduleStatus() {
-    try {
-        const res = await fetch('/api/schedules/active', { credentials: 'include' });
-        if (!res.ok) return;
-        const schedules = await res.json();
-
-        const seenIds = new Set();
-
-        for (const sched of schedules) {
-            const key  = `sched-${sched.id}`;
-            const prev = _schedLastSeen.get(sched.id) || {};
-            const statusChanged = prev.status !== sched.last_status;
-            seenIds.add(sched.id);
-            _schedLastSeen.set(sched.id, { status: sched.last_status, retry_count: sched.retry_count, name: sched.name });
-
-            if (sched.last_status === 'running') {
-                addActivityPill(key, `⏱ Schedule "${sched.name}" running…`, 'running');
-
-            } else if (sched.last_status === 'partial') {
-                const n = sched.retry_count || '?';
-                addActivityPill(key,
-                    `↩ Schedule "${sched.name}" — retrying ${n} host${n === 1 ? '' : 's'}…`,
-                    'warning');
-
-            } else if (sched.last_status === 'success') {
-                // Always remove the running pill
-                removeActivityPill(key);
-                // Show done pill on any transition from a previous status
-                // (prev.status guard prevents spurious pill on initial page load)
-                if (statusChanged && prev.status) {
-                    const doneKey = key + '-done';
-                    removeActivityPill(doneKey);
-                    addActivityPill(doneKey, `✓ Schedule "${sched.name}" completed`, 'success', 14000);
-                }
-
-            } else if (sched.last_status === 'error') {
-                removeActivityPill(key);
-                if (statusChanged && prev.status) {
-                    const errKey = key + '-err';
-                    removeActivityPill(errKey);
-                    addActivityPill(errKey, `✗ Schedule "${sched.name}" failed`, 'error', 30000);
-                }
-            }
-        }
-
-        // Handle schedules that dropped off the active list
-        for (const [key] of activityPills) {
-            if (key.startsWith('sched-') && !key.endsWith('-done') && !key.endsWith('-err')) {
-                const id = key.replace('sched-', '');
-                if (!seenIds.has(id)) {
-                    // If it was running when we last saw it, show a completion pill
-                    const prev = _schedLastSeen.get(id);
-                    if (prev && prev.status === 'running' && prev.name) {
-                        const doneKey = `sched-${id}-done`;
-                        removeActivityPill(doneKey);
-                        addActivityPill(doneKey, `✓ Schedule "${prev.name}" completed`, 'success', 14000);
-                    }
-                    removeActivityPill(key);
-                }
-            }
-        }
-
-        // Forget IDs we're no longer tracking
-        for (const [id] of _schedLastSeen) {
-            if (!seenIds.has(id)) _schedLastSeen.delete(id);
-        }
-    } catch (e) {
-        // Silently ignore — not critical
-    }
-}
-
-// Hook into patch operations to show pills
-const _origShowStatus = window.showStatus;
-// Override patch trigger to add activity pill
-const _origConfirmPatch = window.confirmPatch;
-
-// Expose helpers so inline event handlers can call addActivityPill
-window.addActivityPill = addActivityPill;
-window.removeActivityPill = removeActivityPill;
-window.updateActivityPill = updateActivityPill;
-
-// Patch progress pill via WebSocket messages
-document.addEventListener('patchpilot:patch-start', (e) => {
-    const hosts = e.detail?.hosts || [];
-    const label = hosts.length === 1
-        ? `🔧 Patching ${hosts[0]}…`
-        : `🔧 Patching ${hosts.length} hosts…`;
-    addActivityPill('patch-op', label, 'running');
-});
-document.addEventListener('patchpilot:patch-done', (e) => {
-    removeActivityPill('patch-op');
-    const ok = e.detail?.success !== false;
-    addActivityPill('patch-done', ok ? '✓ Patch completed' : '✗ Patch failed', ok ? 'success' : 'error', 12000);
-});
-document.addEventListener('patchpilot:refresh-start', () => {
-    addActivityPill('refresh-op', '🔄 Checking for updates…', 'running');
-});
-document.addEventListener('patchpilot:refresh-done', () => {
-    removeActivityPill('refresh-op');
-});
-
-// Start polling
-setInterval(pollScheduleStatus, 60000);
-// Initial poll after a short delay (wait for auth)
-setTimeout(pollScheduleStatus, 2000);
-
-// =========================================================================
-// SIDEBAR BADGE COUNTS (SSH Keys, Users, Schedules)
-// =========================================================================
-
-async function fetchSidebarCounts() {
-    try {
-        // SSH Keys count
-        const sshRes = await fetch(`${API_BASE_URL}/settings/ssh-keys`, { credentials: 'include' });
-        if (sshRes.ok) {
-            const keys = await sshRes.json();
-            const badge = document.getElementById('sidebar-sshkeys-badge');
-            if (badge && keys.length > 0) {
-                badge.textContent = keys.length;
-                badge.style.display = 'inline-flex';
-            }
-        }
-    } catch(e) { /* not critical */ }
-
-    try {
-        // Schedules count
-        const schRes = await fetch(`${API_BASE_URL}/schedules`, { credentials: 'include' });
-        if (schRes.ok) {
-            const schedules = await schRes.json();
-            const badge = document.getElementById('sidebar-schedules-badge');
-            if (badge && schedules.length > 0) {
-                badge.textContent = schedules.length;
-                badge.style.display = 'inline-flex';
-            }
-        }
-    } catch(e) { /* not critical */ }
-
-    try {
-        // Users count (admin only - will 401 for non-admins, that's fine)
-        const usrRes = await fetch(`${API_BASE_URL}/auth/users`, { credentials: 'include' });
-        if (usrRes.ok) {
-            const users = await usrRes.json();
-            const badge = document.getElementById('sidebar-users-badge');
-            if (badge && users.length > 0) {
-                badge.textContent = users.length;
-                badge.style.display = 'inline-flex';
-            }
-        }
-    } catch(e) { /* not critical */ }
-}
-
-// Run badge count fetch after auth check completes (delay to ensure auth state is ready)
-setTimeout(fetchSidebarCounts, 3000);
-
-
-// =========================================================================
-// UPDATE BADGE — sidebar notification for available updates
-// =========================================================================
-
-async function checkForUpdateBadge() {
-    try {
-        const res = await fetch(`${API_BASE_URL}/updates/status`, { credentials: 'include' });
-        if (!res.ok) return;
-        const data = await res.json();
-        const badge = document.getElementById('sidebar-update-badge');
-        if (badge && data.update_available) {
-            badge.style.display = 'flex';
-            badge.title = `v${data.current_version} → v${data.latest_version}`;
-        }
-    } catch (_) {
-        // Silently ignore — update check is non-critical
-    }
-}
-
-// =========================================================================
-// CONSOLE STATUS BAR
-// =========================================================================
-
-(function() {
-    const CONSOLE_MAX_LINES = 300;
-    const CONSOLE_STATE_KEY = 'patchpilot-console-expanded';
-    const CONSOLE_TAB_KEY   = 'patchpilot-console-tab';
-    // Restore persisted state (default: collapsed, backend tab)
-    let consoleExpanded = localStorage.getItem(CONSOLE_STATE_KEY) === 'true';
-    let activeTab = localStorage.getItem(CONSOLE_TAB_KEY) || 'backend';
-    let allLines = []; // { source, level, time, msg }
-    let errCount = 0;
-    let warnCount = 0;
-    let backendPollTimer = null;
-    let lastBackendTs = null;
-
-    // ── Intercept native console methods ──────────────────────────────────
-    const origLog   = console.log.bind(console);
-    const origWarn  = console.warn.bind(console);
-    const origError = console.error.bind(console);
-    const origDebug = console.debug.bind(console);
-
-    function captureConsole(level, args) {
-        const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
-        addLine('fe', level, msg);
+    # App uptime
+    uptime_seconds = int(time.time() - APP_START_TIME)
+    days = uptime_seconds // 86400
+    hours = (uptime_seconds % 86400) // 3600
+    minutes = (uptime_seconds % 3600) // 60
+    uptime_str = f"{days}d {hours}h {minutes}m"
+    
+    # Host count
+    host_count = await pool.fetchval("SELECT COUNT(*) FROM hosts") or 0
+    
+    # Total packages (pending updates)
+    pkg_count = await pool.fetchval("SELECT COUNT(*) FROM packages") or 0
+    
+    # Patch history count (last 7 days)
+    history_count = 0
+    try:
+        history_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM patch_history WHERE execution_time > NOW() - INTERVAL '7 days'"
+        ) or 0
+    except Exception:
+        pass
+    
+    # Alert count (unreachable hosts + hosts needing reboot + macOS system updates)
+    alert_count = 0
+    try:
+        alert_count = await pool.fetchval("""
+            SELECT (
+                SELECT COUNT(*) FROM hosts 
+                WHERE status = 'unreachable' OR reboot_required = TRUE
+            ) + (
+                SELECT COUNT(DISTINCT h.id) FROM hosts h
+                JOIN packages p ON h.id = p.host_id
+                WHERE p.update_type = 'macos-system'
+            )
+        """) or 0
+    except Exception:
+        pass
+    
+    return {
+        "load_1": load_1,
+        "load_5": load_5,
+        "load_15": load_15,
+        "uptime": uptime_str,
+        "host_count": host_count,
+        "package_count": pkg_count,
+        "history_count": history_count,
+        "alert_count": alert_count
     }
 
-    console.log   = (...a) => { origLog(...a);   captureConsole('info',  a); };
-    console.warn  = (...a) => { origWarn(...a);  captureConsole('warn',  a); };
-    console.error = (...a) => { origError(...a); captureConsole('error', a); };
-    console.debug = (...a) => { origDebug(...a); captureConsole('debug', a); };
 
-    window.addEventListener('error', (e) => {
-        addLine('fe', 'error', `Uncaught: ${e.message} (${e.filename}:${e.lineno})`);
-    });
+@app.get("/api/patch-history")
+async def get_patch_history(limit: int = 50):
+    """Get patch history records with hostname (PUBLIC - read only)"""
+    pool = db.pool
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT ph.id, ph.host_id, h.hostname,
+                   ph.success, ph.packages_updated,
+                   ph.execution_time, ph.duration_seconds, ph.error_message,
+                   ph.output
+            FROM patch_history ph
+            LEFT JOIN hosts h ON ph.host_id = h.id
+            ORDER BY ph.execution_time DESC
+            LIMIT $1
+        """, limit)
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["status"] = "success" if d.get("success") else "failed"
+            d["created_at"] = str(d.get("execution_time", ""))
+            stored_pkgs = d.get("packages_updated") or []
+            # Backfill count from output if packages_updated was stored empty
+            if not stored_pkgs and d.get("output"):
+                hostname = d.get("hostname", "")
+                stored_pkgs = _extract_packages_updated(d["output"], hostname)
+            d["packages_updated"] = len(stored_pkgs)
+            d["execution_time"] = d.get("duration_seconds", 0)
+            d["output"] = d.get("output") or ""
+            result.append(d)
+        return result
 
-    // ── Line management ────────────────────────────────────────────────────
-    function addLine(source, level, msg) {
-        const now = new Date();
-        const ts  = now.toTimeString().slice(0, 8);
-        const entry = { source, level, ts, msg, epoch: now.getTime() };
-        allLines.push(entry);
-        if (allLines.length > CONSOLE_MAX_LINES) allLines.shift();
 
-        if (level === 'error') { errCount++; updateCounts(); }
-        if (level === 'warn')  { warnCount++; updateCounts(); }
+@app.get("/api/patch-history/host/{host_id}")
+async def get_patch_history_by_host(host_id: str, limit: int = 20):
+    """Get patch history for a specific host including full output (PUBLIC - read only)"""
+    pool = db.pool
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT ph.id, ph.host_id, h.hostname,
+                   ph.success, ph.packages_updated,
+                   ph.execution_time, ph.duration_seconds, ph.error_message,
+                   ph.output
+            FROM patch_history ph
+            LEFT JOIN hosts h ON ph.host_id = h.id
+            WHERE ph.host_id = $1
+            ORDER BY ph.execution_time DESC
+            LIMIT $2
+        """, host_id, limit)
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["status"] = "success" if d.get("success") else "failed"
+            d["created_at"] = str(d.get("execution_time", ""))
+            stored_pkgs = d.get("packages_updated") or []
+            # Backfill from output if stored empty (legacy records before fix)
+            if not stored_pkgs and d.get("output"):
+                hostname = d.get("hostname", "")
+                stored_pkgs = _extract_packages_updated(d["output"], hostname)
+            d["packages_updated"] = stored_pkgs
+            d["duration_seconds"] = d.get("duration_seconds", 0)
+            d["output"] = d.get("output") or ""
+            result.append(d)
+        return result
 
-        if (activeTab === source || (activeTab === 'frontend' && source === 'fe') || (activeTab === 'backend' && source === 'be')) {
-            appendLineToDOM(entry);
-        }
+
+@app.get("/api/backend-logs")
+async def get_backend_logs(limit: int = 200, level: str = "all"):
+    """Return recent backend log lines from in-memory ring buffer (PUBLIC - read only)"""
+    entries = list(_LOG_RING_BUFFER)
+    if level != "all":
+        entries = [e for e in entries if e["lvl"] == level]
+    return entries[-limit:]
+
+
+@app.get("/api/alerts")
+async def get_alerts():
+    """Get current alerts (unreachable hosts + reboot required + macOS system updates) (PUBLIC)"""
+    pool = db.pool
+    alerts = []
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT hostname, ip_address, status, reboot_required, last_checked
+                FROM hosts
+                WHERE status = 'unreachable' OR reboot_required = TRUE
+                ORDER BY status, hostname
+            """)
+            for r in rows:
+                if r['status'] == 'unreachable':
+                    alerts.append({
+                        "severity": "error",
+                        "type": "unreachable",
+                        "hostname": r['hostname'],
+                        "message": f"Host {r['hostname']} is unreachable",
+                        "last_checked": str(r['last_checked']) if r['last_checked'] else None
+                    })
+                elif r['reboot_required']:
+                    alerts.append({
+                        "severity": "warning",
+                        "type": "reboot_required",
+                        "hostname": r['hostname'],
+                        "message": f"Host {r['hostname']} requires a reboot",
+                        "last_checked": str(r['last_checked']) if r['last_checked'] else None
+                    })
+            # macOS system updates: detected during check but not auto-installed
+            macos_rows = await conn.fetch("""
+                SELECT DISTINCT h.hostname, h.last_checked
+                FROM hosts h
+                JOIN packages p ON h.id = p.host_id
+                WHERE p.update_type = 'macos-system'
+            """)
+            for r in macos_rows:
+                alerts.append({
+                    "severity": "info",
+                    "type": "macos_system_update",
+                    "hostname": r['hostname'],
+                    "message": f"macOS system update available on {r['hostname']} — install via System Settings and reboot",
+                    "last_checked": str(r['last_checked']) if r['last_checked'] else None
+                })
+    except Exception as e:
+        logger.error(f"Error fetching alerts: {e}")
+    return alerts
+
+
+# =========================================================================
+# PROTECTED ENDPOINTS (require authentication)
+# =========================================================================
+
+@app.post("/api/hosts/{hostname}/dismiss-reboot")
+async def dismiss_reboot_alert(hostname: str,
+                               user: dict = Depends(require_auth)):
+    """Clear the reboot_required flag for a host (e.g. after manual reboot). (PROTECTED)"""
+    pool = db.pool
+    async with pool.acquire() as conn:
+        updated = await conn.fetchval(
+            "UPDATE hosts SET reboot_required = FALSE WHERE hostname = $1 RETURNING id",
+            hostname
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    return {"message": f"Reboot alert dismissed for {hostname}"}
+
+
+@app.post("/api/check")
+async def trigger_check(background_tasks: BackgroundTasks,
+                        user: dict = Depends(require_auth)):
+    """Trigger an immediate Ansible check (PROTECTED).
+
+    If a check is already running, we schedule one to run immediately after
+    the lock releases rather than silently dropping the request.  Without
+    this, pressing REFRESH while the periodic background check happens to be
+    running causes the entire request to be discarded — the frontend polls
+    for 3 minutes and nothing happens until the next periodic timer fires.
+    """
+    if _ansible_check_lock.locked() or _ansible_patch_running:
+        # Already busy — queue a follow-up run instead of silently dropping
+        async def _run_after_current():
+            # Wait for the current run to finish (poll up to 5 min)
+            for _ in range(300):
+                if not _ansible_check_lock.locked() and not _ansible_patch_running:
+                    break
+                await asyncio.sleep(1)
+            await run_ansible_check_task()
+        background_tasks.add_task(_run_after_current)
+        return {"message": "Check queued (another check is running)", "status": "queued"}
+
+    background_tasks.add_task(run_ansible_check_task)
+    return {"message": "Check initiated", "status": "running"}
+
+@app.post("/api/check/{hostname}")
+async def trigger_single_host_check(hostname: str, background_tasks: BackgroundTasks,
+                                    user: dict = Depends(require_auth)):
+    """Trigger an immediate Ansible check for a single host (PROTECTED)"""
+    host = await db.get_host_by_hostname(hostname)
+    if not host:
+        raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    if _ansible_check_lock.locked() or _ansible_patch_running:
+        async def _run_after_current(h=[hostname]):
+            for _ in range(300):
+                if not _ansible_check_lock.locked() and not _ansible_patch_running:
+                    break
+                await asyncio.sleep(1)
+            await run_ansible_check_task(h)
+        background_tasks.add_task(_run_after_current)
+        return {"message": f"Check queued for {hostname} (another check is running)", "status": "queued"}
+    background_tasks.add_task(run_ansible_check_task, [hostname])
+    return {"message": f"Check initiated for {hostname}", "status": "running"}
+
+@app.get("/api/patch/status")
+async def get_patch_status():
+    """Return whether a patch run is currently in progress (PUBLIC - read only).
+    Used by the frontend to recover from WebSocket disconnects during long
+    patch operations (e.g. large App Store downloads).
+    Also useful for debugging stuck flags from inside the container."""
+    return {
+        "running": _ansible_patch_running or _ansible_check_lock.locked(),
+        "patch_running": _ansible_patch_running,
+        "patch_running_seconds": int(time.monotonic() - _ansible_patch_running_since) if _ansible_patch_running_since else None,
+        "check_running": _ansible_check_lock.locked(),
+        "check_running_seconds": int(time.monotonic() - _ansible_check_lock_since) if _ansible_check_lock_since else None,
     }
 
-    function appendLineToDOM(entry) {
-        const out = document.getElementById('console-output');
-        if (!out) return;
-        const div = document.createElement('div');
-        div.className = `console-line console-line--${entry.level}`;
-        div.innerHTML = `<span class="console-line__time">${entry.ts}</span>` +
-            `<span class="console-line__source console-line__source--${entry.source}">${entry.source === 'fe' ? 'FE' : 'BE'}</span>` +
-            `<span class="console-line__msg">${escapeConsoleLine(entry.msg)}</span>`;
-        out.appendChild(div);
-        // Auto-scroll if near bottom
-        if (out.scrollHeight - out.scrollTop - out.clientHeight < 60) {
-            out.scrollTop = out.scrollHeight;
-        }
+@app.post("/api/patch")
+async def trigger_patch(patch_request: PatchRequest, background_tasks: BackgroundTasks,
+                        request: Request,
+                        user: dict = Depends(require_auth)):
+    """Trigger patching for specific hosts (PROTECTED)"""
+    if not patch_request.hostnames:
+        raise HTTPException(status_code=400, detail="No hostnames provided")
+    
+    for hostname in patch_request.hostnames:
+        host = await db.get_host_by_hostname(hostname)
+        if not host:
+            raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    
+    # Audit log the patch operation
+    pool = db.pool
+    await log_audit(
+        pool, str(user['id']), user['username'], "patch_initiated",
+        resource_type="hosts", resource_id=",".join(patch_request.hostnames),
+        details={"host_count": len(patch_request.hostnames)},
+        ip_address=request.client.host if request.client else None
+    )
+    
+    background_tasks.add_task(
+        run_ansible_patch_task, 
+        patch_request.hostnames,
+        patch_request.become_password
+    )
+    return {
+        "message": "Patch initiated",
+        "status": "running",
+        "hosts": patch_request.hostnames
     }
 
-    function escapeConsoleLine(str) {
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-    }
-
-    function rebuildOutput() {
-        const out = document.getElementById('console-output');
-        if (!out) return;
-        out.innerHTML = '';
-        const srcFilter = activeTab === 'frontend' ? 'fe' : 'be';
-        allLines.filter(l => l.source === srcFilter).forEach(l => appendLineToDOM(l));
-        out.scrollTop = out.scrollHeight;
-    }
-
-    function updateCounts() {
-        const eEl = document.getElementById('console-err-count');
-        const wEl = document.getElementById('console-warn-count');
-        if (eEl) { eEl.textContent = errCount + ' ERR';  eEl.style.display = errCount  > 0 ? 'inline' : 'none'; }
-        if (wEl) { wEl.textContent = warnCount + ' WARN'; wEl.style.display = warnCount > 0 ? 'inline' : 'none'; }
-    }
-
-    // ── Backend log polling ────────────────────────────────────────────────
-    async function pollBackendLogs() {
-        try {
-            const res = await fetch(`${API_BASE_URL}/backend-logs?limit=100`);
-            if (!res.ok) return;
-            const entries = await res.json();
-            entries.forEach(e => {
-                // Deduplicate: only add entries newer than lastBackendTs
-                if (lastBackendTs && e.ts <= lastBackendTs) return;
-                addLine('be', e.lvl || 'info', `[${e.name || 'app'}] ${e.msg}`);
-            });
-            if (entries.length > 0) lastBackendTs = entries[entries.length - 1].ts;
-        } catch(e) { /* silent */ }
-    }
-
-    // ── Public control functions ───────────────────────────────────────────
-    function applyConsoleState() {
-        const bar = document.getElementById('console-bar');
-        const btn = document.getElementById('console-toggle-btn');
-        if (!bar) return;
-        bar.classList.toggle('console-bar--collapsed', !consoleExpanded);
-        bar.classList.toggle('console-bar--expanded',  consoleExpanded);
-        if (btn) btn.textContent = consoleExpanded ? '▼' : '▲';
-        // Adjust main content padding so console doesn't overlap content
-        const main = document.querySelector('.main');
-        if (main) main.style.paddingBottom = consoleExpanded ? '244px' : '52px';
-    }
-
-    window.toggleConsoleBar = function() {
-        const bar = document.getElementById('console-bar');
-        const btn = document.getElementById('console-toggle-btn');
-        consoleExpanded = !consoleExpanded;
-        localStorage.setItem(CONSOLE_STATE_KEY, consoleExpanded);
-        applyConsoleState();
-        if (consoleExpanded) {
-            rebuildOutput();
-            // Start backend polling when open
-            if (!backendPollTimer) {
-                pollBackendLogs();
-                backendPollTimer = setInterval(pollBackendLogs, 5000);
-            }
-        } else {
-            if (backendPollTimer) { clearInterval(backendPollTimer); backendPollTimer = null; }
-        }
-    };
-
-    window.setConsoleTab = function(tab) {
-        activeTab = tab;
-        localStorage.setItem(CONSOLE_TAB_KEY, tab);
-        document.getElementById('console-tab-frontend').classList.toggle('active', tab === 'frontend');
-        document.getElementById('console-tab-backend').classList.toggle('active',  tab === 'backend');
-        rebuildOutput();
-        if (tab === 'backend' && !backendPollTimer && consoleExpanded) {
-            pollBackendLogs();
-            backendPollTimer = setInterval(pollBackendLogs, 5000);
-        }
-    };
-
-    window.clearConsole = function() {
-        const srcFilter = activeTab === 'frontend' ? 'fe' : 'be';
-        allLines = allLines.filter(l => l.source !== srcFilter);
-        if (srcFilter === 'fe') { errCount = 0; warnCount = 0; updateCounts(); }
-        const out = document.getElementById('console-output');
-        if (out) out.innerHTML = '';
-    };
-
-    // Set initial tab button state and restore persisted open/closed state
-    document.addEventListener('DOMContentLoaded', () => {
-        const fe = document.getElementById('console-tab-frontend');
-        const be = document.getElementById('console-tab-backend');
-        if (fe) fe.classList.toggle('active', activeTab === 'frontend');
-        if (be) be.classList.toggle('active',  activeTab === 'backend');
-        // Apply persisted expand/collapse state
-        applyConsoleState();
-        if (consoleExpanded) {
-            rebuildOutput();
-            pollBackendLogs();
-            backendPollTimer = setInterval(pollBackendLogs, 5000);
-        }
-        if (activeTab === 'backend') {
-            addLine('be', 'info', 'Console initialized — PatchPilot backend ready');
-        } else {
-            addLine('fe', 'info', 'Console initialized — PatchPilot frontend ready');
-        }
-    });
-})();
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
