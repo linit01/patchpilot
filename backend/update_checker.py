@@ -424,8 +424,13 @@ async def _apply_update_docker(target_version: str):
     """
     Apply an update in a Docker Compose environment.
 
-    For 'latest' channel:  docker compose pull + up -d
-    For 'pinned' channel:  rewrite image tags in compose file, then pull + up
+    For 'latest' channel:  pull new images + restart containers
+    For 'pinned' channel:  rewrite image tags in compose file, pull + restart
+
+    Strategy: use raw `docker pull` + `docker compose up -d` scoped to each
+    service individually.  The frontend is restarted first (safe — no state),
+    then the backend restarts itself (the container dies and compose's
+    restart policy brings it back with the new image).
     """
     global _update_status
 
@@ -440,27 +445,27 @@ async def _apply_update_docker(target_version: str):
             compose_file = Path(cp)
             break
 
-    # Find docker compose command
-    compose_cmd = None
-    if shutil.which("docker"):
-        # Try docker compose (v2) first
-        rc, _, _ = _run(["docker", "compose", "version"], timeout=5)
-        if rc == 0:
-            compose_cmd = ["docker", "compose"]
-        else:
-            dc = shutil.which("docker-compose")
-            if dc:
-                compose_cmd = [dc]
-
-    if not compose_cmd:
+    # Verify docker is available
+    docker_bin = shutil.which("docker")
+    if not docker_bin:
         _update_status.update({
             "active": False, "step": "failed",
-            "error": "docker compose not found",
-            "message": "Cannot find docker compose binary. "
+            "error": "docker not found",
+            "message": "Cannot find docker binary. "
                        "Update manually: docker compose pull && docker compose up -d",
             "completed_at": datetime.now(timezone.utc).isoformat(),
         })
         return
+
+    # Check if docker compose plugin is available
+    compose_cmd = None
+    rc, _, _ = _run(["docker", "compose", "version"], timeout=5)
+    if rc == 0:
+        compose_cmd = ["docker", "compose"]
+    else:
+        dc = shutil.which("docker-compose")
+        if dc:
+            compose_cmd = [dc]
 
     try:
         _update_status.update({
@@ -472,18 +477,19 @@ async def _apply_update_docker(target_version: str):
             "completed_at": None,
         })
 
+        backend_image = f"{image_repo}:backend-{target_version}"
+        frontend_image = f"{image_repo}:frontend-{target_version}"
+
         if channel == "pinned" and compose_file:
             _update_status["step"] = "updating_tags"
             _update_status["message"] = "Updating image tags in docker-compose.yml..."
 
             content = compose_file.read_text()
-            # Replace backend image tag
             content = re.sub(
                 rf"(image:\s*{re.escape(image_repo)}:backend-)\S+",
                 rf"\g<1>{target_version}",
                 content,
             )
-            # Replace frontend image tag
             content = re.sub(
                 rf"(image:\s*{re.escape(image_repo)}:frontend-)\S+",
                 rf"\g<1>{target_version}",
@@ -492,29 +498,72 @@ async def _apply_update_docker(target_version: str):
             compose_file.write_text(content)
             logger.info("Updated image tags in %s", compose_file)
 
-        # Build base compose command with project context
-        compose_base = compose_cmd + ["-f", str(compose_file)]
-        # If compose file is in /install, set project directory so .env is found
-        project_dir = str(compose_file.parent)
-        compose_base += ["--project-directory", project_dir]
-
-        # Pull new images (only backend and frontend, not postgres)
+        # ── Pull new images using raw docker pull ─────────────────────────
         _update_status["step"] = "pulling"
-        _update_status["message"] = "Pulling new images..."
+        _update_status["message"] = "Pulling new backend image..."
 
-        cmd = compose_base + ["pull", "backend", "frontend"]
-        rc, out, err = _run(cmd, timeout=300)
+        rc, out, err = _run(["docker", "pull", backend_image], timeout=300)
         if rc != 0:
-            raise RuntimeError(f"docker compose pull failed: {err}")
+            raise RuntimeError(f"docker pull backend failed: {err}")
 
-        # Restart only backend and frontend services
+        _update_status["message"] = "Pulling new frontend image..."
+        rc, out, err = _run(["docker", "pull", frontend_image], timeout=300)
+        if rc != 0:
+            raise RuntimeError(f"docker pull frontend failed: {err}")
+
+        # ── Restart services ──────────────────────────────────────────────
+        # Use docker compose to recreate individual services if available,
+        # otherwise fall back to raw docker restart.
         _update_status["step"] = "restarting"
-        _update_status["message"] = "Restarting services..."
 
-        cmd = compose_base + ["up", "-d", "--no-deps", "--force-recreate", "backend", "frontend"]
-        rc, out, err = _run(cmd, timeout=120)
-        if rc != 0:
-            raise RuntimeError(f"docker compose up failed: {err}")
+        if compose_cmd and compose_file:
+            compose_base = compose_cmd + [
+                "-f", str(compose_file),
+                "--project-directory", str(compose_file.parent),
+            ]
+
+            # Restart frontend first (stateless, safe)
+            _update_status["message"] = "Restarting frontend..."
+            rc, out, err = _run(
+                compose_base + ["up", "-d", "--no-deps", "--force-recreate", "frontend"],
+                timeout=60,
+            )
+            if rc != 0:
+                logger.warning("compose restart frontend failed: %s", err)
+
+            # Restart backend last — this kills our own process.
+            # The compose restart policy will bring us back with the new image.
+            _update_status["message"] = "Restarting backend (this container will restart)..."
+            logger.info("Restarting backend — this process will terminate")
+
+            # Use nohup-style: run in background so the response can be sent
+            # before the container dies
+            await asyncio.sleep(1)  # give time for status to propagate
+
+            rc, out, err = _run(
+                compose_base + ["up", "-d", "--no-deps", "--force-recreate", "backend"],
+                timeout=60,
+            )
+            # If we get here, the restart didn't kill us (shouldn't happen normally)
+            if rc != 0:
+                raise RuntimeError(f"compose restart backend failed: {err}")
+        else:
+            # Fallback: raw docker restart
+            _update_status["message"] = "Restarting containers..."
+            for name in ["patchpilot-frontend-1", "patchpilot-backend-1"]:
+                rc, _, err = _run(["docker", "stop", name], timeout=30)
+                if rc != 0:
+                    logger.warning("docker stop %s failed: %s", name, err)
+                rc, _, err = _run(["docker", "rm", name], timeout=15)
+                if rc != 0:
+                    logger.warning("docker rm %s failed: %s", name, err)
+            # Recreate from compose
+            if compose_file:
+                _run(compose_cmd + [
+                    "-f", str(compose_file),
+                    "--project-directory", str(compose_file.parent),
+                    "up", "-d", "backend", "frontend",
+                ], timeout=60)
 
         _update_status.update({
             "active": False,
