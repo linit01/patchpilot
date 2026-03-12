@@ -1206,6 +1206,12 @@ show_completion() {
   [[ "${PP_TLS_ENABLED}" == "true" ]] && \
     echo -e "${YELLOW}⏳ TLS:${NC} Certificate may take 1–3 min via Let's Encrypt."
   echo ""
+
+  # Emit structured credentials marker for the web installer's summary screen.
+  # The web installer's SSE handler intercepts this line and displays the
+  # credentials on the success banner so the user doesn't have to scroll.
+  # Terminal users already saw the password near the top of output.
+  echo "__CREDENTIALS__{\"pg_password\":\"${PP_DB_PASSWORD}\",\"encryption_key\":\"${PP_ENCRYPTION_KEY}\"}"
 }
 
 # ── Dry run ────────────────────────────────────────────────────────────────────
