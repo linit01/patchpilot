@@ -1648,9 +1648,10 @@ async def get_chart_data():
         activity_rows = await pool.fetch("""
             SELECT
                 gs.day::date                                                   AS day,
-                COALESCE(COUNT(ph.id) FILTER (WHERE ph.success = TRUE),  0)   AS patched,
+                COALESCE(SUM(COALESCE(array_length(ph.packages_updated, 1), 0))
+                    FILTER (WHERE ph.success = TRUE),  0)::int                 AS patched,
                 COALESCE(COUNT(ph.id) FILTER (WHERE ph.success = FALSE
-                                                 OR ph.success IS NULL),  0)  AS failed
+                                                 OR ph.success IS NULL),  0)   AS failed
             FROM generate_series(
                      CURRENT_DATE - INTERVAL '6 days',
                      CURRENT_DATE,
@@ -1667,7 +1668,7 @@ async def get_chart_data():
             SELECT
                 DATE(ph.execution_time AT TIME ZONE 'UTC') AS day,
                 COALESCE(h.os_family, 'Unknown')           AS os_family,
-                COUNT(*)                                   AS count
+                SUM(COALESCE(array_length(ph.packages_updated, 1), 0))::int AS count
             FROM patch_history ph
             LEFT JOIN hosts h ON ph.host_id = h.id
             WHERE ph.success = TRUE
@@ -1728,11 +1729,12 @@ async def get_sidebar_stats():
     # Total packages (pending updates)
     pkg_count = await pool.fetchval("SELECT COUNT(*) FROM packages") or 0
     
-    # Patch history count (last 7 days)
+    # Patch history count (last 7 days) — actual packages patched, not run attempts
     history_count = 0
     try:
         history_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM patch_history WHERE execution_time > NOW() - INTERVAL '7 days'"
+            "SELECT COALESCE(SUM(COALESCE(array_length(packages_updated, 1), 0)), 0)::int "
+            "FROM patch_history WHERE execution_time > NOW() - INTERVAL '7 days' AND success = TRUE"
         ) or 0
     except Exception:
         pass
