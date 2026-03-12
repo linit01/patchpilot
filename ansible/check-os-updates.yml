@@ -372,6 +372,7 @@
     #    but async/poll still bounds the Ansible-side wait.
     #
     - name: Apply App Store updates (macOS)
+      become: yes
       shell: |
         MAS="{{ mas_bin_path }}"
         EXCLUDE="{{ mas_excluded_ids }}"
