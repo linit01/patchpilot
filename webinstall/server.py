@@ -266,6 +266,12 @@ async def install_stream(mode: str = "k3s"):
                     yield f"data: {json.dumps('__NOTE_CLEANUP__' + cmd_str)}\n\n"
                     continue
 
+                # Intercept credentials for the success summary screen
+                if line.startswith("__CREDENTIALS__"):
+                    payload = line[len("__CREDENTIALS__"):].strip()
+                    yield f"data: {json.dumps('__CREDENTIALS__' + payload)}\n\n"
+                    continue
+
                 yield f"data: {json.dumps(line)}\n\n"
 
             await proc.wait()
