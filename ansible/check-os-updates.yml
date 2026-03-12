@@ -90,6 +90,7 @@
         - /usr/local/bin/mas
         - /usr/bin/mas
       when: ansible_facts['os_family'] == "Darwin"
+      tags: always
 
     - name: Set mas_bin fact (macOS)
       set_fact:
@@ -101,11 +102,13 @@
         - item.stat.exists
         - item.stat.executable
       # Last match wins — first found is fine since we loop in preference order
+      tags: always
 
     - name: Debug mas binary found (macOS)
       debug:
         msg: "mas binary: {{ mas_bin_path | default('NOT FOUND') }}"
       when: ansible_facts['os_family'] == "Darwin"
+      tags: always
 
     # Detect timeout binary binary: macOS 12.3+ has /usr/bin/timeout natively.
     # Older macOS needs `brew install coreutils` which provides gtimeout.
@@ -166,6 +169,7 @@
         - ansible_facts['os_family'] == "Darwin"
         - mas_bin_path is defined
         - mas_bin_path | default('') == ""
+      tags: always
 
     - name: Warn if mas disabled (macOS)
       debug:
@@ -177,6 +181,7 @@
         - mas_bin_path is defined
         - mas_bin_path | default('') != ""
         - not mas_enabled
+      tags: always
 
     - name: Warn if no timeout binary (macOS)
       debug:
@@ -190,6 +195,7 @@
         - mas_bin_path | default('') != ""
         - mas_enabled | bool
         - timeout_bin_path is not defined or timeout_bin_path | default('') == ''
+      tags: always
 
     # ── macOS checks ───────────────────────────────────────────────────────────
     - name: Check for Homebrew updates (macOS)
