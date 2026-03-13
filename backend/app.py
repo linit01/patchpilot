@@ -90,7 +90,7 @@ _sys.stdout = _StdoutInterceptor(_sys.stdout)
 from database import DatabaseClient
 from ansible_runner import AnsibleRunner
 from settings_api import router as settings_router
-from auth import router as auth_router, require_auth, log_audit, cleanup_expired_sessions
+from auth import router as auth_router, require_auth, require_full_admin, require_write, ownership_filter, log_audit, cleanup_expired_sessions
 from schedules_api import router as schedules_router
 from backup_restore import router as backup_router, set_pool as backup_set_pool, set_db_client as backup_set_db_client, set_post_restore_callback as backup_set_post_restore_callback
 from setup_api import router as setup_router
@@ -258,6 +258,9 @@ async def startup_event():
 
     # ── STEP 6: Saved SSH keys table ──────────────────────────────────────────
     await ensure_saved_ssh_keys_table(pool)
+
+    # ── STEP 7: RBAC — ownership columns + role migration ─────────────────────
+    await ensure_rbac_columns(pool)
     
     # Start background task for periodic checks
     asyncio.create_task(periodic_ansible_check())
@@ -758,6 +761,74 @@ async def ensure_saved_ssh_keys_table(pool):
             print("saved_ssh_keys table ready")
     except Exception as e:
         print(f"saved_ssh_keys table init failed: {e}")
+
+
+async def ensure_rbac_columns(pool):
+    """RBAC migration: add created_by ownership columns, migrate admin→full_admin role.
+
+    Safe to run on every startup (all operations are idempotent).
+    """
+    try:
+        async with pool.acquire() as conn:
+            # ── 1. Add created_by columns to resource tables ──────────────
+            for table in ('hosts', 'saved_ssh_keys', 'patch_schedules'):
+                col_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = $1 AND column_name = 'created_by'
+                    )
+                """, table)
+                if not col_exists:
+                    await conn.execute(f"""
+                        ALTER TABLE {table}
+                        ADD COLUMN created_by UUID REFERENCES users(id) ON DELETE SET NULL
+                    """)
+                    await conn.execute(f"""
+                        CREATE INDEX IF NOT EXISTS idx_{table}_created_by
+                        ON {table}(created_by)
+                    """)
+                    print(f"[RBAC] Added created_by column to {table}")
+
+            # ── 2. Migrate role: admin → full_admin for the original admin ─
+            #    Only upgrades users who are currently 'admin' AND were the
+            #    first user created (i.e. the setup wizard user).  Subsequent
+            #    'admin' users created via the new role model stay as 'admin'.
+            migrated = await conn.fetchval("""
+                UPDATE users SET role = 'full_admin', updated_at = NOW()
+                WHERE role = 'admin'
+                  AND id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)
+                RETURNING id
+            """)
+            if migrated:
+                print(f"[RBAC] Migrated original admin user to full_admin (id={migrated})")
+
+            # ── 3. Backfill created_by for existing resources ─────────────
+            #    Assign all orphaned resources (created_by IS NULL) to the
+            #    full_admin user so they don't become invisible after the
+            #    ownership filter is enforced.
+            fa_id = await conn.fetchval(
+                "SELECT id FROM users WHERE role = 'full_admin' LIMIT 1"
+            )
+            if fa_id:
+                for table in ('hosts', 'saved_ssh_keys', 'patch_schedules'):
+                    updated = await conn.execute(f"""
+                        UPDATE {table} SET created_by = $1
+                        WHERE created_by IS NULL
+                    """, fa_id)
+                    if updated and updated != 'UPDATE 0':
+                        print(f"[RBAC] Backfilled created_by on {table}: {updated}")
+
+            # ── 4. Migrate any lingering 'operator' roles to 'viewer' ─────
+            await conn.execute("""
+                UPDATE users SET role = 'viewer', updated_at = NOW()
+                WHERE role = 'operator'
+            """)
+
+            print("[RBAC] Role-based access control migration complete")
+    except Exception as e:
+        print(f"[RBAC] Migration failed: {e}")
+        # Non-fatal — the app can still run, but ownership filtering
+        # will fall back to showing everything until columns exist.
 
 
 # Background task to run Ansible check
