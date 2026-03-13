@@ -54,4 +54,9 @@ k8s/install-config.yaml
 !database-schema.sql
 
 #Scripts
-scripts/push_new_build.sh
+scripts/push_new_build*
+scripts/claude-context.sh
+
+
+#OTHER
+NOTES

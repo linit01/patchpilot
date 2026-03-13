@@ -13,8 +13,9 @@ import logging
 from datetime import time as dt_time, datetime
 
 from dependencies import get_db_pool
-from auth import require_auth
+from auth import require_auth, require_write
 from encryption_utils import encrypt_credential, decrypt_credential
+from rbac import owner_id, owner_id_or_param, verify_schedule_ownership, verify_host_ownership
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/schedules", tags=["schedules"], dependencies=[Depends(require_auth)])
@@ -68,12 +69,15 @@ class ScheduleResponse(BaseModel):
 # ============================================================================
 
 @router.get("/active")
-async def get_active_schedules(pool: asyncpg.Pool = Depends(get_db_pool)):
+async def get_active_schedules(owner: str = None,
+                               pool: asyncpg.Pool = Depends(get_db_pool),
+                               user: dict = Depends(require_auth)):
     """Return schedules that are running, recently completed, or have pending retries.
     Lightweight endpoint polled by the dashboard activity bar every 60 seconds.
     Schedules stuck in 'running' for > 45 minutes are auto-corrected to 'error' in the DB
     so the frontend pill always clears eventually even if the backend crashed mid-run."""
     from datetime import datetime, timezone, timedelta
+    uid = owner_id_or_param(user, owner)
     async with pool.acquire() as conn:
         # Auto-correct stale 'running' rows so they don't stick forever
         await conn.execute("""
@@ -83,7 +87,7 @@ async def get_active_schedules(pool: asyncpg.Pool = Depends(get_db_pool)):
               AND last_run < NOW() - INTERVAL '45 minutes'
         """)
 
-        rows = await conn.fetch("""
+        base_query = """
             SELECT id, name, last_status, last_run,
                    array_length(retry_host_ids, 1) AS retry_count
             FROM patch_schedules
@@ -93,8 +97,14 @@ async def get_active_schedules(pool: asyncpg.Pool = Depends(get_db_pool)):
                   OR (last_status IN ('success', 'error')
                       AND last_run > NOW() - INTERVAL '30 minutes')
               )
-            ORDER BY last_run DESC NULLS LAST
-        """)
+        """
+        if uid is not None:
+            base_query += " AND created_by = $1"
+            base_query += " ORDER BY last_run DESC NULLS LAST"
+            rows = await conn.fetch(base_query, uid)
+        else:
+            base_query += " ORDER BY last_run DESC NULLS LAST"
+            rows = await conn.fetch(base_query)
         return [
             {
                 "id": str(r['id']),
@@ -108,17 +118,31 @@ async def get_active_schedules(pool: asyncpg.Pool = Depends(get_db_pool)):
 
 
 @router.get("")
-async def list_schedules(pool: asyncpg.Pool = Depends(get_db_pool)):
-    """List all patch schedules with their associated hosts"""
+async def list_schedules(owner: str = None,
+                         pool: asyncpg.Pool = Depends(get_db_pool),
+                         user: dict = Depends(require_auth)):
+    """List patch schedules, scoped by role."""
+    uid = owner_id_or_param(user, owner)
     async with pool.acquire() as conn:
-        schedules = await conn.fetch("""
-            SELECT s.*,
-                   COUNT(sh.host_id) as host_count
-            FROM patch_schedules s
-            LEFT JOIN patch_schedule_hosts sh ON s.id = sh.schedule_id
-            GROUP BY s.id
-            ORDER BY s.name
-        """)
+        if uid is not None:
+            schedules = await conn.fetch("""
+                SELECT s.*,
+                       COUNT(sh.host_id) as host_count
+                FROM patch_schedules s
+                LEFT JOIN patch_schedule_hosts sh ON s.id = sh.schedule_id
+                WHERE s.created_by = $1
+                GROUP BY s.id
+                ORDER BY s.name
+            """, uid)
+        else:
+            schedules = await conn.fetch("""
+                SELECT s.*,
+                       COUNT(sh.host_id) as host_count
+                FROM patch_schedules s
+                LEFT JOIN patch_schedule_hosts sh ON s.id = sh.schedule_id
+                GROUP BY s.id
+                ORDER BY s.name
+            """)
         
         result = []
         for sched in schedules:
@@ -154,8 +178,9 @@ async def list_schedules(pool: asyncpg.Pool = Depends(get_db_pool)):
 
 
 @router.post("", status_code=201)
-async def create_schedule(schedule: ScheduleCreate, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Create a new auto-patch schedule"""
+async def create_schedule(schedule: ScheduleCreate, pool: asyncpg.Pool = Depends(get_db_pool),
+                          user: dict = Depends(require_write)):
+    """Create a new auto-patch schedule (write-only, sets created_by)"""
     # Validate time format
     try:
         start = dt_time.fromisoformat(schedule.start_time)
@@ -179,11 +204,11 @@ async def create_schedule(schedule: ScheduleCreate, pool: asyncpg.Pool = Depends
         # Create schedule
         row = await conn.fetchrow("""
             INSERT INTO patch_schedules (name, enabled, day_of_week, start_time, end_time, 
-                                         auto_reboot, become_password_encrypted)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                         auto_reboot, become_password_encrypted, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
         """, schedule.name, schedule.enabled, ','.join(days),
-            start, end, schedule.auto_reboot, password_encrypted)
+            start, end, schedule.auto_reboot, password_encrypted, user['id'])
         
         schedule_id = row['id']
         
@@ -206,14 +231,17 @@ async def create_schedule(schedule: ScheduleCreate, pool: asyncpg.Pool = Depends
 
 
 @router.get("/{schedule_id}")
-async def get_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Get a specific schedule with its hosts"""
+async def get_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                       user: dict = Depends(require_auth)):
+    """Get a specific schedule with its hosts (ownership-scoped)"""
     try:
         sched_uuid = uuid.UUID(schedule_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid schedule ID")
     
     async with pool.acquire() as conn:
+        if not await verify_schedule_ownership(conn, user, sched_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this schedule")
         sched = await conn.fetchrow("SELECT * FROM patch_schedules WHERE id = $1", sched_uuid)
         if not sched:
             raise HTTPException(status_code=404, detail="Schedule not found")
@@ -246,14 +274,17 @@ async def get_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_poo
 
 @router.put("/{schedule_id}")
 async def update_schedule(schedule_id: str, schedule: ScheduleUpdate, 
-                          pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Update an existing schedule"""
+                          pool: asyncpg.Pool = Depends(get_db_pool),
+                          user: dict = Depends(require_write)):
+    """Update an existing schedule (ownership-scoped, write-only)"""
     try:
         sched_uuid = uuid.UUID(schedule_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid schedule ID")
     
     async with pool.acquire() as conn:
+        if not await verify_schedule_ownership(conn, user, sched_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this schedule")
         existing = await conn.fetchrow("SELECT * FROM patch_schedules WHERE id = $1", sched_uuid)
         if not existing:
             raise HTTPException(status_code=404, detail="Schedule not found")
@@ -306,14 +337,17 @@ async def update_schedule(schedule_id: str, schedule: ScheduleUpdate,
 
 
 @router.delete("/{schedule_id}", status_code=204)
-async def delete_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Delete a schedule"""
+async def delete_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                          user: dict = Depends(require_write)):
+    """Delete a schedule (ownership-scoped, write-only)"""
     try:
         sched_uuid = uuid.UUID(schedule_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid schedule ID")
     
     async with pool.acquire() as conn:
+        if not await verify_schedule_ownership(conn, user, sched_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this schedule")
         result = await conn.fetchrow(
             "DELETE FROM patch_schedules WHERE id = $1 RETURNING name", sched_uuid
         )
@@ -324,14 +358,17 @@ async def delete_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_
 
 
 @router.post("/{schedule_id}/run")
-async def trigger_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Manually trigger a schedule to run now"""
+async def trigger_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                           user: dict = Depends(require_write)):
+    """Manually trigger a schedule to run now (ownership-scoped, write-only)"""
     try:
         sched_uuid = uuid.UUID(schedule_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid schedule ID")
     
     async with pool.acquire() as conn:
+        if not await verify_schedule_ownership(conn, user, sched_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this schedule")
         sched = await conn.fetchrow("SELECT * FROM patch_schedules WHERE id = $1", sched_uuid)
         if not sched:
             raise HTTPException(status_code=404, detail="Schedule not found")

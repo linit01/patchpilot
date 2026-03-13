@@ -10,6 +10,8 @@ import asyncio
 import logging
 import psutil
 import time
+import uuid
+import asyncpg
 from collections import deque
 
 logger = logging.getLogger(__name__)
@@ -90,7 +92,11 @@ _sys.stdout = _StdoutInterceptor(_sys.stdout)
 from database import DatabaseClient
 from ansible_runner import AnsibleRunner
 from settings_api import router as settings_router
-from auth import router as auth_router, require_auth, require_full_admin, require_write, ownership_filter, log_audit, cleanup_expired_sessions
+from dependencies import get_db_pool
+from auth import (router as auth_router, require_auth, require_full_admin,
+                  require_write, ownership_filter, log_audit,
+                  cleanup_expired_sessions, get_current_user)
+from rbac import owner_id_or_param, verify_host_ownership_by_hostname
 from schedules_api import router as schedules_router
 from backup_restore import router as backup_router, set_pool as backup_set_pool, set_db_client as backup_set_db_client, set_post_restore_callback as backup_set_post_restore_callback
 from setup_api import router as setup_router
@@ -1628,14 +1634,21 @@ async def root():
 # =========================================================================
 
 @app.get("/api/hosts")
-async def get_hosts(background_tasks: BackgroundTasks):
-    """Get all hosts with their update status (PUBLIC - read only).
+async def get_hosts(background_tasks: BackgroundTasks, request: Request,
+                    owner: str = None,
+                    pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Get hosts with update status, scoped by role when authenticated."""
+    user = await get_current_user(request, pool)
+    uid = owner_id_or_param(user, owner) if user else None
 
-    If all hosts have stale or missing last_checked timestamps (e.g. after a
-    restore or long downtime), automatically triggers a background Ansible
-    check so the dashboard self-heals without requiring a manual refresh.
-    """
-    hosts = await db.get_all_hosts()
+    if uid is not None:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM hosts WHERE created_by = $1 ORDER BY hostname", uid
+            )
+            hosts = [dict(r) for r in rows]
+    else:
+        hosts = await db.get_all_hosts()
 
     # Auto-trigger a check if data looks stale and nothing is running
     if hosts and not _ansible_check_lock.locked() and not _ansible_patch_running:
@@ -1669,84 +1682,171 @@ async def get_hosts(background_tasks: BackgroundTasks):
     return hosts
 
 @app.get("/api/hosts/{hostname}")
-async def get_host(hostname: str):
-    """Get details for a specific host (PUBLIC - read only)"""
+async def get_host(hostname: str, request: Request,
+                   pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Get details for a specific host (ownership-scoped when authenticated)"""
     host = await db.get_host_by_hostname(hostname)
     if not host:
         raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    user = await get_current_user(request, pool)
+    if user:
+        async with pool.acquire() as conn:
+            if not await verify_host_ownership_by_hostname(conn, user, hostname):
+                raise HTTPException(status_code=403, detail="Access denied to this host")
     return host
 
 @app.get("/api/hosts/{hostname}/packages")
-async def get_host_packages(hostname: str):
-    """Get pending updates for a specific host (PUBLIC - read only)"""
+async def get_host_packages(hostname: str, request: Request,
+                            pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Get pending updates for a specific host (ownership-scoped)"""
     host = await db.get_host_by_hostname(hostname)
     if not host:
         raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    user = await get_current_user(request, pool)
+    if user:
+        async with pool.acquire() as conn:
+            if not await verify_host_ownership_by_hostname(conn, user, hostname):
+                raise HTTPException(status_code=403, detail="Access denied to this host")
     packages = await db.get_packages_for_host(host['id'])
     return packages
 
 @app.get("/api/stats")
-async def get_stats():
-    """Get summary statistics (PUBLIC - read only)"""
+async def get_stats(request: Request, owner: str = None,
+                    pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Get summary statistics, scoped by role when authenticated."""
+    user = await get_current_user(request, pool)
+    uid = owner_id_or_param(user, owner) if user else None
+    if uid is not None:
+        async with pool.acquire() as conn:
+            result = await conn.fetchrow("""
+                SELECT
+                    COUNT(*) as total_hosts,
+                    COUNT(*) FILTER (WHERE status = 'up-to-date') as up_to_date,
+                    COUNT(*) FILTER (WHERE status = 'updates-available') as need_updates,
+                    COUNT(*) FILTER (WHERE status = 'unreachable') as unreachable,
+                    COALESCE(SUM(total_updates), 0) as total_pending_updates
+                FROM hosts WHERE created_by = $1
+            """, uid)
+            return {
+                "total_hosts": result['total_hosts'],
+                "up_to_date": result['up_to_date'],
+                "need_updates": result['need_updates'],
+                "unreachable": result['unreachable'],
+                "total_pending_updates": result['total_pending_updates']
+            }
     stats = await db.get_stats()
     return stats
 
 @app.get("/api/stats/charts")
-async def get_chart_data():
-    """Get dashboard chart data: OS distribution, update types, patch activity (PUBLIC)"""
+async def get_chart_data(request: Request, owner: str = None,
+                         pool_dep: asyncpg.Pool = Depends(get_db_pool)):
+    """Get dashboard chart data: OS distribution, update types, patch activity. Scoped by role."""
     pool = db.pool
+    user = await get_current_user(request, pool_dep)
+    uid = owner_id_or_param(user, owner) if user else None
     
     # OS Distribution
-    os_rows = await pool.fetch("""
-        SELECT COALESCE(os_family, 'Unknown') as os, COUNT(*) as count
-        FROM hosts GROUP BY os_family ORDER BY count DESC
-    """)
+    if uid is not None:
+        os_rows = await pool.fetch("""
+            SELECT COALESCE(os_family, 'Unknown') as os, COUNT(*) as count
+            FROM hosts WHERE created_by = $1 GROUP BY os_family ORDER BY count DESC
+        """, uid)
+    else:
+        os_rows = await pool.fetch("""
+            SELECT COALESCE(os_family, 'Unknown') as os, COUNT(*) as count
+            FROM hosts GROUP BY os_family ORDER BY count DESC
+        """)
     os_distribution = [{"os": r['os'], "count": r['count']} for r in os_rows]
     
     # Update Types
-    pkg_rows = await pool.fetch("""
-        SELECT COALESCE(p.update_type, 'unknown') as type, COUNT(*) as count
-        FROM packages p
-        JOIN hosts h ON p.host_id = h.id
-        GROUP BY p.update_type ORDER BY count DESC
-    """)
+    if uid is not None:
+        pkg_rows = await pool.fetch("""
+            SELECT COALESCE(p.update_type, 'unknown') as type, COUNT(*) as count
+            FROM packages p
+            JOIN hosts h ON p.host_id = h.id
+            WHERE h.created_by = $1
+            GROUP BY p.update_type ORDER BY count DESC
+        """, uid)
+    else:
+        pkg_rows = await pool.fetch("""
+            SELECT COALESCE(p.update_type, 'unknown') as type, COUNT(*) as count
+            FROM packages p
+            JOIN hosts h ON p.host_id = h.id
+            GROUP BY p.update_type ORDER BY count DESC
+        """)
     update_types = [{"type": r['type'], "count": r['count']} for r in pkg_rows]
     
     # Patch Activity - last 7 days (always returns all 7 days even with no data)
     # Also returns per-OS breakdown so the frontend can draw OS-colored stacked bars
     activity = []
     try:
-        activity_rows = await pool.fetch("""
-            SELECT
-                gs.day::date                                                   AS day,
-                COALESCE(SUM(COALESCE(array_length(ph.packages_updated, 1), 0))
-                    FILTER (WHERE ph.success = TRUE),  0)::int                 AS patched,
-                COALESCE(COUNT(ph.id) FILTER (WHERE ph.success = FALSE
-                                                 OR ph.success IS NULL),  0)   AS failed
-            FROM generate_series(
-                     CURRENT_DATE - INTERVAL '6 days',
-                     CURRENT_DATE,
-                     INTERVAL '1 day'
-                 ) AS gs(day)
-            LEFT JOIN patch_history ph
-                   ON DATE(ph.execution_time AT TIME ZONE 'UTC') = gs.day::date
-            GROUP BY gs.day
-            ORDER BY gs.day
-        """)
+        if uid is not None:
+            activity_rows = await pool.fetch("""
+                SELECT
+                    gs.day::date                                                   AS day,
+                    COALESCE(SUM(COALESCE(array_length(ph.packages_updated, 1), 0))
+                        FILTER (WHERE ph.success = TRUE),  0)::int                 AS patched,
+                    COALESCE(COUNT(ph.id) FILTER (WHERE ph.success = FALSE
+                                                     OR ph.success IS NULL),  0)   AS failed
+                FROM generate_series(
+                         CURRENT_DATE - INTERVAL '6 days',
+                         CURRENT_DATE,
+                         INTERVAL '1 day'
+                     ) AS gs(day)
+                LEFT JOIN patch_history ph
+                       ON DATE(ph.execution_time AT TIME ZONE 'UTC') = gs.day::date
+                LEFT JOIN hosts h ON ph.host_id = h.id AND h.created_by = $1
+                WHERE ph.id IS NULL OR h.id IS NOT NULL
+                GROUP BY gs.day
+                ORDER BY gs.day
+            """, uid)
+        else:
+            activity_rows = await pool.fetch("""
+                SELECT
+                    gs.day::date                                                   AS day,
+                    COALESCE(SUM(COALESCE(array_length(ph.packages_updated, 1), 0))
+                        FILTER (WHERE ph.success = TRUE),  0)::int                 AS patched,
+                    COALESCE(COUNT(ph.id) FILTER (WHERE ph.success = FALSE
+                                                     OR ph.success IS NULL),  0)   AS failed
+                FROM generate_series(
+                         CURRENT_DATE - INTERVAL '6 days',
+                         CURRENT_DATE,
+                         INTERVAL '1 day'
+                     ) AS gs(day)
+                LEFT JOIN patch_history ph
+                       ON DATE(ph.execution_time AT TIME ZONE 'UTC') = gs.day::date
+                GROUP BY gs.day
+                ORDER BY gs.day
+            """)
 
         # Per-OS successful patch counts per day
-        os_rows = await pool.fetch("""
-            SELECT
-                DATE(ph.execution_time AT TIME ZONE 'UTC') AS day,
-                COALESCE(h.os_family, 'Unknown')           AS os_family,
-                SUM(COALESCE(array_length(ph.packages_updated, 1), 0))::int AS count
-            FROM patch_history ph
-            LEFT JOIN hosts h ON ph.host_id = h.id
-            WHERE ph.success = TRUE
-              AND ph.execution_time >= CURRENT_DATE - INTERVAL '6 days'
-            GROUP BY DATE(ph.execution_time AT TIME ZONE 'UTC'), h.os_family
-            ORDER BY day
-        """)
+        if uid is not None:
+            os_rows = await pool.fetch("""
+                SELECT
+                    DATE(ph.execution_time AT TIME ZONE 'UTC') AS day,
+                    COALESCE(h.os_family, 'Unknown')           AS os_family,
+                    SUM(COALESCE(array_length(ph.packages_updated, 1), 0))::int AS count
+                FROM patch_history ph
+                LEFT JOIN hosts h ON ph.host_id = h.id
+                WHERE ph.success = TRUE
+                  AND ph.execution_time >= CURRENT_DATE - INTERVAL '6 days'
+                  AND h.created_by = $1
+                GROUP BY DATE(ph.execution_time AT TIME ZONE 'UTC'), h.os_family
+                ORDER BY day
+            """, uid)
+        else:
+            os_rows = await pool.fetch("""
+                SELECT
+                    DATE(ph.execution_time AT TIME ZONE 'UTC') AS day,
+                    COALESCE(h.os_family, 'Unknown')           AS os_family,
+                    SUM(COALESCE(array_length(ph.packages_updated, 1), 0))::int AS count
+                FROM patch_history ph
+                LEFT JOIN hosts h ON ph.host_id = h.id
+                WHERE ph.success = TRUE
+                  AND ph.execution_time >= CURRENT_DATE - INTERVAL '6 days'
+                GROUP BY DATE(ph.execution_time AT TIME ZONE 'UTC'), h.os_family
+                ORDER BY day
+            """)
 
         # Index os breakdown by day string
         os_by_day: dict = {}
@@ -1776,9 +1876,12 @@ async def get_chart_data():
 
 
 @app.get("/api/stats/sidebar")
-async def get_sidebar_stats():
-    """Get sidebar-specific stats: load average, uptime, counts for badges (PUBLIC)"""
+async def get_sidebar_stats(request: Request, owner: str = None,
+                            pool_dep: asyncpg.Pool = Depends(get_db_pool)):
+    """Get sidebar-specific stats: load average, uptime, counts for badges. Scoped by role."""
     pool = db.pool
+    user = await get_current_user(request, pool_dep)
+    uid = owner_id_or_param(user, owner) if user else None
     
     # System load average
     try:
@@ -1794,37 +1897,61 @@ async def get_sidebar_stats():
     minutes = (uptime_seconds % 3600) // 60
     uptime_str = f"{days}d {hours}h {minutes}m"
     
-    # Host count
-    host_count = await pool.fetchval("SELECT COUNT(*) FROM hosts") or 0
-    
-    # Total packages (pending updates)
-    pkg_count = await pool.fetchval("SELECT COUNT(*) FROM packages") or 0
-    
-    # Patch history count (last 7 days) — actual packages patched, not run attempts
-    history_count = 0
-    try:
-        history_count = await pool.fetchval(
-            "SELECT COALESCE(SUM(COALESCE(array_length(packages_updated, 1), 0)), 0)::int "
-            "FROM patch_history WHERE execution_time > NOW() - INTERVAL '7 days' AND success = TRUE"
-        ) or 0
-    except Exception:
-        pass
-    
-    # Alert count (unreachable hosts + hosts needing reboot + macOS system updates)
-    alert_count = 0
-    try:
-        alert_count = await pool.fetchval("""
-            SELECT (
-                SELECT COUNT(*) FROM hosts 
-                WHERE status = 'unreachable' OR reboot_required = TRUE
-            ) + (
-                SELECT COUNT(DISTINCT h.id) FROM hosts h
-                JOIN packages p ON h.id = p.host_id
-                WHERE p.update_type = 'macos-system'
-            )
-        """) or 0
-    except Exception:
-        pass
+    if uid is not None:
+        # Scoped counts for admin role
+        host_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM hosts WHERE created_by = $1", uid) or 0
+        pkg_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM packages p JOIN hosts h ON p.host_id = h.id WHERE h.created_by = $1", uid) or 0
+        history_count = 0
+        try:
+            history_count = await pool.fetchval(
+                "SELECT COALESCE(SUM(COALESCE(array_length(ph.packages_updated, 1), 0)), 0)::int "
+                "FROM patch_history ph JOIN hosts h ON ph.host_id = h.id "
+                "WHERE ph.execution_time > NOW() - INTERVAL '7 days' AND ph.success = TRUE AND h.created_by = $1",
+                uid) or 0
+        except Exception:
+            pass
+        alert_count = 0
+        try:
+            alert_count = await pool.fetchval("""
+                SELECT (
+                    SELECT COUNT(*) FROM hosts 
+                    WHERE (status = 'unreachable' OR reboot_required = TRUE) AND created_by = $1
+                ) + (
+                    SELECT COUNT(DISTINCT h.id) FROM hosts h
+                    JOIN packages p ON h.id = p.host_id
+                    WHERE p.update_type = 'macos-system' AND h.created_by = $1
+                )
+            """, uid) or 0
+        except Exception:
+            pass
+    else:
+        # Full view (full_admin, viewer, or unauthenticated)
+        host_count = await pool.fetchval("SELECT COUNT(*) FROM hosts") or 0
+        pkg_count = await pool.fetchval("SELECT COUNT(*) FROM packages") or 0
+        history_count = 0
+        try:
+            history_count = await pool.fetchval(
+                "SELECT COALESCE(SUM(COALESCE(array_length(packages_updated, 1), 0)), 0)::int "
+                "FROM patch_history WHERE execution_time > NOW() - INTERVAL '7 days' AND success = TRUE"
+            ) or 0
+        except Exception:
+            pass
+        alert_count = 0
+        try:
+            alert_count = await pool.fetchval("""
+                SELECT (
+                    SELECT COUNT(*) FROM hosts 
+                    WHERE status = 'unreachable' OR reboot_required = TRUE
+                ) + (
+                    SELECT COUNT(DISTINCT h.id) FROM hosts h
+                    JOIN packages p ON h.id = p.host_id
+                    WHERE p.update_type = 'macos-system'
+                )
+            """) or 0
+        except Exception:
+            pass
     
     return {
         "load_1": load_1,
@@ -1839,20 +1966,37 @@ async def get_sidebar_stats():
 
 
 @app.get("/api/patch-history")
-async def get_patch_history(limit: int = 50):
-    """Get patch history records with hostname (PUBLIC - read only)"""
+async def get_patch_history(limit: int = 50, owner: str = None,
+                            request: Request = None,
+                            pool_dep: asyncpg.Pool = Depends(get_db_pool)):
+    """Get patch history records, scoped by role."""
     pool = db.pool
+    user = await get_current_user(request, pool_dep) if request else None
+    uid = owner_id_or_param(user, owner) if user else None
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT ph.id, ph.host_id, h.hostname,
-                   ph.success, ph.packages_updated,
-                   ph.execution_time, ph.duration_seconds, ph.error_message,
-                   ph.output
-            FROM patch_history ph
-            LEFT JOIN hosts h ON ph.host_id = h.id
-            ORDER BY ph.execution_time DESC
-            LIMIT $1
-        """, limit)
+        if uid is not None:
+            rows = await conn.fetch("""
+                SELECT ph.id, ph.host_id, h.hostname,
+                       ph.success, ph.packages_updated,
+                       ph.execution_time, ph.duration_seconds, ph.error_message,
+                       ph.output
+                FROM patch_history ph
+                LEFT JOIN hosts h ON ph.host_id = h.id
+                WHERE h.created_by = $1
+                ORDER BY ph.execution_time DESC
+                LIMIT $2
+            """, uid, limit)
+        else:
+            rows = await conn.fetch("""
+                SELECT ph.id, ph.host_id, h.hostname,
+                       ph.success, ph.packages_updated,
+                       ph.execution_time, ph.duration_seconds, ph.error_message,
+                       ph.output
+                FROM patch_history ph
+                LEFT JOIN hosts h ON ph.host_id = h.id
+                ORDER BY ph.execution_time DESC
+                LIMIT $1
+            """, limit)
         result = []
         for r in rows:
             d = dict(r)
@@ -1871,9 +2015,21 @@ async def get_patch_history(limit: int = 50):
 
 
 @app.get("/api/patch-history/host/{host_id}")
-async def get_patch_history_by_host(host_id: str, limit: int = 20):
-    """Get patch history for a specific host including full output (PUBLIC - read only)"""
+async def get_patch_history_by_host(host_id: str, limit: int = 20,
+                                    request: Request = None,
+                                    pool_dep: asyncpg.Pool = Depends(get_db_pool)):
+    """Get patch history for a specific host (ownership-scoped)"""
     pool = db.pool
+    user = await get_current_user(request, pool_dep) if request else None
+    if user:
+        async with pool.acquire() as conn:
+            from rbac import verify_host_ownership
+            try:
+                host_uuid = uuid.UUID(host_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid host ID")
+            if not await verify_host_ownership(conn, user, host_uuid):
+                raise HTTPException(status_code=403, detail="Access denied to this host")
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT ph.id, ph.host_id, h.hostname,
@@ -1904,8 +2060,9 @@ async def get_patch_history_by_host(host_id: str, limit: int = 20):
 
 
 @app.get("/api/backend-logs")
-async def get_backend_logs(limit: int = 200, level: str = "all"):
-    """Return recent backend log lines from in-memory ring buffer (PUBLIC - read only)"""
+async def get_backend_logs(limit: int = 200, level: str = "all",
+                           user: dict = Depends(require_full_admin)):
+    """Return recent backend log lines from in-memory ring buffer (full_admin only)"""
     entries = list(_LOG_RING_BUFFER)
     if level != "all":
         entries = [e for e in entries if e["lvl"] == level]
@@ -1913,18 +2070,30 @@ async def get_backend_logs(limit: int = 200, level: str = "all"):
 
 
 @app.get("/api/alerts")
-async def get_alerts():
-    """Get current alerts (unreachable hosts + reboot required + macOS system updates) (PUBLIC)"""
+async def get_alerts(request: Request, owner: str = None,
+                     pool_dep: asyncpg.Pool = Depends(get_db_pool)):
+    """Get current alerts, scoped by role."""
     pool = db.pool
+    user = await get_current_user(request, pool_dep)
+    uid = owner_id_or_param(user, owner) if user else None
     alerts = []
     try:
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT hostname, ip_address, status, reboot_required, last_checked
-                FROM hosts
-                WHERE status = 'unreachable' OR reboot_required = TRUE
-                ORDER BY status, hostname
-            """)
+            if uid is not None:
+                rows = await conn.fetch("""
+                    SELECT hostname, ip_address, status, reboot_required, last_checked
+                    FROM hosts
+                    WHERE (status = 'unreachable' OR reboot_required = TRUE)
+                      AND created_by = $1
+                    ORDER BY status, hostname
+                """, uid)
+            else:
+                rows = await conn.fetch("""
+                    SELECT hostname, ip_address, status, reboot_required, last_checked
+                    FROM hosts
+                    WHERE status = 'unreachable' OR reboot_required = TRUE
+                    ORDER BY status, hostname
+                """)
             for r in rows:
                 if r['status'] == 'unreachable':
                     alerts.append({
@@ -1943,12 +2112,20 @@ async def get_alerts():
                         "last_checked": str(r['last_checked']) if r['last_checked'] else None
                     })
             # macOS system updates: detected during check but not auto-installed
-            macos_rows = await conn.fetch("""
-                SELECT DISTINCT h.hostname, h.last_checked
-                FROM hosts h
-                JOIN packages p ON h.id = p.host_id
-                WHERE p.update_type = 'macos-system'
-            """)
+            if uid is not None:
+                macos_rows = await conn.fetch("""
+                    SELECT DISTINCT h.hostname, h.last_checked
+                    FROM hosts h
+                    JOIN packages p ON h.id = p.host_id
+                    WHERE p.update_type = 'macos-system' AND h.created_by = $1
+                """, uid)
+            else:
+                macos_rows = await conn.fetch("""
+                    SELECT DISTINCT h.hostname, h.last_checked
+                    FROM hosts h
+                    JOIN packages p ON h.id = p.host_id
+                    WHERE p.update_type = 'macos-system'
+                """)
             for r in macos_rows:
                 alerts.append({
                     "severity": "info",
@@ -1968,10 +2145,14 @@ async def get_alerts():
 
 @app.post("/api/hosts/{hostname}/dismiss-reboot")
 async def dismiss_reboot_alert(hostname: str,
-                               user: dict = Depends(require_auth)):
-    """Clear the reboot_required flag for a host (e.g. after manual reboot). (PROTECTED)"""
-    pool = db.pool
+                               user: dict = Depends(require_write),
+                               pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Clear the reboot_required flag for a host (ownership-scoped, write-only)."""
     async with pool.acquire() as conn:
+        if not await verify_host_ownership_by_hostname(conn, user, hostname):
+            raise HTTPException(status_code=403, detail="Access denied to this host")
+    pool2 = db.pool
+    async with pool2.acquire() as conn:
         updated = await conn.fetchval(
             "UPDATE hosts SET reboot_required = FALSE WHERE hostname = $1 RETURNING id",
             hostname
@@ -1983,7 +2164,7 @@ async def dismiss_reboot_alert(hostname: str,
 
 @app.post("/api/check")
 async def trigger_check(background_tasks: BackgroundTasks,
-                        user: dict = Depends(require_auth)):
+                        user: dict = Depends(require_write)):
     """Trigger an immediate Ansible check (PROTECTED).
 
     If a check is already running, we schedule one to run immediately after
@@ -2009,11 +2190,15 @@ async def trigger_check(background_tasks: BackgroundTasks,
 
 @app.post("/api/check/{hostname}")
 async def trigger_single_host_check(hostname: str, background_tasks: BackgroundTasks,
-                                    user: dict = Depends(require_auth)):
-    """Trigger an immediate Ansible check for a single host (PROTECTED)"""
+                                    user: dict = Depends(require_write),
+                                    pool: asyncpg.Pool = Depends(get_db_pool)):
+    """Trigger an immediate Ansible check for a single host (ownership-scoped, write-only)"""
     host = await db.get_host_by_hostname(hostname)
     if not host:
         raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    async with pool.acquire() as conn:
+        if not await verify_host_ownership_by_hostname(conn, user, hostname):
+            raise HTTPException(status_code=403, detail="Access denied to this host")
     if _ansible_check_lock.locked() or _ansible_patch_running:
         async def _run_after_current(h=[hostname]):
             for _ in range(300):
@@ -2043,15 +2228,19 @@ async def get_patch_status():
 @app.post("/api/patch")
 async def trigger_patch(patch_request: PatchRequest, background_tasks: BackgroundTasks,
                         request: Request,
-                        user: dict = Depends(require_auth)):
-    """Trigger patching for specific hosts (PROTECTED)"""
+                        user: dict = Depends(require_write),
+                        pool_dep: asyncpg.Pool = Depends(get_db_pool)):
+    """Trigger patching for specific hosts (ownership-scoped, write-only)"""
     if not patch_request.hostnames:
         raise HTTPException(status_code=400, detail="No hostnames provided")
     
-    for hostname in patch_request.hostnames:
-        host = await db.get_host_by_hostname(hostname)
-        if not host:
-            raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+    async with pool_dep.acquire() as conn:
+        for hostname in patch_request.hostnames:
+            host = await db.get_host_by_hostname(hostname)
+            if not host:
+                raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
+            if not await verify_host_ownership_by_hostname(conn, user, hostname):
+                raise HTTPException(status_code=403, detail=f"Access denied to host {hostname}")
     
     # Audit log the patch operation
     pool = db.pool
