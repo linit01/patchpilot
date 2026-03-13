@@ -1071,7 +1071,6 @@ async def upload_backup(file: UploadFile = File(...)):
     return {"status": "uploaded", "filename": safe_name, "size_human": _human_size(len(content))}
 
 
-@router.post("/restore")
 def _schedule_self_restart(delay_seconds: int = 3) -> bool:
     """
     Spawn a detached docker:cli janitor that restarts the backend container
@@ -1101,6 +1100,10 @@ def _schedule_self_restart(delay_seconds: int = 3) -> bool:
         return True
     logger.warning(f"Self-restart janitor failed to launch: {result.stderr.strip()}")
     return False
+
+
+@router.post("/restore")
+async def restore_backup(request: RestoreRequest, background_tasks: BackgroundTasks):
     """
     Restore from a named backup archive.
     ⚠️  DESTRUCTIVE: drops and recreates the database.
