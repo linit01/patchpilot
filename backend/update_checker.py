@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from packaging.version import Version, InvalidVersion
 from pydantic import BaseModel
 
-from auth import require_admin, require_auth
+from auth import require_full_admin, require_auth
 
 logger = logging.getLogger("patchpilot.updates")
 
@@ -666,14 +666,14 @@ async def get_update_status(user: dict = Depends(require_auth)) -> UpdateStatusR
 
 
 @router.post("/check")
-async def trigger_check(user: dict = Depends(require_admin)) -> UpdateStatusResponse:
+async def trigger_check(user: dict = Depends(require_full_admin)) -> UpdateStatusResponse:
     """Force an immediate update check (admin only)."""
     await check_for_updates()
     return await get_update_status(user)
 
 
 @router.post("/apply")
-async def apply_update(user: dict = Depends(require_admin)):
+async def apply_update(user: dict = Depends(require_full_admin)):
     """
     Trigger an update to the latest available version (admin only).
     Runs asynchronously — poll /api/updates/progress for status.

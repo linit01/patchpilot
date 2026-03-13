@@ -138,7 +138,7 @@ async def complete_setup(payload: SetupCompleteRequest):
             password_hash = _hash_password(payload.admin.password)
             user_id = await conn.fetchval("""
                 INSERT INTO users (username, email, password_hash, role, is_active)
-                VALUES ($1, $2, $3, 'admin', true)
+                VALUES ($1, $2, $3, 'full_admin', true)
                 RETURNING id
             """, payload.admin.username, payload.admin.email, password_hash)
 

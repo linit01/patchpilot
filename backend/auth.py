@@ -51,7 +51,7 @@ class ChangePasswordRequest(BaseModel):
 class CreateUserRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=50)
     password: str = Field(..., min_length=8, max_length=255)
-    role: str = Field(default="viewer", pattern="^(admin|operator|viewer)$")
+    role: str = Field(default="viewer", pattern="^(admin|viewer)$")
 
 
 # ==========================================================================
@@ -111,13 +111,45 @@ async def require_auth(request: Request, pool: asyncpg.Pool = Depends(get_db_poo
 
 async def require_admin(request: Request, pool: asyncpg.Pool = Depends(get_db_pool)) -> dict:
     """
-    Dependency that requires admin role.
-    Raises 401/403 if not authenticated or not admin.
+    Dependency that requires admin-level role (full_admin OR admin).
+    Raises 401/403 if not authenticated or insufficient role.
     """
     user = await require_auth(request, pool)
-    if user['role'] != 'admin':
+    if user['role'] not in ('full_admin', 'admin'):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+async def require_full_admin(request: Request, pool: asyncpg.Pool = Depends(get_db_pool)) -> dict:
+    """
+    Dependency that requires the full_admin role (app owner).
+    Used for: Settings, Backup/Restore, Uninstall, User Management, Audit Log.
+    """
+    user = await require_auth(request, pool)
+    if user['role'] != 'full_admin':
+        raise HTTPException(status_code=403, detail="Full admin access required")
+    return user
+
+
+async def require_write(request: Request, pool: asyncpg.Pool = Depends(get_db_pool)) -> dict:
+    """
+    Dependency that requires write access (full_admin or admin, NOT viewer).
+    Viewers get 403 on any mutating endpoint.
+    """
+    user = await require_auth(request, pool)
+    if user['role'] == 'viewer':
+        raise HTTPException(status_code=403, detail="Read-only access — viewers cannot modify resources")
+    return user
+
+
+def ownership_filter(user: dict) -> Optional[uuid.UUID]:
+    """
+    Returns the user's UUID if they should only see their own resources (admin role),
+    or None if they can see everything (full_admin, viewer).
+    """
+    if user['role'] == 'admin':
+        return user['id']
+    return None
 
 
 async def log_audit(pool: asyncpg.Pool, user_id: Optional[str], username: str,
@@ -318,7 +350,7 @@ async def initial_setup(login_req: LoginRequest, request: Request,
         password_hash = hash_password(login_req.password)
         user = await conn.fetchrow("""
             INSERT INTO users (username, email, password_hash, role)
-            VALUES ($1, $2, $3, 'admin')
+            VALUES ($1, $2, $3, 'full_admin')
             RETURNING *
         """, login_req.username, f"{login_req.username}@patchpilot.local", password_hash)
 
@@ -351,7 +383,7 @@ async def initial_setup(login_req: LoginRequest, request: Request,
         "user": {
             "id": str(user['id']),
             "username": user['username'],
-            "role": "admin"
+            "role": "full_admin"
         }
     }
 
@@ -361,9 +393,9 @@ async def initial_setup(login_req: LoginRequest, request: Request,
 # ==========================================================================
 
 @router.get("/users")
-async def list_users(user: dict = Depends(require_admin),
+async def list_users(user: dict = Depends(require_full_admin),
                      pool: asyncpg.Pool = Depends(get_db_pool)):
-    """List all users (admin only)"""
+    """List all users (full_admin only)"""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, username, email, role, is_active, created_at, last_login FROM users ORDER BY created_at"
@@ -373,9 +405,9 @@ async def list_users(user: dict = Depends(require_admin),
 
 @router.post("/users", status_code=201)
 async def create_user(req: CreateUserRequest, request: Request,
-                      user: dict = Depends(require_admin),
+                      user: dict = Depends(require_full_admin),
                       pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Create a new user (admin only)"""
+    """Create a new user (full_admin only). Cannot create another full_admin."""
     password_hash = hash_password(req.password)
     email = f"{req.username}@patchpilot.local"
     
@@ -396,9 +428,9 @@ async def create_user(req: CreateUserRequest, request: Request,
 
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: str, request: Request,
-                      user: dict = Depends(require_admin),
+                      user: dict = Depends(require_full_admin),
                       pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Delete a user (admin only, cannot delete self)"""
+    """Delete a user (full_admin only, cannot delete self or another full_admin)"""
     if user_id == str(user['id']):
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
     
@@ -408,9 +440,11 @@ async def delete_user(user_id: str, request: Request,
         raise HTTPException(status_code=400, detail="Invalid user ID")
     
     async with pool.acquire() as conn:
-        target = await conn.fetchrow("SELECT username FROM users WHERE id = $1", uid)
+        target = await conn.fetchrow("SELECT username, role FROM users WHERE id = $1", uid)
         if not target:
             raise HTTPException(status_code=404, detail="User not found")
+        if target['role'] == 'full_admin':
+            raise HTTPException(status_code=400, detail="Cannot delete the full admin account")
         
         # Delete their sessions first (CASCADE should handle, but be explicit)
         await conn.execute("DELETE FROM sessions WHERE user_id = $1", uid)

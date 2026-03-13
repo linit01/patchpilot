@@ -30,7 +30,7 @@ import asyncpg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from auth import require_admin
+from auth import require_full_admin
 from dependencies import get_db_pool
 
 logger = logging.getLogger("patchpilot.uninstall")
@@ -609,7 +609,7 @@ class UninstallResult(BaseModel):
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @router.get("/status", response_model=UninstallStatus)
-async def get_uninstall_status(user: dict = Depends(require_admin)):
+async def get_uninstall_status(user: dict = Depends(require_full_admin)):
     """
     Detect install type and return a preview of automated vs manual steps.
     No changes are made — this is read-only.
@@ -713,7 +713,7 @@ async def get_uninstall_status(user: dict = Depends(require_admin)):
 @router.post("/execute", response_model=UninstallResult)
 async def execute_uninstall(
     background_tasks: BackgroundTasks,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_full_admin),
     pool: asyncpg.Pool = Depends(get_db_pool),
 ):
     """
@@ -869,7 +869,7 @@ async def execute_uninstall(
 
 
 @router.get("/result")
-async def get_uninstall_result(user: dict = Depends(require_admin)):
+async def get_uninstall_result(user: dict = Depends(require_full_admin)):
     """
     Poll for the result of the Docker background cleanup steps (network,
     images, build cache) that run after /execute returns.

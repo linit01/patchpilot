@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     tags              VARCHAR(255),
     is_control_node   BOOLEAN      DEFAULT FALSE,
     created_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at        TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by        UUID REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_hosts_hostname ON hosts(hostname);
@@ -62,6 +63,9 @@ CREATE TABLE IF NOT EXISTS users (
     email         VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
     role          VARCHAR(20)  NOT NULL DEFAULT 'viewer',
+                  -- Valid roles: full_admin (app owner, exactly 1),
+                  --              admin (own-resource CRUD),
+                  --              viewer (read-only, sees all)
     is_active     BOOLEAN DEFAULT true,
     created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -121,7 +125,8 @@ CREATE TABLE IF NOT EXISTS patch_schedules (
     created_at                TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at                TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     last_run                  TIMESTAMP WITH TIME ZONE,
-    last_status               TEXT
+    last_status               TEXT,
+    created_by                UUID REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS patch_schedule_hosts (
@@ -134,5 +139,6 @@ CREATE TABLE IF NOT EXISTS saved_ssh_keys (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        VARCHAR(100) NOT NULL,
     private_key TEXT NOT NULL,
-    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by  UUID REFERENCES users(id) ON DELETE SET NULL
 );
