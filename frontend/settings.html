@@ -3103,17 +3103,15 @@
                 // Detect mismatch: env vars (set by install script / k8s manifest)
                 // disagree with DB-stored settings — env is the source of truth
                 // for the installation, so auto-correct the DB.
+                // NOTE: retain count is NOT included — it's user-configurable via
+                // the UI, so the DB value is authoritative (not the env default).
                 let type = dbType, server = dbServer, share = dbShare, retain = dbRetain;
                 const typeMismatch   = (envType !== dbType);
-                const retainMismatch = (envRetain && envRetain !== dbRetain);
-                const mismatch = typeMismatch || retainMismatch;
+                const mismatch = typeMismatch;
                 if (typeMismatch) {
                     type   = envType;
                     server = envServer || dbServer;
                     share  = envShare  || dbShare;
-                }
-                if (retainMismatch) {
-                    retain = envRetain;
                 }
 
                 document.getElementById('backup-storage-type').value = type;
@@ -3130,7 +3128,6 @@
                     const hintText = document.getElementById('backup-config-hint-text');
                     const parts = [];
                     if (typeMismatch) parts.push(`storage type → ${type}`);
-                    if (retainMismatch) parts.push(`retention → ${retain}`);
                     const detail = parts.join(', ');
                     hintText.innerHTML = '⚙️ <strong>Auto-correcting:</strong> Installation env vars differ from DB settings '
                         + '(' + detail + '). Saving the correct values now…';
