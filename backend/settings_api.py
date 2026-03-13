@@ -19,7 +19,9 @@ import os
 from encryption_utils import encrypt_credential, decrypt_credential, validate_ssh_key
 from dependencies import get_db_pool
 from sync_ansible_inventory import sync_ansible_inventory
-from auth import require_auth
+from auth import require_auth, require_full_admin, require_write, ownership_filter
+from rbac import (owner_id, owner_id_or_param, verify_host_ownership,
+                  verify_host_ownership_by_hostname, verify_ssh_key_ownership)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_auth)])
@@ -172,30 +174,47 @@ async def log_audit_action(pool: asyncpg.Pool, action: str, resource_type: str,
 # ============================================================================
 
 @router.get("/hosts", response_model=List[HostResponse])
-async def list_hosts(pool: asyncpg.Pool = Depends(get_db_pool)):
+async def list_hosts(owner: str = None,
+                     pool: asyncpg.Pool = Depends(get_db_pool),
+                     user: dict = Depends(require_auth)):
     """
-    List all configured hosts.
-    
-    Returns:
-        List of hosts with their configuration (credentials excluded)
+    List configured hosts, scoped by role.
+    full_admin: all hosts (optional ?owner= filter).  admin: own hosts only.  viewer: all hosts.
     """
+    uid = owner_id_or_param(user, owner)
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT 
-                id, hostname, ssh_user, ssh_port, ssh_key_type,
-                ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
-                ssh_password_encrypted IS NOT NULL AS has_password,
-                notes, tags, status, is_control_node, allow_auto_reboot,
-                last_checked, created_at, updated_at
-            FROM hosts
-            ORDER BY hostname
-        """)
+        if uid is not None:
+            rows = await conn.fetch("""
+                SELECT 
+                    id, hostname, ssh_user, ssh_port, ssh_key_type,
+                    ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
+                    ssh_password_encrypted IS NOT NULL AS has_password,
+                    notes, tags, status, is_control_node, allow_auto_reboot,
+                    last_checked, created_at, updated_at
+                FROM hosts
+                WHERE created_by = $1
+                ORDER BY hostname
+            """, uid)
+        else:
+            rows = await conn.fetch("""
+                SELECT 
+                    id, hostname, ssh_user, ssh_port, ssh_key_type,
+                    ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
+                    ssh_password_encrypted IS NOT NULL AS has_password,
+                    notes, tags, status, is_control_node, allow_auto_reboot,
+                    last_checked, created_at, updated_at
+                FROM hosts
+                ORDER BY hostname
+            """)
         
         return [dict(row) for row in rows]
 
 
 @router.post("/hosts", response_model=HostResponse, status_code=201)
-async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool), background_tasks: BackgroundTasks = None):
+async def create_host(host: HostCreate,
+                      pool: asyncpg.Pool = Depends(get_db_pool),
+                      background_tasks: BackgroundTasks = None,
+                      user: dict = Depends(require_write)):
     """
     Create a new host configuration.
     
@@ -241,8 +260,8 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
             INSERT INTO hosts (
                 hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted, ssh_password_encrypted,
-                notes, tags, is_control_node, allow_auto_reboot
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                notes, tags, is_control_node, allow_auto_reboot, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING 
                 id, hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
@@ -251,7 +270,7 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
                 last_checked, created_at, updated_at
         """, host.hostname, host.ssh_user, host.ssh_port, host.ssh_key_type,
             ssh_key_encrypted, ssh_password_encrypted, host.notes, host.tags,
-            host.is_control_node, host.allow_auto_reboot)
+            host.is_control_node, host.allow_auto_reboot, user['id'])
         
         # Log audit trail (wrapped — must never block the response)
         try:
@@ -287,23 +306,28 @@ async def create_host(host: HostCreate, pool: asyncpg.Pool = Depends(get_db_pool
 
 
 @router.get("/hosts/export")
-async def export_hosts(format: str = "json", pool: asyncpg.Pool = Depends(get_db_pool)):
-    """
-    Export all hosts to specified format.
-    
-    Args:
-        format: Export format (json or csv)
-    """
+async def export_hosts(format: str = "json", owner: str = None,
+                       pool: asyncpg.Pool = Depends(get_db_pool),
+                       user: dict = Depends(require_auth)):
+    """Export hosts to specified format, scoped by role."""
     import json as json_lib
     import csv
     import io
     
+    uid = owner_id_or_param(user, owner)
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT hostname, ssh_user, ssh_port, tags, notes, 
-                   is_control_node, allow_auto_reboot, status, os_family, ip_address
-            FROM hosts ORDER BY hostname
-        """)
+        if uid is not None:
+            rows = await conn.fetch("""
+                SELECT hostname, ssh_user, ssh_port, tags, notes, 
+                       is_control_node, allow_auto_reboot, status, os_family, ip_address
+                FROM hosts WHERE created_by = $1 ORDER BY hostname
+            """, uid)
+        else:
+            rows = await conn.fetch("""
+                SELECT hostname, ssh_user, ssh_port, tags, notes, 
+                       is_control_node, allow_auto_reboot, status, os_family, ip_address
+                FROM hosts ORDER BY hostname
+            """)
         
         hosts = [dict(r) for r in rows]
     
@@ -338,25 +362,17 @@ async def export_hosts(format: str = "json", pool: asyncpg.Pool = Depends(get_db
         raise HTTPException(status_code=400, detail=f"Unsupported format: {format}. Use 'json' or 'csv'.")
 
 @router.get("/hosts/{host_id}", response_model=HostResponse)
-async def get_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """
-    Get details for a specific host.
-    
-    Args:
-        host_id: Host UUID
-        
-    Returns:
-        Host details (credentials excluded)
-        
-    Raises:
-        HTTPException: If host not found
-    """
+async def get_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                   user: dict = Depends(require_auth)):
+    """Get details for a specific host (ownership-scoped)."""
     try:
         host_uuid = uuid.UUID(host_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid host ID format")
     
     async with pool.acquire() as conn:
+        if not await verify_host_ownership(conn, user, host_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this host")
         row = await conn.fetchrow("""
             SELECT 
                 id, hostname, ssh_user, ssh_port, ssh_key_type,
@@ -375,30 +391,21 @@ async def get_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
 
 
 @router.put("/hosts/{host_id}", response_model=HostResponse)
-async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """
-    Update an existing host configuration.
-    
-    Args:
-        host_id: Host UUID to update
-        host: Updated host details
-        
-    Returns:
-        Updated host details
-        
-    Raises:
-        HTTPException: If host not found or validation fails
-    """
+async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depends(get_db_pool),
+                      user: dict = Depends(require_write)):
+    """Update an existing host configuration (ownership-scoped, write-only)."""
     try:
         host_uuid = uuid.UUID(host_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid host ID format")
     
     async with pool.acquire() as conn:
-        # Check host exists
+        # Check host exists + ownership
         existing = await conn.fetchrow("SELECT * FROM hosts WHERE id = $1", host_uuid)
         if not existing:
             raise HTTPException(status_code=404, detail=f"Host with ID {host_id} not found")
+        if not await verify_host_ownership(conn, user, host_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this host")
         
         # Build update query dynamically
         updates = []
@@ -540,22 +547,17 @@ async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depen
 
 
 @router.delete("/hosts/{host_id}", status_code=204)
-async def delete_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """
-    Delete a host configuration.
-    
-    Args:
-        host_id: Host UUID to delete
-        
-    Raises:
-        HTTPException: If host not found
-    """
+async def delete_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                      user: dict = Depends(require_write)):
+    """Delete a host configuration (ownership-scoped, write-only)."""
     try:
         host_uuid = uuid.UUID(host_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid host ID format")
     
     async with pool.acquire() as conn:
+        if not await verify_host_ownership(conn, user, host_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this host")
         # Get hostname for audit log
         hostname = await conn.fetchval("SELECT hostname FROM hosts WHERE id = $1", host_uuid)
         if not hostname:
@@ -793,7 +795,8 @@ async def _test_connection_password(request: TestConnectionRequest) -> TestConne
 # ============================================================================
 
 @router.post("/hosts/import")
-async def import_hosts(request: BulkImportRequest, pool: asyncpg.Pool = Depends(get_db_pool)):
+async def import_hosts(request: BulkImportRequest, pool: asyncpg.Pool = Depends(get_db_pool),
+                       user: dict = Depends(require_write)):
     """
     Bulk import hosts from various formats.
     
@@ -924,9 +927,9 @@ async def import_hosts(request: BulkImportRequest, pool: asyncpg.Pool = Depends(
                 else:
                     await conn.execute("""
                         INSERT INTO hosts (hostname, ip_address, ssh_user, ssh_port, tags, notes, 
-                                          is_control_node, allow_auto_reboot, ssh_key_type)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'default')
-                    """, hostname, ip_address, ssh_user, ssh_port, tags, notes, is_control, allow_reboot)
+                                          is_control_node, allow_auto_reboot, ssh_key_type, created_by)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'default', $9)
+                    """, hostname, ip_address, ssh_user, ssh_port, tags, notes, is_control, allow_reboot, user['id'])
                     added += 1
                     
             except Exception as e:
@@ -1008,7 +1011,8 @@ async def import_hosts(request: BulkImportRequest, pool: asyncpg.Pool = Depends(
 # ============================================================================
 
 @router.get("/app")
-async def get_app_settings(pool: asyncpg.Pool = Depends(get_db_pool)):
+async def get_app_settings(pool: asyncpg.Pool = Depends(get_db_pool),
+                           user: dict = Depends(require_full_admin)):
     """Get application-wide settings"""
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT key, value, description FROM settings ORDER BY key")
@@ -1020,7 +1024,8 @@ class SettingUpdate(BaseModel):
 
 
 @router.put("/app/{key}")
-async def update_app_setting(key: str, body: SettingUpdate, pool: asyncpg.Pool = Depends(get_db_pool)):
+async def update_app_setting(key: str, body: SettingUpdate, pool: asyncpg.Pool = Depends(get_db_pool),
+                             user: dict = Depends(require_full_admin)):
     """Update an application setting"""
     async with pool.acquire() as conn:
         await conn.execute("""
@@ -1039,7 +1044,8 @@ async def update_app_setting(key: str, body: SettingUpdate, pool: asyncpg.Pool =
 # ============================================================================
 
 @router.post("/sync-inventory")
-async def sync_inventory(pool: asyncpg.Pool = Depends(get_db_pool)):
+async def sync_inventory(pool: asyncpg.Pool = Depends(get_db_pool),
+                         user: dict = Depends(require_full_admin)):
     """
     Manually trigger sync of database hosts to Ansible inventory.
     Useful for fixing sync issues or after bulk imports.
@@ -1059,7 +1065,7 @@ async def sync_inventory(pool: asyncpg.Pool = Depends(get_db_pool)):
 
 
 @router.get("/system-info")
-async def get_system_info():
+async def get_system_info(user: dict = Depends(require_full_admin)):
     """
     Get system information including Ansible version, Python version, etc.
     """
@@ -1107,25 +1113,38 @@ async def get_system_info():
 # ============================================================================
 
 @router.get("/ssh-keys", response_model=List[SavedSSHKeyResponse])
-async def list_saved_ssh_keys(pool: asyncpg.Pool = Depends(get_db_pool)):
-    """List all saved SSH keys (without key content)"""
+async def list_saved_ssh_keys(pool: asyncpg.Pool = Depends(get_db_pool),
+                              user: dict = Depends(require_auth)):
+    """List saved SSH keys, scoped by role."""
+    uid = owner_id(user)
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT id, name, is_default, created_at, updated_at
-            FROM saved_ssh_keys
-            ORDER BY is_default DESC, name ASC
-        """)
+        if uid is not None:
+            rows = await conn.fetch("""
+                SELECT id, name, is_default, created_at, updated_at
+                FROM saved_ssh_keys
+                WHERE created_by = $1
+                ORDER BY is_default DESC, name ASC
+            """, uid)
+        else:
+            rows = await conn.fetch("""
+                SELECT id, name, is_default, created_at, updated_at
+                FROM saved_ssh_keys
+                ORDER BY is_default DESC, name ASC
+            """)
         return [dict(row) for row in rows]
 
 @router.get("/ssh-keys/{key_id}", response_model=SavedSSHKeyResponse)
-async def get_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Get a specific saved SSH key (without key content)"""
+async def get_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                            user: dict = Depends(require_auth)):
+    """Get a specific saved SSH key (ownership-scoped)"""
     try:
         key_uuid = uuid.UUID(key_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid key ID format")
     
     async with pool.acquire() as conn:
+        if not await verify_ssh_key_ownership(conn, user, key_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this SSH key")
         row = await conn.fetchrow("""
             SELECT id, name, is_default, created_at, updated_at
             FROM saved_ssh_keys
@@ -1138,8 +1157,9 @@ async def get_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_poo
         return dict(row)
 
 @router.post("/ssh-keys", response_model=SavedSSHKeyResponse, status_code=201)
-async def create_saved_ssh_key(key: SavedSSHKeyCreate, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Create a new saved SSH key"""
+async def create_saved_ssh_key(key: SavedSSHKeyCreate, pool: asyncpg.Pool = Depends(get_db_pool),
+                               user: dict = Depends(require_write)):
+    """Create a new saved SSH key (write-only, sets created_by)"""
     # Check if name already exists
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
@@ -1162,10 +1182,10 @@ async def create_saved_ssh_key(key: SavedSSHKeyCreate, pool: asyncpg.Pool = Depe
         
         # Insert the key
         row = await conn.fetchrow("""
-            INSERT INTO saved_ssh_keys (name, ssh_key_encrypted, is_default)
-            VALUES ($1, $2, $3)
+            INSERT INTO saved_ssh_keys (name, ssh_key_encrypted, is_default, created_by)
+            VALUES ($1, $2, $3, $4)
             RETURNING id, name, is_default, created_at, updated_at
-        """, key.name, ssh_key_encrypted, key.is_default)
+        """, key.name, ssh_key_encrypted, key.is_default, user['id'])
         
         logger.info(f"Created saved SSH key: {key.name}")
         return dict(row)
@@ -1174,15 +1194,18 @@ async def create_saved_ssh_key(key: SavedSSHKeyCreate, pool: asyncpg.Pool = Depe
 async def update_saved_ssh_key(
     key_id: str,
     key: SavedSSHKeyUpdate,
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    user: dict = Depends(require_write)
 ):
-    """Update a saved SSH key"""
+    """Update a saved SSH key (ownership-scoped, write-only)"""
     try:
         key_uuid = uuid.UUID(key_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid key ID format")
     
     async with pool.acquire() as conn:
+        if not await verify_ssh_key_ownership(conn, user, key_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this SSH key")
         # Check if key exists
         existing = await conn.fetchrow("SELECT id, name FROM saved_ssh_keys WHERE id = $1", key_uuid)
         if not existing:
@@ -1246,14 +1269,17 @@ async def update_saved_ssh_key(
         return dict(row)
 
 @router.delete("/ssh-keys/{key_id}")
-async def delete_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Delete a saved SSH key"""
+async def delete_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                               user: dict = Depends(require_write)):
+    """Delete a saved SSH key (ownership-scoped, write-only)"""
     try:
         key_uuid = uuid.UUID(key_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid key ID format")
     
     async with pool.acquire() as conn:
+        if not await verify_ssh_key_ownership(conn, user, key_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this SSH key")
         result = await conn.fetchrow("""
             DELETE FROM saved_ssh_keys
             WHERE id = $1
@@ -1267,14 +1293,17 @@ async def delete_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_
         return {"message": f"SSH key '{result['name']}' deleted successfully"}
 
 @router.get("/ssh-keys/{key_id}/decrypt")
-async def get_decrypted_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Get the decrypted SSH key content (for host creation)"""
+async def get_decrypted_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
+                                user: dict = Depends(require_auth)):
+    """Get the decrypted SSH key content (ownership-scoped)"""
     try:
         key_uuid = uuid.UUID(key_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid key ID format")
     
     async with pool.acquire() as conn:
+        if not await verify_ssh_key_ownership(conn, user, key_uuid):
+            raise HTTPException(status_code=403, detail="Access denied to this SSH key")
         row = await conn.fetchrow("""
             SELECT ssh_key_encrypted
             FROM saved_ssh_keys

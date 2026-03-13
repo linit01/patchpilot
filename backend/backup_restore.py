@@ -41,9 +41,11 @@ from pathlib import Path
 from typing import Optional
 
 import asyncpg
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile, File, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+
+from auth import require_full_admin
 
 logger = logging.getLogger(__name__)
 
@@ -928,7 +930,8 @@ async def _run_restore(archive_path: Path) -> dict:
 # ---------------------------------------------------------------------------
 # FastAPI Router
 # ---------------------------------------------------------------------------
-router = APIRouter(prefix="/api/backup", tags=["Backup & Restore"])
+router = APIRouter(prefix="/api/backup", tags=["Backup & Restore"],
+                   dependencies=[Depends(require_full_admin)])
 
 
 @router.get("/status")
