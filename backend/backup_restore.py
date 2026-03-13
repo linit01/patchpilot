@@ -66,8 +66,25 @@ PG_PASSWORD = os.getenv("POSTGRES_PASSWORD", "patchpilot")
 PG_DB = os.getenv("POSTGRES_DB", "patchpilot")
 PG_URL = os.getenv("DATABASE_URL", f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}")
 
-BACKUP_RETAIN_COUNT = int(os.getenv("BACKUP_RETAIN_COUNT", "10"))  # Keep last N backups
+BACKUP_RETAIN_COUNT = int(os.getenv("BACKUP_RETAIN_COUNT", "10"))  # Keep last N backups (env fallback)
 MAX_BACKUP_SIZE_MB = int(os.getenv("MAX_BACKUP_SIZE_MB", "500"))
+
+
+async def _get_retain_count() -> int:
+    """Read backup_retain_count from the settings table (user-configurable via UI).
+    Falls back to the BACKUP_RETAIN_COUNT env var / default."""
+    if _db_pool:
+        try:
+            row = await _db_pool.fetchval(
+                "SELECT value FROM settings WHERE key = 'backup_retain_count'"
+            )
+            if row is not None:
+                val = int(row)
+                if val >= 1:
+                    return val
+        except Exception:
+            pass
+    return BACKUP_RETAIN_COUNT
 
 # Backup filename prefix.  Produces: patchpilot_20260306_185509.tar.gz
 # Old files from earlier versions are still recognized via _BACKUP_PREFIXES.
@@ -590,7 +607,7 @@ async def _run_backup(description: str, include_encryption_key: bool,
 
     # ── Step 7: Enforce retention policy ──────────────────────────────────
     _set_progress("retention", 95, "Applying retention policy...")
-    _enforce_retention()
+    await _enforce_retention()
 
     _set_progress("complete", 100, f"Backup complete: {archive_path.name}")
     return archive_path.name
@@ -611,11 +628,14 @@ def _backup_has_encryption_key(archive: Path) -> bool:
     return False
 
 
-def _enforce_retention():
-    """Delete oldest backups beyond BACKUP_RETAIN_COUNT.
+async def _enforce_retention():
+    """Delete oldest backups beyond the configured retain count.
+    Reads retain count from the DB settings table (user-configurable via UI),
+    falling back to the BACKUP_RETAIN_COUNT env var.
     Never delete backups that include the encryption key."""
+    retain = await _get_retain_count()
     backups = _list_backup_archives(newest_first=True)
-    for old_backup in backups[BACKUP_RETAIN_COUNT:]:
+    for old_backup in backups[retain:]:
         try:
             if _backup_has_encryption_key(old_backup):
                 logger.info(f"Retention skip (has encryption key): {old_backup.name}")
@@ -881,13 +901,14 @@ router = APIRouter(prefix="/api/backup", tags=["Backup & Restore"])
 @router.get("/status")
 async def get_backup_status():
     """Return current maintenance mode status and operation progress."""
+    retain = await _get_retain_count()
     return {
         "maintenance_mode": maintenance_mode,
         "maintenance_reason": maintenance_reason,
         "current_operation": current_operation,
         "progress": operation_progress,
         "backup_dir": str(BACKUP_DIR),
-        "retain_count": BACKUP_RETAIN_COUNT,
+        "retain_count": retain,
         "docker_socket_available": _docker_available(),
     }
 
@@ -940,10 +961,11 @@ async def list_backups():
             description=meta["description"],
         ))
 
+    retain = await _get_retain_count()
     return BackupListResponse(
         backups=backups,
         backup_dir=str(BACKUP_DIR),
-        retain_count=BACKUP_RETAIN_COUNT,
+        retain_count=retain,
     )
 
 
