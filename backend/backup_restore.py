@@ -717,14 +717,39 @@ async def _run_restore(archive_path: Path) -> dict:
             """)
             logger.info("All connections to target database terminated")
 
-            # Close the app pool before we drop the database
+            # Close BOTH app pools before we drop the database.
+            # _db_pool is used by settings/auth/backup; _db_client.pool is used
+            # by host/package/patch-history routes.  If either pool is left open,
+            # asyncpg may lazily reconnect between the terminate and the DROP,
+            # which blocks DROP DATABASE ("database is being accessed by others").
             if _db_pool:
                 await _db_pool.close()
-                logger.info("Application connection pool closed")
+                logger.info("Application connection pool (_db_pool) closed")
+            if _db_client and getattr(_db_client, 'pool', None):
+                try:
+                    await _db_client.pool.close()
+                    _db_client.pool = None
+                    logger.info("DatabaseClient pool (_db_client.pool) closed")
+                except Exception as dc_e:
+                    logger.warning(f"Error closing DatabaseClient pool: {dc_e}")
 
             # ── Step 3: Drop and recreate DB ──────────────────────────────
             _set_progress("drop_db", 35, f"Dropping database '{PG_DB}'...")
-            await admin_conn.execute(f'DROP DATABASE IF EXISTS "{PG_DB}"')
+            # Final safety terminate — catch any connections that snuck in
+            # between the first terminate and the pool closes above.
+            await admin_conn.execute(f"""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = '{PG_DB}'
+                  AND pid <> pg_backend_pid()
+            """)
+            # Try DROP ... WITH (FORCE) first (PostgreSQL 13+), which
+            # terminates remaining connections atomically.  Fall back to
+            # plain DROP for older PostgreSQL versions.
+            try:
+                await admin_conn.execute(f'DROP DATABASE IF EXISTS "{PG_DB}" WITH (FORCE)')
+            except asyncpg.exceptions.PostgresSyntaxError:
+                await admin_conn.execute(f'DROP DATABASE IF EXISTS "{PG_DB}"')
             logger.info(f"Dropped database: {PG_DB}")
 
             _set_progress("create_db", 40, f"Creating fresh database '{PG_DB}'...")
@@ -877,14 +902,22 @@ async def _run_restore(archive_path: Path) -> dict:
         # ── Step 6: Verify settings post-restore ──────────────────────────
         _set_progress("verify", 92, "Verifying restored settings...")
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
-                count = await conn.fetchval("SELECT COUNT(*) FROM settings")
-                host_count = await conn.fetchval("SELECT COUNT(*) FROM hosts")
+            # Use a direct connection — _db_pool and _db_client.pool were
+            # closed before the DROP and haven't been rebuilt yet.
+            verify_conn = await asyncpg.connect(
+                host=PG_HOST, port=int(PG_PORT),
+                user=PG_USER, password=PG_PASSWORD,
+                database=PG_DB, timeout=10
+            )
+            try:
+                count = await verify_conn.fetchval("SELECT COUNT(*) FROM settings")
+                host_count = await verify_conn.fetchval("SELECT COUNT(*) FROM hosts")
                 logger.info(f"Verified: {count} settings rows, {host_count} hosts")
                 summary["settings_count"] = count
                 summary["host_count"] = host_count
                 summary["settings_verified"] = True
+            finally:
+                await verify_conn.close()
         except Exception as e:
             summary["warnings"].append(f"Post-restore verification failed: {e}")
 
