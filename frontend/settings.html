@@ -465,14 +465,14 @@
     <div class="container">
         <div class="tabs">
             <div class="tab-buttons">
-                <button class="tab-btn active" onclick="switchTab('hosts')">📋 Hosts</button>
-                <button class="tab-btn" onclick="switchTab('general')">⚙️ General</button>
-                <button class="tab-btn" onclick="switchTab('ssh-keys')">🔑 SSH Keys</button>
-                <button class="tab-btn" onclick="switchTab('users')">👥 Users</button>
-                <button class="tab-btn" onclick="switchTab('schedules')">🕐 Schedules</button>
-                <button class="tab-btn" onclick="switchTab('advanced')">🔧 Advanced</button>
-                <button class="tab-btn" onclick="switchTab('backup')">💾 Backup &amp; Restore</button>
-                <button class="tab-btn" onclick="switchTab('updates')">🔄 Updates</button>
+                <button class="tab-btn active" id="tab-btn-hosts" onclick="switchTab('hosts')">📋 Hosts</button>
+                <button class="tab-btn" id="tab-btn-general" onclick="switchTab('general')">⚙️ General</button>
+                <button class="tab-btn" id="tab-btn-ssh-keys" onclick="switchTab('ssh-keys')">🔑 SSH Keys</button>
+                <button class="tab-btn" id="tab-btn-users" onclick="switchTab('users')">👥 Users</button>
+                <button class="tab-btn" id="tab-btn-schedules" onclick="switchTab('schedules')">🕐 Schedules</button>
+                <button class="tab-btn" id="tab-btn-advanced" onclick="switchTab('advanced')">🔧 Advanced</button>
+                <button class="tab-btn" id="tab-btn-backup" onclick="switchTab('backup')">💾 Backup &amp; Restore</button>
+                <button class="tab-btn" id="tab-btn-updates" onclick="switchTab('updates')">🔄 Updates</button>
             </div>
             
             <!-- Hosts Tab -->
@@ -772,8 +772,7 @@
                         <label>Role</label>
                         <select id="new-user-role">
                             <option value="viewer">Viewer (read-only)</option>
-                            <option value="operator">Operator (can patch)</option>
-                            <option value="admin">Admin (full access)</option>
+                            <option value="admin">Admin (manage own resources)</option>
                         </select>
                     </div>
                     <div style="display:flex; gap:10px; justify-content:flex-end;">
@@ -1325,6 +1324,34 @@
                     window.location.href = 'login.html';
                     return;
                 }
+                // ── RBAC: hide tabs based on role ──────────────────────────
+                const role = data.user.role;
+                window._ppUserRole = role;  // stash for other scripts
+
+                // Tabs only full_admin can see
+                const fullAdminOnly = ['tab-btn-general', 'tab-btn-users', 'tab-btn-advanced',
+                                       'tab-btn-backup', 'tab-btn-updates'];
+                // Tabs viewers cannot see (no write access)
+                const writeOnly = ['tab-btn-hosts'];
+
+                if (role === 'viewer') {
+                    // Viewers: hide host management and all full_admin tabs
+                    [...fullAdminOnly, ...writeOnly].forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.style.display = 'none';
+                    });
+                    // Viewer lands on schedules (read-only view) or ssh-keys
+                    // Actually viewers shouldn't be on settings at all — redirect to dashboard
+                    window.location.href = 'index.html';
+                    return;
+                } else if (role === 'admin') {
+                    // Admin: hide full_admin-only tabs
+                    fullAdminOnly.forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.style.display = 'none';
+                    });
+                }
+                // full_admin: all tabs visible (default)
             } catch (e) {
                 window.location.href = 'login.html';
                 return;
@@ -2617,8 +2644,9 @@
                 }
                 
                 const roleBadge = (role) => {
-                    const colors = { admin: 'danger', operator: 'warning', viewer: 'info' };
-                    return `<span class="badge-${colors[role] || 'info'}">${role}</span>`;
+                    const colors = { full_admin: 'danger', admin: 'warning', viewer: 'info' };
+                    const labels = { full_admin: 'Full Admin', admin: 'Admin', viewer: 'Viewer' };
+                    return `<span class="badge-${colors[role] || 'info'}">${labels[role] || role}</span>`;
                 };
                 
                 const formatDate = (d) => d ? new Date(d).toLocaleDateString() : '—';
@@ -2630,7 +2658,7 @@
                         <td style="padding:12px 10px; color:var(--text-secondary); font-size:12px;">${formatDate(u.created_at)}</td>
                         <td style="padding:12px 10px; color:var(--text-secondary); font-size:12px;">${formatDate(u.last_login)}</td>
                         <td style="padding:12px 10px; text-align:right;">
-                            <button class="icon-btn btn-delete" onclick="deleteUser('${u.id}', '${u.username}')">🗑️ Delete</button>
+                            ${u.role === 'full_admin' ? '<span style="color:var(--text-secondary); font-size:12px;">App Owner</span>' : `<button class="icon-btn btn-delete" onclick="deleteUser('${u.id}', '${u.username}')">🗑️ Delete</button>`}
                         </td>
                     </tr>
                 `).join('');

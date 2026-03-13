@@ -344,28 +344,69 @@ function showAuthenticatedUI() {
     const mgmtLabel = document.getElementById('mgmt-section-label');
     const refreshBtn = document.getElementById('refresh-btn');
     const patchBtn = document.getElementById('patch-selected-btn');
-    const mgmtNavIds = ['nav-hosts-mgmt','nav-general','nav-ssh-keys','nav-users','nav-schedules','nav-advanced'];
+
+    // ── RBAC: determine which nav items to show based on role ──────────
+    const role = currentUser.role;
+
+    // Nav items every authenticated user sees
+    const alwaysShow = [];
+
+    // Nav items for write-capable users (full_admin + admin)
+    const writeNav = ['nav-hosts-mgmt', 'nav-ssh-keys', 'nav-schedules'];
+
+    // Nav items only full_admin sees
+    const fullAdminNav = ['nav-general', 'nav-users', 'nav-advanced'];
+
+    // All management nav IDs (for hiding)
+    const allMgmtNavIds = [...writeNav, ...fullAdminNav];
 
     if (sidebarUser) {
         sidebarUser.style.display = 'flex';
         document.getElementById('sidebar-username').textContent = currentUser.username;
-        document.getElementById('sidebar-role').textContent = currentUser.role;
+        const roleLabels = { full_admin: 'Full Admin', admin: 'Admin', viewer: 'Viewer' };
+        document.getElementById('sidebar-role').textContent = roleLabels[role] || role;
         const initials = currentUser.username.substring(0, 2).toUpperCase();
         document.getElementById('user-avatar-initials').textContent = initials;
     }
     if (sidebarLogin) sidebarLogin.style.display = 'none';
-    if (mgmtLabel) mgmtLabel.style.display = '';
-    mgmtNavIds.forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.style.display = '';
-    });
-    if (refreshBtn) refreshBtn.style.display = '';
-    if (patchBtn) patchBtn.style.display = '';
 
-    // Enable checkboxes
-    document.querySelectorAll('.host-checkbox, #select-all').forEach(cb => {
-        cb.disabled = false;
+    // Start with everything hidden
+    if (mgmtLabel) mgmtLabel.style.display = 'none';
+    allMgmtNavIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
     });
+
+    if (role === 'viewer') {
+        // Viewer: no management section, no action buttons
+        if (refreshBtn) refreshBtn.style.display = 'none';
+        if (patchBtn) patchBtn.style.display = 'none';
+    } else if (role === 'admin') {
+        // Admin: show write nav items, hide full_admin items
+        if (mgmtLabel) mgmtLabel.style.display = '';
+        writeNav.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = '';
+        });
+        if (refreshBtn) refreshBtn.style.display = '';
+        if (patchBtn) patchBtn.style.display = '';
+    } else {
+        // full_admin: show everything
+        if (mgmtLabel) mgmtLabel.style.display = '';
+        allMgmtNavIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = '';
+        });
+        if (refreshBtn) refreshBtn.style.display = '';
+        if (patchBtn) patchBtn.style.display = '';
+    }
+
+    // Enable checkboxes only for write-capable roles
+    if (role !== 'viewer') {
+        document.querySelectorAll('.host-checkbox, #select-all').forEach(cb => {
+            cb.disabled = false;
+        });
+    }
 }
 
 // Show UI for unauthenticated users (read-only)
