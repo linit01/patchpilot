@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from packaging.version import Version, InvalidVersion
 from pydantic import BaseModel
 
-from auth import require_full_admin, require_auth
+from auth import require_admin, require_auth
 
 logger = logging.getLogger("patchpilot.updates")
 
@@ -235,8 +235,12 @@ async def check_for_updates() -> dict:
     async with _update_lock:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
+                # Use /releases (not /releases/latest) because GitHub's "latest"
+                # endpoint excludes prereleases. PatchPilot alpha/beta/rc tags
+                # are automatically marked as prereleases by softprops/action-gh-release,
+                # so /releases/latest would never see them.
                 resp = await client.get(
-                    f"{GITHUB_API}/releases/latest",
+                    f"{GITHUB_API}/releases?per_page=20",
                     headers=_github_headers(),
                 )
 
@@ -261,7 +265,33 @@ async def check_for_updates() -> dict:
                 return dict(_update_cache)
 
             resp.raise_for_status()
-            data = resp.json()
+            releases = resp.json()
+
+            # /releases returns an array sorted by creation date (newest first).
+            # Find the newest release by semver, including prereleases.
+            # Skip drafts — they're not published yet.
+            data = None
+            best_version = None
+            for rel in releases:
+                if rel.get("draft", False):
+                    continue
+                tag = rel.get("tag_name", "")
+                v = _parse_version(tag)
+                if v is None:
+                    continue
+                if best_version is None or v > best_version:
+                    best_version = v
+                    data = rel
+
+            if data is None:
+                # No parseable releases found
+                _update_cache.update({
+                    "latest_version": None,
+                    "update_available": False,
+                    "last_checked": datetime.now(timezone.utc).isoformat(),
+                    "check_error": None,
+                })
+                return dict(_update_cache)
 
             latest_tag = data.get("tag_name", "")
             update_available = _is_newer(latest_tag, CURRENT_VERSION)
@@ -666,14 +696,14 @@ async def get_update_status(user: dict = Depends(require_auth)) -> UpdateStatusR
 
 
 @router.post("/check")
-async def trigger_check(user: dict = Depends(require_full_admin)) -> UpdateStatusResponse:
+async def trigger_check(user: dict = Depends(require_admin)) -> UpdateStatusResponse:
     """Force an immediate update check (admin only)."""
     await check_for_updates()
     return await get_update_status(user)
 
 
 @router.post("/apply")
-async def apply_update(user: dict = Depends(require_full_admin)):
+async def apply_update(user: dict = Depends(require_admin)):
     """
     Trigger an update to the latest available version (admin only).
     Runs asynchronously — poll /api/updates/progress for status.
