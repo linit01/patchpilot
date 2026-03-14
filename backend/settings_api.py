@@ -604,14 +604,20 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
     ssh_key_content = request.ssh_private_key
     effective_key_type = request.ssh_key_type
 
-    # Handle 'default' key type — resolve to the saved default key
+    # Handle 'default' key type — resolve to the user's saved default key
     if request.ssh_key_type == 'default':
         print(f"  Resolving 'default' key type to saved default key...")
         try:
             async with pool.acquire() as conn:
+                # Try user's own default first, then fall back to any default
                 row = await conn.fetchrow(
-                    "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE LIMIT 1"
+                    "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE AND created_by = $1 LIMIT 1",
+                    user['id']
                 )
+                if not row:
+                    row = await conn.fetchrow(
+                        "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE LIMIT 1"
+                    )
                 if row and row['ssh_key_encrypted']:
                     ssh_key_content = decrypt_credential(row['ssh_key_encrypted'])
                     effective_key_type = 'pasted'
@@ -1177,9 +1183,12 @@ async def create_saved_ssh_key(key: SavedSSHKeyCreate, pool: asyncpg.Pool = Depe
             logger.error(f"Failed to encrypt SSH key: {e}")
             raise HTTPException(status_code=500, detail="Failed to encrypt SSH key")
         
-        # If this should be default, unset other defaults
+        # If this should be default, unset other defaults FOR THIS USER ONLY
         if key.is_default:
-            await conn.execute("UPDATE saved_ssh_keys SET is_default = FALSE")
+            await conn.execute(
+                "UPDATE saved_ssh_keys SET is_default = FALSE WHERE created_by = $1",
+                user['id']
+            )
         
         # Insert the key
         row = await conn.fetchrow("""
@@ -1242,8 +1251,11 @@ async def update_saved_ssh_key(
         
         if key.is_default is not None:
             if key.is_default:
-                # Unset other defaults
-                await conn.execute("UPDATE saved_ssh_keys SET is_default = FALSE WHERE id != $1", key_uuid)
+                # Unset other defaults FOR THIS USER ONLY
+                await conn.execute(
+                    "UPDATE saved_ssh_keys SET is_default = FALSE WHERE created_by = $1 AND id != $2",
+                    user['id'], key_uuid
+                )
             
             updates.append(f"is_default = ${param_count}")
             values.append(key.is_default)
