@@ -217,6 +217,20 @@ let selectedHosts = new Set();
 
 // Countdown Timer Functions
 function startCountdown() {
+    if (countdownInterval) {
+        clearInterval(countdownInterval);
+        countdownInterval = null;
+    }
+
+    // If auto-check is disabled, hide the timer and don't start the loop
+    if (AUTO_CHECK_INTERVAL === 0) {
+        const element = document.getElementById('countdown-timer');
+        if (element) element.textContent = 'Disabled';
+        sessionStorage.removeItem('patchpilot-countdown');
+        sessionStorage.removeItem('patchpilot-countdown-time');
+        return;
+    }
+
     // Restore countdown from sessionStorage if navigating back
     const saved = sessionStorage.getItem('patchpilot-countdown');
     const savedTime = sessionStorage.getItem('patchpilot-countdown-time');
@@ -228,10 +242,6 @@ function startCountdown() {
         countdownSeconds = AUTO_CHECK_INTERVAL;
     }
     updateCountdownDisplay();
-    
-    if (countdownInterval) {
-        clearInterval(countdownInterval);
-    }
     
     countdownInterval = setInterval(() => {
         countdownSeconds--;
@@ -336,10 +346,15 @@ async function fetchRefreshInterval() {
         const response = await fetch(`${API_BASE_URL}/settings/app`, { credentials: 'include' });
         if (response.ok) {
             const settings = await response.json();
-            if (settings.refresh_interval && settings.refresh_interval.value) {
-                AUTO_CHECK_INTERVAL = parseInt(settings.refresh_interval.value);
-                if (AUTO_CHECK_INTERVAL < 30) AUTO_CHECK_INTERVAL = 30; // Floor
-                console.log(`Refresh interval set to ${AUTO_CHECK_INTERVAL}s`);
+            if (settings.refresh_interval && settings.refresh_interval.value !== undefined) {
+                const val = parseInt(settings.refresh_interval.value);
+                if (val === 0) {
+                    AUTO_CHECK_INTERVAL = 0;  // Disabled
+                    console.log('Refresh interval: disabled');
+                } else {
+                    AUTO_CHECK_INTERVAL = Math.max(val, 30);  // Floor at 30s
+                    console.log(`Refresh interval set to ${AUTO_CHECK_INTERVAL}s`);
+                }
             }
         }
     } catch (e) {
