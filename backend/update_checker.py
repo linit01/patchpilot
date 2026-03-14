@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from packaging.version import Version, InvalidVersion
 from pydantic import BaseModel
 
-from auth import require_admin, require_auth
+from auth import require_full_admin, require_auth
 
 logger = logging.getLogger("patchpilot.updates")
 
@@ -225,73 +225,92 @@ def _kubectl() -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Core: GitHub Release Check
+# Core: Update Check (GitHub Releases with Docker Hub fallback)
 # ─────────────────────────────────────────────────────────────────────────────
+
+DOCKERHUB_REPO = os.getenv("PATCHPILOT_IMAGE_REPO", "linit01/patchpilot")
+
+async def _check_dockerhub() -> Optional[str]:
+    """
+    Query Docker Hub Tags API for the latest backend version tag.
+    Returns the newest version string (e.g. '0.10.10-alpha') or None.
+    Tags are expected to be formatted as 'backend-<version>'.
+    """
+    # Docker Hub v2 API is public, no auth needed
+    repo = DOCKERHUB_REPO
+    url = f"https://hub.docker.com/v2/repositories/{repo}/tags?page_size=100&ordering=last_updated"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            logger.warning("Docker Hub API returned %s", resp.status_code)
+            return None
+        data = resp.json()
+        tags = data.get("results", [])
+        # Extract version from 'backend-X.Y.Z-alpha' tags
+        best_version = None
+        best_parsed = None
+        for tag_obj in tags:
+            tag_name = tag_obj.get("name", "")
+            if not tag_name.startswith("backend-"):
+                continue
+            ver_str = tag_name.replace("backend-", "")
+            parsed = _parse_version(ver_str)
+            if parsed is None:
+                continue
+            if best_parsed is None or parsed > best_parsed:
+                best_parsed = parsed
+                best_version = ver_str
+        return best_version
+    except Exception as e:
+        logger.warning("Docker Hub tag check failed: %s", e)
+        return None
+
+
 async def check_for_updates() -> dict:
     """
     Query GitHub Releases API for the latest release.
+    Falls back to Docker Hub Tags API if GitHub returns 404/403
+    (private repo without GITHUB_TOKEN).
     Updates the cached state and returns it.
     """
     async with _update_lock:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                # Use /releases (not /releases/latest) because GitHub's "latest"
-                # endpoint excludes prereleases. PatchPilot alpha/beta/rc tags
-                # are automatically marked as prereleases by softprops/action-gh-release,
-                # so /releases/latest would never see them.
                 resp = await client.get(
-                    f"{GITHUB_API}/releases?per_page=20",
+                    f"{GITHUB_API}/releases/latest",
                     headers=_github_headers(),
                 )
 
-            if resp.status_code == 404:
-                # No releases yet
-                _update_cache.update({
-                    "latest_version": None,
-                    "update_available": False,
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
-                    "check_error": None,
-                })
-                return dict(_update_cache)
-
-            if resp.status_code == 403:
-                # Rate limited or forbidden
-                error = "GitHub API rate limit exceeded or access denied"
-                if not os.getenv("GITHUB_TOKEN"):
-                    error += " (no GITHUB_TOKEN set — required for private repos)"
-                _update_cache["check_error"] = error
-                _update_cache["last_checked"] = datetime.now(timezone.utc).isoformat()
-                logger.warning("GitHub API error: %s", error)
+            if resp.status_code in (404, 403):
+                # Private repo without token, or no releases — try Docker Hub
+                logger.info("GitHub API returned %s — falling back to Docker Hub tags", resp.status_code)
+                hub_version = await _check_dockerhub()
+                if hub_version:
+                    update_available = _is_newer(hub_version, CURRENT_VERSION)
+                    _update_cache.update({
+                        "latest_version": hub_version,
+                        "release_url": f"https://hub.docker.com/r/{DOCKERHUB_REPO}/tags",
+                        "release_notes": "(Version detected from Docker Hub — no release notes available)",
+                        "published_at": None,
+                        "update_available": update_available,
+                        "last_checked": datetime.now(timezone.utc).isoformat(),
+                        "check_error": None,
+                    })
+                    if update_available:
+                        logger.info("Update available (via Docker Hub): %s → %s",
+                                    CURRENT_VERSION, hub_version)
+                else:
+                    _update_cache.update({
+                        "latest_version": None,
+                        "update_available": False,
+                        "last_checked": datetime.now(timezone.utc).isoformat(),
+                        "check_error": None,
+                    })
                 return dict(_update_cache)
 
             resp.raise_for_status()
-            releases = resp.json()
-
-            # /releases returns an array sorted by creation date (newest first).
-            # Find the newest release by semver, including prereleases.
-            # Skip drafts — they're not published yet.
-            data = None
-            best_version = None
-            for rel in releases:
-                if rel.get("draft", False):
-                    continue
-                tag = rel.get("tag_name", "")
-                v = _parse_version(tag)
-                if v is None:
-                    continue
-                if best_version is None or v > best_version:
-                    best_version = v
-                    data = rel
-
-            if data is None:
-                # No parseable releases found
-                _update_cache.update({
-                    "latest_version": None,
-                    "update_available": False,
-                    "last_checked": datetime.now(timezone.utc).isoformat(),
-                    "check_error": None,
-                })
-                return dict(_update_cache)
+            data = resp.json()
 
             latest_tag = data.get("tag_name", "")
             update_available = _is_newer(latest_tag, CURRENT_VERSION)
@@ -696,14 +715,14 @@ async def get_update_status(user: dict = Depends(require_auth)) -> UpdateStatusR
 
 
 @router.post("/check")
-async def trigger_check(user: dict = Depends(require_admin)) -> UpdateStatusResponse:
+async def trigger_check(user: dict = Depends(require_full_admin)) -> UpdateStatusResponse:
     """Force an immediate update check (admin only)."""
     await check_for_updates()
     return await get_update_status(user)
 
 
 @router.post("/apply")
-async def apply_update(user: dict = Depends(require_admin)):
+async def apply_update(user: dict = Depends(require_full_admin)):
     """
     Trigger an update to the latest available version (admin only).
     Runs asynchronously — poll /api/updates/progress for status.
