@@ -751,15 +751,25 @@ async def ensure_saved_ssh_keys_table(pool):
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_saved_ssh_keys_default ON saved_ssh_keys(is_default)"
             )
-            # Ensure only one default key (use DO block to skip if index already exists)
+            # Ensure only one default key PER USER.
+            # Migration: drop the old global index (only one default across all users)
+            # and create a per-user unique partial index instead.
             await conn.execute("""
                 DO $$ BEGIN
-                    IF NOT EXISTS (
+                    -- Drop old global index if it exists
+                    IF EXISTS (
                         SELECT 1 FROM pg_indexes
                         WHERE indexname = 'idx_one_default_key'
                     ) THEN
-                        CREATE UNIQUE INDEX idx_one_default_key
-                            ON saved_ssh_keys(is_default)
+                        DROP INDEX idx_one_default_key;
+                    END IF;
+                    -- Create per-user unique index (one default per created_by)
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_one_default_key_per_user'
+                    ) THEN
+                        CREATE UNIQUE INDEX idx_one_default_key_per_user
+                            ON saved_ssh_keys(created_by)
                             WHERE is_default = TRUE;
                     END IF;
                 END $$;
