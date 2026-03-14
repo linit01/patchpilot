@@ -541,6 +541,9 @@ async function loadSidebarStats() {
         updateBadge('sidebar-history-badge', data.history_count);
         // Badge: Alerts
         updateBadge('sidebar-alerts-badge', data.alert_count);
+
+        // Update available badge — piggyback on sidebar refresh so it stays current
+        checkForUpdateBadge();
         
     } catch (error) {
         console.error('Error loading sidebar stats:', error);
@@ -1861,9 +1864,12 @@ async function checkForUpdateBadge() {
         if (!res.ok) return;
         const data = await res.json();
         const badge = document.getElementById('sidebar-update-badge');
-        if (badge && data.update_available) {
+        if (!badge) return;
+        if (data.update_available) {
             badge.style.display = 'flex';
             badge.title = `v${data.current_version} → v${data.latest_version}`;
+        } else {
+            badge.style.display = 'none';
         }
     } catch (_) {
         // Silently ignore — update check is non-critical
