@@ -122,6 +122,10 @@
                 </div>
             </div>
             <div class="top-actions">
+                <!-- RBAC: owner filter for full_admin -->
+                <select id="owner-filter" style="display:none; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-panel); color:var(--text-primary); font-size:13px; cursor:pointer;" onchange="applyOwnerFilter(this.value)">
+                    <option value="">All Users</option>
+                </select>
                 <div class="countdown-display">
                     Next check: <span id="countdown-timer">--:--</span>
                 </div>

@@ -8,6 +8,15 @@ const WS_BASE_URL = `ws${window.location.protocol === 'https:' ? 's' : ''}://${w
 let currentUser = null;
 let isAuthenticated = false;
 
+// RBAC: owner filter for full_admin user dropdown
+let _ownerFilter = '';  // empty = all users; UUID = specific user
+
+function _ownerParam(sep) {
+    // Returns '?owner=UUID' or '&owner=UUID' or '' depending on filter state
+    if (!_ownerFilter) return '';
+    return `${sep}owner=${_ownerFilter}`;
+}
+
 // WebSocket for real-time patch progress
 let patchProgressWS = null;
 
@@ -286,6 +295,7 @@ async function checkAuthAndInit() {
             isAuthenticated = true;
             currentUser = data.user;
             showAuthenticatedUI();
+            populateOwnerFilter();
         } else {
             isAuthenticated = false;
             currentUser = null;
@@ -429,6 +439,38 @@ function showUnauthenticatedUI() {
     if (patchBtn) patchBtn.style.display = 'none';
 }
 
+// ── RBAC: Owner filter dropdown for full_admin ─────────────────────────
+async function populateOwnerFilter() {
+    const select = document.getElementById('owner-filter');
+    if (!select || !currentUser || currentUser.role !== 'full_admin') return;
+    try {
+        const res = await fetch(`${API_BASE_URL}/auth/users`, { credentials: 'include' });
+        if (!res.ok) return;
+        const users = await res.json();
+        // Only show if there's more than one user
+        if (users.length <= 1) return;
+        select.innerHTML = '<option value="">All Users</option>';
+        const roleLabels = { full_admin: 'Full Admin', admin: 'Admin', viewer: 'Viewer' };
+        users.forEach(u => {
+            if (u.role === 'viewer') return;  // viewers don't own resources
+            const label = `${u.username} (${roleLabels[u.role] || u.role})`;
+            select.innerHTML += `<option value="${u.id}">${label}</option>`;
+        });
+        select.style.display = '';
+    } catch (e) {
+        console.log('Could not populate owner filter:', e);
+    }
+}
+
+function applyOwnerFilter(value) {
+    _ownerFilter = value;
+    // Re-fetch all dashboard data with new filter
+    loadStats();
+    loadHosts();
+    loadChartData();
+    loadSidebarStats();
+}
+
 // Handle logout
 async function handleLogout() {
     try {
@@ -466,7 +508,7 @@ async function loadDashboard() {
 // Load Sidebar Stats (load avg, uptime, badges)
 async function loadSidebarStats() {
     try {
-        const response = await fetch(`${API_BASE_URL}/stats/sidebar?t=${Date.now()}`, {
+        const response = await fetch(`${API_BASE_URL}/stats/sidebar?t=${Date.now()}${_ownerParam('&')}`, {
             cache: 'no-store'
         });
         if (!response.ok) return;
@@ -527,7 +569,7 @@ function scrollToSection(sectionId) {
 // Load Statistics
 async function loadStats() {
     try {
-        const response = await fetch(`${API_BASE_URL}/stats?t=${Date.now()}`, {
+        const response = await fetch(`${API_BASE_URL}/stats?t=${Date.now()}${_ownerParam('&')}`, {
             cache: 'no-store',
             headers: {
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -563,7 +605,7 @@ async function loadStats() {
 // Load Hosts
 async function loadHosts() {
     try {
-        const response = await fetch(`${API_BASE_URL}/hosts?t=${Date.now()}`, {
+        const response = await fetch(`${API_BASE_URL}/hosts?t=${Date.now()}${_ownerParam('&')}`, {
             cache: 'no-store',
             headers: {
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -597,6 +639,8 @@ function renderHostsTable() {
         return;
     }
     
+    const canWrite = isAuthenticated && currentUser && currentUser.role !== 'viewer';
+    
     tbody.innerHTML = hostsData.map(host => {
         const isSelected = selectedHosts.has(host.hostname);
         const statusClass = getStatusClass(host.status);
@@ -612,7 +656,7 @@ function renderHostsTable() {
                         class="host-checkbox" 
                         data-hostname="${host.hostname}"
                         ${isSelected ? 'checked' : ''}
-                        ${!isAuthenticated ? 'disabled' : ''}
+                        ${!canWrite ? 'disabled' : ''}
                         onchange="handleHostCheckbox('${host.hostname}')"
                     />
                 </td>
@@ -972,10 +1016,11 @@ async function showHostDetails(hostname) {
         
         const autoRebootCheckbox = document.getElementById('detail-auto-reboot');
         if (autoRebootCheckbox) {
+            const canWrite = isAuthenticated && currentUser && currentUser.role !== 'viewer';
             autoRebootCheckbox.checked = host.allow_auto_reboot || false;
-            autoRebootCheckbox.disabled = !isAuthenticated;
+            autoRebootCheckbox.disabled = !canWrite;
             autoRebootCheckbox.onclick = async () => {
-                if (!isAuthenticated) return;
+                if (!canWrite) return;
                 await updateAutoReboot(hostname, autoRebootCheckbox.checked);
             };
         }
@@ -1002,9 +1047,10 @@ async function showHostDetails(hostname) {
         
         loading.style.display = 'none';
         content.style.display = 'block';
-         // Show/hide patch button based on status AND auth
+         // Show/hide patch button based on status AND auth AND write access
         const patchBtn = document.getElementById('patch-host-btn');
-        if (host.status === 'updates-available' && isAuthenticated) {
+        const canPatch = isAuthenticated && currentUser && currentUser.role !== 'viewer';
+        if (host.status === 'updates-available' && canPatch) {
             patchBtn.style.display = 'inline-block';
         } else {
             patchBtn.style.display = 'none';
@@ -1151,7 +1197,7 @@ const CHART_COLORS = ['#3498db', '#f39c12', '#2ecc71', '#e74c3c', '#9b59b6', '#0
 
 async function loadChartData() {
     try {
-        const response = await fetch(`${API_BASE_URL}/stats/charts?t=${Date.now()}`, {
+        const response = await fetch(`${API_BASE_URL}/stats/charts?t=${Date.now()}${_ownerParam('&')}`, {
             cache: 'no-store'
         });
         const data = await response.json();
@@ -1404,7 +1450,7 @@ async function showPatchHistoryModal() {
     empty.style.display = 'none';
     
     try {
-        const res = await fetch(`${API_BASE_URL}/patch-history?limit=100`);
+        const res = await fetch(`${API_BASE_URL}/patch-history?limit=100${_ownerParam('&')}`);
         const history = await res.json();
         
         loading.style.display = 'none';
@@ -1506,7 +1552,7 @@ async function showAlertsModal() {
     empty.style.display = 'none';
     
     try {
-        const res = await fetch(`${API_BASE_URL}/alerts`);
+        const res = await fetch(`${API_BASE_URL}/alerts${_ownerParam('?')}`);
         const alerts = await res.json();
         
         loading.style.display = 'none';
@@ -1521,7 +1567,8 @@ async function showAlertsModal() {
             const color = a.severity === 'error' ? 'var(--red)' : a.severity === 'info' ? 'var(--blue, #3b82f6)' : 'var(--amber)';
             const border = a.severity === 'error' ? '#ef444430' : a.severity === 'info' ? '#3b82f630' : '#f59e0b30';
             const checked = a.last_checked ? new Date(a.last_checked).toLocaleString() : 'Never';
-            const dismissBtn = a.type === 'reboot_required'
+            const canWrite = isAuthenticated && currentUser && currentUser.role !== 'viewer';
+            const dismissBtn = (a.type === 'reboot_required' && canWrite)
                 ? `<button onclick="dismissRebootAlert('${a.hostname}')" style="
                         background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.3);
                         color:var(--amber);border-radius:5px;padding:4px 10px;font-size:11px;
@@ -1651,7 +1698,7 @@ const _schedLastSeen = new Map(); // scheduleId -> { status, retry_count, name }
 // Poll schedule status every 60 seconds (uses lightweight /active endpoint)
 async function pollScheduleStatus() {
     try {
-        const res = await fetch('/api/schedules/active', { credentials: 'include' });
+        const res = await fetch(`/api/schedules/active${_ownerParam('?')}`, { credentials: 'include' });
         if (!res.ok) return;
         const schedules = await res.json();
 

@@ -585,7 +585,8 @@ async def delete_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
 # ============================================================================
 
 @router.post("/hosts/test", response_model=TestConnectionResponse)
-async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = Depends(get_db_pool)):
+async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = Depends(get_db_pool),
+                          user: dict = Depends(require_write)):
     """
     Test SSH connection to a host using the ssh command directly.
     This matches how Ansible connects, avoiding paramiko key format issues.
