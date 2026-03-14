@@ -8,6 +8,39 @@ const WS_BASE_URL = `ws${window.location.protocol === 'https:' ? 's' : ''}://${w
 let currentUser = null;
 let isAuthenticated = false;
 
+// ── Global 401 interceptor ──────────────────────────────────────────────────
+// When the session cookie expires mid-use, API calls start returning 401
+// but the dashboard keeps showing stale data. This intercepts 401 responses
+// and redirects to the login page instead of silently failing.
+//
+// Track consecutive 401s — a single 401 on a role-gated endpoint (like
+// /auth/users for non-admins) is normal. Multiple 401s in a row means
+// the session has actually expired.
+let _consecutive401s = 0;
+const _AUTH_REDIRECT_THRESHOLD = 3;
+
+const _originalFetch = window.fetch;
+window.fetch = async function(...args) {
+    const response = await _originalFetch.apply(this, args);
+    if (response.status === 401 && isAuthenticated) {
+        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+        // Don't count auth-check endpoints or user-management endpoints
+        // which legitimately return 401 for non-admin roles
+        if (!url.includes('/auth/me') && !url.includes('/auth/users')) {
+            _consecutive401s++;
+            if (_consecutive401s >= _AUTH_REDIRECT_THRESHOLD) {
+                console.warn('Session expired — redirecting to login');
+                isAuthenticated = false;
+                currentUser = null;
+                window.location.href = 'login.html';
+            }
+        }
+    } else if (response.ok) {
+        _consecutive401s = 0;
+    }
+    return response;
+};
+
 // RBAC: owner filter for full_admin user dropdown
 let _ownerFilter = '';  // empty = all users; UUID = specific user
 
