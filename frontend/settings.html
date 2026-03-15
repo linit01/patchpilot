@@ -1054,6 +1054,8 @@
                         <div style="display:flex; align-items:center; gap:10px;">
                             <label style="font-size:13px; color:var(--text-secondary); min-width:120px;">Check interval:</label>
                             <select id="update-check-interval" style="padding:6px 10px; background:var(--bg-card); border:1px solid var(--border); border-radius:6px; color:var(--text-primary); font-size:13px;" onchange="saveUpdateSettings()">
+                                <option value="300">Every 5 minutes</option>
+                                <option value="900">Every 15 minutes</option>
                                 <option value="3600">Every hour</option>
                                 <option value="21600">Every 6 hours</option>
                                 <option value="43200">Every 12 hours</option>

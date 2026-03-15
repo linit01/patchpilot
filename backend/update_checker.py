@@ -362,7 +362,7 @@ async def periodic_update_check(get_setting_fn):
 
             interval_str = await get_setting_fn("update_check_interval")
             interval = int(interval_str) if interval_str else 86400
-            interval = max(interval, 3600)  # floor at 1 hour
+            interval = max(interval, 300)  # floor at 5 minutes
         except Exception as e:
             logger.warning("Update check loop error: %s", e)
             interval = 86400
