@@ -35,7 +35,7 @@ class AnsibleRunner:
                 if os.path.exists(filepath):
                     os.remove(filepath)
             except Exception as e:
-                print(f"Warning: Failed to cleanup {filepath}: {e}")
+                logger.warning(f"Failed to cleanup {filepath}: {e}")
         file_list.clear()
     
     async def _create_dynamic_inventory(self, limit_hosts: List[str] = None) -> tuple:
@@ -66,9 +66,9 @@ class AnsibleRunner:
                     )
                     if row and row['ssh_key_encrypted']:
                         default_key_content = decrypt_credential(row['ssh_key_encrypted'])
-                        print(f"Loaded default saved SSH key (length: {len(default_key_content)})")
+                        logger.debug(f"Loaded default saved SSH key (length: {len(default_key_content)})")
             except Exception as e:
-                print(f"Warning: Could not load default saved key: {e}")
+                logger.warning(f"Could not load default saved key: {e}")
 
             inventory_data = {
                 'all': {
@@ -99,7 +99,7 @@ class AnsibleRunner:
                     'is_control_node': is_control,
                 }
 
-                print(f"DEBUG Host {hostname}: ssh_key_type={host.get('ssh_key_type')}, "
+                logger.debug(f"Host {hostname}: ssh_key_type={host.get('ssh_key_type')}, "
                       f"has_encrypted_key={host.get('ssh_private_key_encrypted') is not None}")
 
                 # Resolve 'default' key_type to the saved default key
@@ -118,16 +118,15 @@ class AnsibleRunner:
                         os.chmod(key_path, 0o600)
                         local_temp.append(key_path)
                         host_vars['ansible_ssh_private_key_file'] = key_path
-                        print(f"Using default saved key for {hostname}")
+                        logger.debug(f"Using default saved key for {hostname}")
                     except Exception as e:
-                        print(f"ERROR: Failed to write default key for {hostname}: {e}")
+                        logger.error(f"Failed to write default key for {hostname}: {e}")
 
                 if resolved_key_encrypted:
                     try:
-                        print(f"DEBUG: Decrypting key for {hostname}...")
+                        logger.debug(f"Decrypting key for {hostname}...")
                         decrypted_key = decrypt_credential(host['ssh_private_key_encrypted'])
-                        print(f"Decrypted key for {hostname}: {decrypted_key[:50]}... "
-                              f"(length: {len(decrypted_key)})")
+                        logger.debug(f"Decrypted key for {hostname} (length: {len(decrypted_key)})")
 
                         key_fd, key_path = tempfile.mkstemp(
                             prefix=f'ansible_key_{hostname}_', suffix='.pem'
@@ -149,7 +148,7 @@ class AnsibleRunner:
                         host_vars['ansible_ssh_private_key_file'] = key_path
 
                     except Exception as e:
-                        print(f"ERROR: Failed to decrypt/write key for {hostname}: {e}")
+                        logger.error(f"Failed to decrypt/write key for {hostname}: {e}")
 
                 if host.get('ssh_password_encrypted'):
                     try:
@@ -157,11 +156,11 @@ class AnsibleRunner:
                         host_vars['ansible_ssh_pass'] = decrypted_password
                         host_vars['ansible_password'] = decrypted_password
                     except Exception as e:
-                        print(f"Warning: Failed to decrypt password for {hostname}: {e}")
+                        logger.warning(f"Failed to decrypt password for {hostname}: {e}")
 
                 inventory_data['all']['hosts'][hostname] = host_vars
 
-            print(f"DEBUG INVENTORY for hosts: {list(inventory_data['all']['hosts'].keys())}")
+            logger.debug(f"Dynamic inventory for hosts: {list(inventory_data['all']['hosts'].keys())}")
 
             inv_fd, inv_path = tempfile.mkstemp(prefix='ansible_inventory_', suffix='.json')
             os.write(inv_fd, json.dumps(inventory_data, indent=2).encode())
@@ -171,7 +170,7 @@ class AnsibleRunner:
             return inv_path, local_temp
 
         except Exception as e:
-            print(f"Error creating dynamic inventory: {e}")
+            logger.error(f"Error creating dynamic inventory: {e}")
             self._cleanup_files(local_temp)
             return self.inventory_path, []
 
@@ -246,7 +245,7 @@ class AnsibleRunner:
                 pass
 
             if stderr:
-                print(f"ANSIBLE STDERR:\n{stderr}")
+                logger.warning(f"ANSIBLE STDERR:\n{stderr}")
 
             hosts_data = self._parse_ansible_output(stdout)
 
@@ -258,9 +257,7 @@ class AnsibleRunner:
             return len(hosts_data) > 0 or process.returncode == 0, hosts_data
 
         except Exception as e:
-            print(f"ERROR in run_check: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error in run_check: {type(e).__name__}: {str(e)}", exc_info=True)
             self._cleanup_files(run_temp)
             return False, {"error": str(e)}
 
@@ -559,7 +556,7 @@ class AnsibleRunner:
                     break
                 line = line_bytes.decode('utf-8', errors='replace')
                 output_lines.append(line)
-                print(f"DEBUG LINE: {line.strip()[:200]}")
+                logger.debug(f"PATCH LINE: {line.strip()[:200]}")
                 sys.stdout.flush()
                 line_count += 1
  
@@ -607,7 +604,7 @@ class AnsibleRunner:
                         await progress_callback(f"🍎 {line_clean}")
 
             # Wait for process to complete
-            print(f"TOTAL LINES READ: {line_count}")
+            logger.debug(f"Patch output: {line_count} lines read")
             await asyncio.wait_for(process.wait(), timeout=_runner_timeout)
             
             # Cleanup temp files owned by this patch run only
@@ -626,9 +623,7 @@ class AnsibleRunner:
             self._cleanup_files(patch_temp)
             return False, {"error": "Ansible patch timed out"}
         except Exception as e:
-            print(f"ERROR in run_patch: {type(e).__name__}: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error in run_patch: {type(e).__name__}: {str(e)}", exc_info=True)
             self._cleanup_files(patch_temp)
             return False, {"error": str(e)}
 

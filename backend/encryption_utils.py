@@ -250,16 +250,13 @@ if __name__ == "__main__":
     print("Testing encryption utilities...")
     
     test_data = "Test SSH key content or password"
-    print(f"Original: {test_data}")
     
     encrypted = encrypt_credential(test_data)
     print(f"Encrypted: {encrypted[:50]}...")
     
     decrypted = decrypt_credential(encrypted)
-    print(f"Decrypted: {decrypted}")
-    
     assert test_data == decrypted, "Encryption/decryption test failed!"
-    print("✓ Encryption test passed")
+    print("✓ Encryption round-trip test passed")
     
     # Test SSH key validation
     valid_key = """-----BEGIN OPENSSH PRIVATE KEY-----
