@@ -37,7 +37,7 @@ class LoginRequest(BaseModel):
 class UserResponse(BaseModel):
     id: str
     username: str
-    email: str
+    email: Optional[str] = None
     role: str
     is_active: bool
     last_login: Optional[str] = None
