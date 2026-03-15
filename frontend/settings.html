@@ -1377,6 +1377,11 @@
                     });
                 }
                 // full_admin: all tabs visible (default)
+
+                // Now that role is set, load data (owner columns depend on _ppUserRole)
+                loadHosts();
+                loadSavedKeys();
+                loadSystemInfo();
             } catch (e) {
                 window.location.href = 'login.html';
                 return;
@@ -2213,10 +2218,8 @@
             }
         }
         
-        // Load hosts on page load
-        loadHosts();
-        loadSavedKeys();
-        loadSystemInfo();
+        // NOTE: loadHosts(), loadSavedKeys(), loadSystemInfo() are called
+        // after auth check completes (above) so _ppUserRole is set first.
         
         // Load system information for Advanced tab
         async function loadSystemInfo() {
