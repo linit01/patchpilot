@@ -267,35 +267,6 @@ async def startup_event():
 
     # ── STEP 7: RBAC — ownership columns + role migration ─────────────────────
     await ensure_rbac_columns(pool)
-
-    # ── STEP 8: Apply debug mode from settings ───────────────────────────────
-    try:
-        async with pool.acquire() as conn:
-            debug_val = await conn.fetchval("SELECT value FROM settings WHERE key = 'debug_mode'")
-        if debug_val and debug_val.lower() == 'true':
-            logging.getLogger().setLevel(logging.DEBUG)
-            for name in ('uvicorn', 'asyncpg', 'httpx', 'paramiko'):
-                logging.getLogger(name).setLevel(logging.DEBUG)
-            print("[STARTUP] Debug mode is ON (from settings)")
-        else:
-            print("[STARTUP] Debug mode is OFF")
-    except Exception as e:
-        print(f"[STARTUP] Could not read debug_mode setting: {e}")
-
-    # ── STEP 9: Make email column nullable (no email functionality) ──────────
-    try:
-        async with pool.acquire() as conn:
-            # Drop NOT NULL constraint
-            await conn.execute("ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
-            # Replace UNIQUE constraint with partial unique (only enforce on non-null)
-            await conn.execute("DROP INDEX IF EXISTS idx_users_email")
-            await conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
-                ON users(email) WHERE email IS NOT NULL
-            """)
-        print("[STARTUP] users.email column is now nullable")
-    except Exception as e:
-        print(f"[STARTUP] Email column migration note: {e}")
     
     # Start background task for periodic checks
     asyncio.create_task(periodic_ansible_check())
@@ -598,10 +569,6 @@ async def ensure_settings_table(pool):
                 ('update_check_interval', '86400',
                  'How often to check for updates, in seconds (default 86400 = 24 hours, '
                  'minimum 3600 = 1 hour).'),
-                # ── Debug / Logging ───────────────────────────────────────────
-                ('debug_mode', 'false',
-                 'Enable verbose debug logging. When true, all backend modules log at '
-                 'DEBUG level. When false, only INFO and above are logged.'),
             ]
             await conn.executemany("""
                 INSERT INTO settings (key, value, description) VALUES ($1, $2, $3)
@@ -1687,11 +1654,20 @@ async def get_hosts(background_tasks: BackgroundTasks, request: Request,
     if uid is not None:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM hosts WHERE created_by = $1 ORDER BY hostname", uid
+                "SELECT h.*, u.username AS owner_username FROM hosts h "
+                "LEFT JOIN users u ON h.created_by = u.id "
+                "WHERE h.created_by = $1 ORDER BY h.hostname", uid
             )
             hosts = [dict(r) for r in rows]
     else:
-        hosts = await db.get_all_hosts()
+        # For full_admin unfiltered, add owner_username
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT h.*, u.username AS owner_username FROM hosts h "
+                "LEFT JOIN users u ON h.created_by = u.id "
+                "ORDER BY h.hostname"
+            )
+            hosts = [dict(r) for r in rows]
 
     # Auto-trigger a check if data looks stale and nothing is running
     if hosts and not _ansible_check_lock.locked() and not _ansible_patch_running:
@@ -2110,49 +2086,6 @@ async def get_backend_logs(limit: int = 200, level: str = "all",
     if level != "all":
         entries = [e for e in entries if e["lvl"] == level]
     return entries[-limit:]
-
-
-@app.get("/api/debug")
-async def get_debug_mode(user: dict = Depends(require_full_admin),
-                         pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Return current debug mode state."""
-    async with pool.acquire() as conn:
-        val = await conn.fetchval("SELECT value FROM settings WHERE key = 'debug_mode'")
-    enabled = (val or 'false').lower() == 'true'
-    return {"debug_mode": enabled}
-
-
-@app.put("/api/debug")
-async def set_debug_mode(request: Request,
-                         user: dict = Depends(require_full_admin),
-                         pool: asyncpg.Pool = Depends(get_db_pool)):
-    """Toggle debug logging at runtime. Persists to settings table."""
-    body = await request.json()
-    enabled = bool(body.get("enabled", False))
-
-    # Persist to DB
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO settings (key, value, updated_at)
-            VALUES ('debug_mode', $1, NOW())
-            ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()
-        """, 'true' if enabled else 'false')
-
-    # Apply at runtime — toggle log levels on all patchpilot loggers
-    target_level = logging.DEBUG if enabled else logging.INFO
-    logging.getLogger().setLevel(target_level)
-    # Also set our specific module loggers
-    for name in ('patchpilot', 'patchpilot.updates', __name__):
-        logging.getLogger(name).setLevel(logging.DEBUG if enabled else logging.DEBUG)
-    # Third-party loggers stay at INFO unless debug is on
-    for name in ('uvicorn', 'asyncpg', 'httpx', 'paramiko'):
-        logging.getLogger(name).setLevel(target_level)
-
-    state = "enabled" if enabled else "disabled"
-    logger.info(f"Debug mode {state} by {user['username']}")
-    print(f"[DEBUG] Debug mode {state} — root logger level set to {logging.getLevelName(target_level)}")
-
-    return {"debug_mode": enabled, "message": f"Debug logging {state}"}
 
 
 @app.get("/api/alerts")

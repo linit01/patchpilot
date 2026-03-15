@@ -832,29 +832,6 @@
                     </div>
                 </div>
 
-                <!-- Debug Mode Toggle -->
-                <div class="form-group">
-                    <label>Debug Logging</label>
-                    <div style="display: flex; align-items: center; gap: 14px; padding: 12px; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border);">
-                        <label style="position: relative; display: inline-block; width: 48px; height: 26px; margin: 0; cursor: pointer;">
-                            <input type="checkbox" id="debug-mode-toggle" onchange="toggleDebugMode(this.checked)"
-                                   style="opacity: 0; width: 0; height: 0;">
-                            <span style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
-                                         background: var(--bg-dark); border: 1px solid var(--border);
-                                         transition: 0.3s; border-radius: 26px;"></span>
-                            <span id="debug-toggle-knob" style="position: absolute; content: ''; height: 20px; width: 20px; left: 3px; bottom: 3px;
-                                         background: var(--text-muted); transition: 0.3s; border-radius: 50%;"></span>
-                        </label>
-                        <div>
-                            <span id="debug-mode-label" style="font-weight: 600; color: var(--text-primary);">Off</span>
-                            <div class="help-text" style="margin-top: 2px;">
-                                Enable verbose debug logging for all backend modules. Useful for troubleshooting SSH, Ansible, and scheduling issues.
-                                Changes take effect immediately — no restart required.
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- ── Danger Zone ─────────────────────────────────────────── -->
                 <div style="margin-top: 40px; border: 1px solid rgba(231,76,60,0.35); border-radius: 10px; overflow: hidden;">
                     <div style="background: rgba(231,76,60,0.08); padding: 14px 20px; border-bottom: 1px solid rgba(231,76,60,0.25); display: flex; align-items: center; gap: 10px;">
@@ -1589,6 +1566,11 @@
                 // Format days nicely
                 const DAY_ABBR = { monday:'Mon', tuesday:'Tue', wednesday:'Wed', thursday:'Thu', friday:'Fri', saturday:'Sat', sunday:'Sun' };
                 const days = sched.day_of_week.split(',').map(d => DAY_ABBR[d.trim().toLowerCase()] || d.trim()).join(', ');
+                // Owner badge (full_admin only)
+                const isFullAdmin = window._ppUserRole === 'full_admin';
+                const ownerBadge = (isFullAdmin && sched.owner_username)
+                    ? ` &nbsp;·&nbsp; 👤 <span style="color:var(--text-secondary)">${sched.owner_username}</span>`
+                    : '';
 
                 return `
                     <div class="host-item" style="border-left-color: ${sched.enabled ? 'var(--green-bright)' : 'var(--text-muted)'}">
@@ -1599,7 +1581,7 @@
                             <div class="host-details" style="margin-bottom:6px;">
                                 📅 ${days} &nbsp;·&nbsp; 🕐 ${sched.start_time}–${sched.end_time} &nbsp;·&nbsp;
                                 Reboot: ${sched.auto_reboot ? '<span style="color:var(--amber)">Yes</span>' : 'No'} &nbsp;·&nbsp;
-                                Last: <span style="color:${statusColor}">${statusText}</span> (${lastRun})
+                                Last: <span style="color:${statusColor}">${statusText}</span> (${lastRun})${ownerBadge}
                             </div>
                             <div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;">
                                 <span style="font-size:11px;color:var(--text-muted);margin-right:4px;">Hosts:</span>
@@ -2076,7 +2058,12 @@
                     return;
                 }
                 
-                hostList.innerHTML = hosts.map(host => `
+                hostList.innerHTML = hosts.map(host => {
+                    const isFullAdmin = window._ppUserRole === 'full_admin';
+                    const ownerBadge = (isFullAdmin && host.owner_username)
+                        ? ` • 👤 ${host.owner_username}`
+                        : '';
+                    return `
                     <div class="host-item">
                         <div class="host-info">
                             <div class="host-name">
@@ -2088,7 +2075,7 @@
                                 </span>
                                 ${host.ssh_user}@${host.hostname}:${host.ssh_port} • 
                                 Auth: ${host.ssh_key_type}
-                                ${host.tags ? ' • Tags: ' + host.tags : ''}
+                                ${host.tags ? ' • Tags: ' + host.tags : ''}${ownerBadge}
                             </div>
                         </div>
                         <div class="host-actions">
@@ -2096,8 +2083,8 @@
                             <button class="icon-btn" onclick="editHost('${host.id}')">✏️ Edit</button>
                             <button class="icon-btn btn-delete" onclick="deleteHost('${host.id}', '${host.hostname}')">🗑️ Delete</button>
                         </div>
-                    </div>
-                `).join('');
+                    </div>`;
+                }).join('');
             } catch (error) {
                 console.error('Failed to load hosts:', error);
             }
@@ -2225,57 +2212,6 @@
                 }
             }
         }
-
-        // ============================================================================
-        // Debug Mode Toggle
-        // ============================================================================
-
-        function updateDebugToggleUI(enabled) {
-            const toggle = document.getElementById('debug-mode-toggle');
-            const knob = document.getElementById('debug-toggle-knob');
-            const label = document.getElementById('debug-mode-label');
-            if (toggle) toggle.checked = enabled;
-            if (knob) {
-                knob.style.transform = enabled ? 'translateX(22px)' : 'translateX(0)';
-                knob.style.background = enabled ? 'var(--green-bright)' : 'var(--text-muted)';
-            }
-            if (label) {
-                label.textContent = enabled ? 'On' : 'Off';
-                label.style.color = enabled ? 'var(--green-bright)' : 'var(--text-primary)';
-            }
-        }
-
-        async function loadDebugMode() {
-            try {
-                const res = await fetch('/api/debug');
-                if (!res.ok) return;
-                const data = await res.json();
-                updateDebugToggleUI(data.debug_mode);
-            } catch (e) {
-                console.log('Could not load debug mode:', e);
-            }
-        }
-
-        async function toggleDebugMode(enabled) {
-            updateDebugToggleUI(enabled);
-            try {
-                const res = await fetch('/api/debug', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled })
-                });
-                if (!res.ok) {
-                    updateDebugToggleUI(!enabled);  // revert on error
-                    alert('Failed to toggle debug mode');
-                }
-            } catch (e) {
-                updateDebugToggleUI(!enabled);  // revert on error
-                alert('Failed to toggle debug mode: ' + e.message);
-            }
-        }
-
-        // Load debug mode state on page load
-        loadDebugMode();
         // ============================================================================
         // SSH Keys Management
         // ============================================================================
@@ -2299,22 +2235,42 @@
         // Render SSH keys table
         function renderKeysTable() {
             const tbody = document.getElementById('ssh-keys-table-body');
+            const isFullAdmin = window._ppUserRole === 'full_admin';
+            const colSpan = isFullAdmin ? 5 : 4;
+
+            // Dynamically add/remove Owner header
+            const thead = tbody.closest('table').querySelector('thead tr');
+            const existingOwnerTh = thead.querySelector('.owner-col');
+            if (isFullAdmin && !existingOwnerTh) {
+                const th = document.createElement('th');
+                th.className = 'owner-col';
+                th.textContent = 'Owner';
+                thead.insertBefore(th, thead.children[thead.children.length - 1]); // before Actions
+            } else if (!isFullAdmin && existingOwnerTh) {
+                existingOwnerTh.remove();
+            }
+
             if (savedSSHKeys.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--text-muted);">No saved SSH keys. Click "Add SSH Key" to create one.</td></tr>';
+                tbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align: center; padding: 40px; color: var(--text-muted);">No saved SSH keys. Click "Add SSH Key" to create one.</td></tr>`;
                 return;
             }
 
-            tbody.innerHTML = savedSSHKeys.map(key => `
+            tbody.innerHTML = savedSSHKeys.map(key => {
+                const ownerCol = isFullAdmin
+                    ? `<td><span style="font-size:12px;color:var(--text-secondary)">${key.owner_username || '—'}</span></td>`
+                    : '';
+                return `
                 <tr>
                     <td><strong>${key.name}</strong></td>
                     <td>${key.is_default ? '<span style="color: var(--green-bright);">✓ Default</span>' : '-'}</td>
                     <td>${new Date(key.created_at).toLocaleDateString()}</td>
+                    ${ownerCol}
                     <td>
                         <button class="btn-action" onclick="editKey('${key.id}')" title="Edit">✏️</button>
                         <button class="btn-action" onclick="deleteKey('${key.id}', '${key.name}')" title="Delete">🗑️</button>
                     </td>
-                </tr>
-            `).join('');
+                </tr>`;
+            }).join('');
         }
 
         // Open modal to add new key

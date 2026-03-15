@@ -127,20 +127,24 @@ async def list_schedules(owner: str = None,
         if uid is not None:
             schedules = await conn.fetch("""
                 SELECT s.*,
-                       COUNT(sh.host_id) as host_count
+                       COUNT(sh.host_id) as host_count,
+                       u.username AS owner_username
                 FROM patch_schedules s
                 LEFT JOIN patch_schedule_hosts sh ON s.id = sh.schedule_id
+                LEFT JOIN users u ON s.created_by = u.id
                 WHERE s.created_by = $1
-                GROUP BY s.id
+                GROUP BY s.id, u.username
                 ORDER BY s.name
             """, uid)
         else:
             schedules = await conn.fetch("""
                 SELECT s.*,
-                       COUNT(sh.host_id) as host_count
+                       COUNT(sh.host_id) as host_count,
+                       u.username AS owner_username
                 FROM patch_schedules s
                 LEFT JOIN patch_schedule_hosts sh ON s.id = sh.schedule_id
-                GROUP BY s.id
+                LEFT JOIN users u ON s.created_by = u.id
+                GROUP BY s.id, u.username
                 ORDER BY s.name
             """)
         
@@ -171,7 +175,8 @@ async def list_schedules(owner: str = None,
                 "last_status": sched['last_status'],
                 "retry_count": len(sched['retry_host_ids']) if dict(sched).get('retry_host_ids') else 0,
                 "created_at": sched['created_at'].isoformat(),
-                "updated_at": sched['updated_at'].isoformat()
+                "updated_at": sched['updated_at'].isoformat(),
+                "owner_username": sched.get('owner_username')
             })
         
         return result

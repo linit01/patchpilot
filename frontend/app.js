@@ -684,9 +684,23 @@ async function loadHosts() {
 // Render Hosts Table
 function renderHostsTable() {
     const tbody = document.getElementById('hosts-table-body');
+    const isFullAdmin = isAuthenticated && currentUser && currentUser.role === 'full_admin';
+    const colSpan = isFullAdmin ? 9 : 8;
+    
+    // Dynamically add/remove Owner header column
+    const thead = tbody.closest('table').querySelector('thead tr');
+    const existingOwnerTh = thead.querySelector('.owner-col');
+    if (isFullAdmin && !existingOwnerTh) {
+        const th = document.createElement('th');
+        th.className = 'owner-col';
+        th.textContent = 'Owner';
+        thead.insertBefore(th, thead.children[thead.children.length - 1]); // before Actions
+    } else if (!isFullAdmin && existingOwnerTh) {
+        existingOwnerTh.remove();
+    }
     
     if (hostsData.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="loading">No hosts found</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="${colSpan}" class="loading">No hosts found</td></tr>`;
         return;
     }
     
@@ -698,6 +712,9 @@ function renderHostsTable() {
         const lastChecked = host.last_checked 
             ? new Date(host.last_checked).toLocaleTimeString()
             : 'Never';
+        const ownerCol = isFullAdmin
+            ? `<td><span style="font-size:12px;color:var(--text-secondary)">${host.owner_username || '—'}</span></td>`
+            : '';
         
         return `
             <tr class="${isSelected ? 'selected' : ''}" data-hostname="${host.hostname}">
@@ -729,6 +746,7 @@ function renderHostsTable() {
                     }
                 </td>
                 <td><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">${lastChecked}</span></td>
+                ${ownerCol}
                 <td>
                     <button class="action-btn" onclick="showHostDetails('${host.hostname}')">
                         Details
