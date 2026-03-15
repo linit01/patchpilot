@@ -138,8 +138,6 @@ class K3sConfig(BaseModel):
     ansible_storage_size: str = "1Gi"
     nfs_server: str = ""
     nfs_share: str = ""
-    ansible_playbook_path: str = ""
-    ansible_inventory_path: str = ""
 
 
 # ── Write config ───────────────────────────────────────────────────────────────
@@ -392,10 +390,6 @@ def _write_k3s_config(cfg: K3sConfig):
                 "ansibleSize": cfg.ansible_storage_size,
                 "nfsServer": cfg.nfs_server,
                 "nfsShare": cfg.nfs_share,
-            },
-            "ansible": {
-                "playbookPath": cfg.ansible_playbook_path,
-                "inventoryPath": cfg.ansible_inventory_path,
             },
         }
     }
