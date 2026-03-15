@@ -186,25 +186,29 @@ async def list_hosts(owner: str = None,
         if uid is not None:
             rows = await conn.fetch("""
                 SELECT 
-                    id, hostname, ssh_user, ssh_port, ssh_key_type,
-                    ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
-                    ssh_password_encrypted IS NOT NULL AS has_password,
-                    notes, tags, status, is_control_node, allow_auto_reboot,
-                    last_checked, created_at, updated_at
-                FROM hosts
-                WHERE created_by = $1
-                ORDER BY hostname
+                    h.id, h.hostname, h.ssh_user, h.ssh_port, h.ssh_key_type,
+                    h.ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
+                    h.ssh_password_encrypted IS NOT NULL AS has_password,
+                    h.notes, h.tags, h.status, h.is_control_node, h.allow_auto_reboot,
+                    h.last_checked, h.created_at, h.updated_at,
+                    u.username AS owner_username
+                FROM hosts h
+                LEFT JOIN users u ON h.created_by = u.id
+                WHERE h.created_by = $1
+                ORDER BY h.hostname
             """, uid)
         else:
             rows = await conn.fetch("""
                 SELECT 
-                    id, hostname, ssh_user, ssh_port, ssh_key_type,
-                    ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
-                    ssh_password_encrypted IS NOT NULL AS has_password,
-                    notes, tags, status, is_control_node, allow_auto_reboot,
-                    last_checked, created_at, updated_at
-                FROM hosts
-                ORDER BY hostname
+                    h.id, h.hostname, h.ssh_user, h.ssh_port, h.ssh_key_type,
+                    h.ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
+                    h.ssh_password_encrypted IS NOT NULL AS has_password,
+                    h.notes, h.tags, h.status, h.is_control_node, h.allow_auto_reboot,
+                    h.last_checked, h.created_at, h.updated_at,
+                    u.username AS owner_username
+                FROM hosts h
+                LEFT JOIN users u ON h.created_by = u.id
+                ORDER BY h.hostname
             """)
         
         return [dict(row) for row in rows]
@@ -594,9 +598,11 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
     import subprocess
     import tempfile
     
-    # Connection test debug logging
-    logger.debug(f"TEST CONNECTION: hostname={request.hostname}, user={request.ssh_user}, port={request.ssh_port}")
-    logger.debug(f"  key_type='{request.ssh_key_type}', has_private_key={bool(request.ssh_private_key)}")
+    # v4.8 — unmistakable debug output
+    print(f"=== TEST CONNECTION v4.9 ===")
+    print(f"  hostname={request.hostname}, user={request.ssh_user}, port={request.ssh_port}")
+    print(f"  key_type='{request.ssh_key_type}'")
+    print(f"  has_private_key={bool(request.ssh_private_key)}, key_len={len(request.ssh_private_key) if request.ssh_private_key else 0}")
     
     tmp_key_file = None
     ssh_key_content = request.ssh_private_key
@@ -604,7 +610,7 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
 
     # Handle 'default' key type — resolve to the user's saved default key
     if request.ssh_key_type == 'default':
-        logger.debug(f"  Resolving 'default' key type to saved default key...")
+        print(f"  Resolving 'default' key type to saved default key...")
         try:
             async with pool.acquire() as conn:
                 # Try user's own default first, then fall back to any default
@@ -619,19 +625,19 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
                 if row and row['ssh_key_encrypted']:
                     ssh_key_content = decrypt_credential(row['ssh_key_encrypted'])
                     effective_key_type = 'pasted'
-                    logger.debug(f"  Resolved default key (length={len(ssh_key_content)})")
+                    print(f"  Resolved default key, length={len(ssh_key_content)}")
                 else:
-                    logger.debug(f"  No default saved key found in database")
+                    print(f"  No default saved key found in database")
                     return TestConnectionResponse(success=False,
                         message="No default SSH key configured. Add one in Settings → SSH Keys.")
         except Exception as e:
-            logger.error(f"  Failed to resolve default key: {e}")
+            print(f"  Failed to resolve default key: {e}")
             return TestConnectionResponse(success=False, message=f"Failed to load default SSH key: {str(e)}")
 
     # Handle saved: key types - fetch from database directly
     if request.ssh_key_type and request.ssh_key_type.startswith('saved:'):
         key_id = request.ssh_key_type.replace('saved:', '')
-        logger.debug(f"  Resolving saved key: {key_id}")
+        print(f"  Resolving saved key: {key_id}")
         try:
             key_uuid = uuid.UUID(key_id)
             async with pool.acquire() as conn:
@@ -641,17 +647,17 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
                 if row:
                     ssh_key_content = decrypt_credential(row['ssh_key_encrypted'])
                     effective_key_type = 'pasted'
-                    logger.debug(f"  Resolved saved key (length={len(ssh_key_content)})")
+                    print(f"  Resolved saved key, length={len(ssh_key_content)}")
                 else:
-                    logger.warning(f"  Saved key NOT FOUND in database")
+                    print(f"  Saved key NOT FOUND in database")
                     return TestConnectionResponse(success=False, message="Saved SSH key not found")
         except Exception as e:
-            logger.error(f"  Failed to resolve saved key: {e}")
+            print(f"  Failed to resolve saved key: {e}")
             return TestConnectionResponse(success=False, message=f"Failed to load saved SSH key: {str(e)}")
     
     # If key_type is 'pasted' but no key content, try to load from existing host
     if effective_key_type in ['pasted', 'file'] and not ssh_key_content and request.host_id:
-        logger.debug(f"  No key content but have host_id={request.host_id}, fetching stored key...")
+        print(f"  No key content but have host_id={request.host_id}, fetching stored key...")
         try:
             host_uuid = uuid.UUID(request.host_id)
             async with pool.acquire() as conn:
@@ -661,15 +667,15 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
                 if row and row['ssh_private_key_encrypted']:
                     ssh_key_content = decrypt_credential(row['ssh_private_key_encrypted'])
                     effective_key_type = 'pasted'
-                    logger.debug(f"  Loaded stored key for host (length={len(ssh_key_content)})")
+                    print(f"  Loaded stored key for host, length={len(ssh_key_content)}")
                 else:
-                    logger.debug(f"  No stored key found for host")
+                    print(f"  No stored key found for host")
         except Exception as e:
-            logger.error(f"  Failed to load host key: {e}")
+            print(f"  Failed to load host key: {e}")
     
     # If key_type is 'pasted' but no key content, it means the frontend didn't send it
     if effective_key_type in ['pasted', 'file'] and not ssh_key_content:
-        logger.warning(f"  key_type={effective_key_type} but no key content available")
+        print(f"  ERROR: key_type={effective_key_type} but no key content!")
         return TestConnectionResponse(
             success=False,
             message="No SSH key content received. Please select or paste a key."
@@ -699,17 +705,17 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
             tmp_key_file.close()
             os.chmod(tmp_key_file.name, 0o600)
             ssh_cmd.extend(["-i", tmp_key_file.name])
-            logger.debug(f"  Using key file: {tmp_key_file.name} ({len(key_data)} bytes)")
+            print(f"  Using key file: {tmp_key_file.name} ({len(key_data)} bytes written)")
         elif effective_key_type == "password" and request.ssh_password:
             return await _test_connection_password(request)
         else:
-            logger.warning(f"  No auth method resolved! effective_key_type={effective_key_type}")
+            print(f"  WARNING: No auth method resolved! effective_key_type={effective_key_type}")
         
         # Add user@host and command
         ssh_cmd.append(f"{request.ssh_user}@{request.hostname}")
         ssh_cmd.append("uname -a")
         
-        logger.debug(f"  Running: ssh -p {request.ssh_port} -i <keyfile> {request.ssh_user}@{request.hostname} uname -a")
+        print(f"  Running: ssh -p {request.ssh_port} -i <keyfile> {request.ssh_user}@{request.hostname} uname -a")
         
         result = subprocess.run(
             ssh_cmd,
@@ -718,10 +724,9 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
             timeout=15
         )
         
-        logger.debug(f"  SSH returncode={result.returncode}")
-        logger.debug(f"  SSH stdout={result.stdout.strip()[:200]}")
-        if result.returncode != 0:
-            logger.debug(f"  SSH stderr={result.stderr.strip()[:200]}")
+        print(f"  SSH returncode={result.returncode}")
+        print(f"  SSH stdout={result.stdout.strip()[:200]}")
+        print(f"  SSH stderr={result.stderr.strip()[:200]}")
         
         if result.returncode == 0:
             uname_output = result.stdout.strip()
@@ -753,7 +758,7 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
     except subprocess.TimeoutExpired:
         return TestConnectionResponse(success=False, message="Connection timeout after 15s")
     except Exception as e:
-        logger.error(f"  Test connection exception: {type(e).__name__}: {e}")
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
         return TestConnectionResponse(success=False, message=f"Connection test failed: {str(e)}")
     finally:
         if tmp_key_file:
@@ -1126,16 +1131,20 @@ async def list_saved_ssh_keys(pool: asyncpg.Pool = Depends(get_db_pool),
     async with pool.acquire() as conn:
         if uid is not None:
             rows = await conn.fetch("""
-                SELECT id, name, is_default, created_at, updated_at
-                FROM saved_ssh_keys
-                WHERE created_by = $1
-                ORDER BY is_default DESC, name ASC
+                SELECT k.id, k.name, k.is_default, k.created_at, k.updated_at,
+                       u.username AS owner_username
+                FROM saved_ssh_keys k
+                LEFT JOIN users u ON k.created_by = u.id
+                WHERE k.created_by = $1
+                ORDER BY k.is_default DESC, k.name ASC
             """, uid)
         else:
             rows = await conn.fetch("""
-                SELECT id, name, is_default, created_at, updated_at
-                FROM saved_ssh_keys
-                ORDER BY is_default DESC, name ASC
+                SELECT k.id, k.name, k.is_default, k.created_at, k.updated_at,
+                       u.username AS owner_username
+                FROM saved_ssh_keys k
+                LEFT JOIN users u ON k.created_by = u.id
+                ORDER BY k.is_default DESC, k.name ASC
             """)
         return [dict(row) for row in rows]
 
