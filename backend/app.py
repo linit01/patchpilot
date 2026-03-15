@@ -281,6 +281,21 @@ async def startup_event():
             print("[STARTUP] Debug mode is OFF")
     except Exception as e:
         print(f"[STARTUP] Could not read debug_mode setting: {e}")
+
+    # ── STEP 9: Make email column nullable (no email functionality) ──────────
+    try:
+        async with pool.acquire() as conn:
+            # Drop NOT NULL constraint
+            await conn.execute("ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
+            # Replace UNIQUE constraint with partial unique (only enforce on non-null)
+            await conn.execute("DROP INDEX IF EXISTS idx_users_email")
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+                ON users(email) WHERE email IS NOT NULL
+            """)
+        print("[STARTUP] users.email column is now nullable")
+    except Exception as e:
+        print(f"[STARTUP] Email column migration note: {e}")
     
     # Start background task for periodic checks
     asyncio.create_task(periodic_ansible_check())

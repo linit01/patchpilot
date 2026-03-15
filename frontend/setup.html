@@ -665,8 +665,6 @@
                             <input type="text" id="admin-username" placeholder="admin" autocomplete="username">
                         </div>
                         <div class="form-group">
-                            <label>Email</label>
-                            <input type="email" id="admin-email" placeholder="admin@example.com" autocomplete="email">
                         </div>
                     </div>
                     <div class="form-row cols-2">
@@ -910,7 +908,7 @@
 
         // ── Setup state ───────────────────────────────────────
         const state = {
-            admin: { username: '', email: '', password: '' },
+            admin: { username: '', password: '' },
             settings: { app_title: 'PatchPilot', timezone: 'UTC', site_url: '', refresh_interval: 300, default_ssh_user: 'root', default_ssh_port: 22 },
             backup: { storage_type: 'local', nfs_server: '', nfs_share: '', retain_count: 10 },
             hosts: [],
@@ -1218,16 +1216,14 @@
         function validateStep2() {
             clearError(2);
             const username = document.getElementById('admin-username').value.trim();
-            const email    = document.getElementById('admin-email').value.trim();
             const password = document.getElementById('admin-password').value;
             const confirm  = document.getElementById('admin-confirm').value;
 
             if (!username || username.length < 3) return showError(2, 'Username must be at least 3 characters.');
-            if (!email || !email.includes('@'))   return showError(2, 'Enter a valid email address.');
             if (password.length < 8)              return showError(2, 'Password must be at least 8 characters.');
             if (password !== confirm)             return showError(2, 'Passwords do not match.');
 
-            state.admin = { username, email, password };
+            state.admin = { username, password };
             nextStep();
         }
 

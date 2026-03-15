@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api/setup", tags=["setup"])
 
 class AdminAccount(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    email: str = Field(..., min_length=5, max_length=255)
+    email: Optional[str] = Field(default=None, max_length=255)
     password: str = Field(..., min_length=8, max_length=255)
 
 
@@ -136,11 +136,12 @@ async def complete_setup(payload: SetupCompleteRequest):
 
             # ── 1. Create admin user ──────────────────────────────────────────
             password_hash = _hash_password(payload.admin.password)
+            admin_email = payload.admin.email or f"{payload.admin.username}@patchpilot.local"
             user_id = await conn.fetchval("""
                 INSERT INTO users (username, email, password_hash, role, is_active)
                 VALUES ($1, $2, $3, 'full_admin', true)
                 RETURNING id
-            """, payload.admin.username, payload.admin.email, password_hash)
+            """, payload.admin.username, admin_email, password_hash)
 
             logger.info(f"[Setup] Admin user '{payload.admin.username}' created (id={user_id})")
 
