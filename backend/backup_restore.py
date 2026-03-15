@@ -634,18 +634,52 @@ async def _enforce_retention():
     """Delete oldest backups beyond the configured retain count.
     Reads retain count from the DB settings table (user-configurable via UI),
     falling back to the BACKUP_RETAIN_COUNT env var.
-    Never delete backups that include the encryption key."""
+
+    Rules:
+      - Uninstall backups (*_uninstall.tgz) are excluded from the count and
+        never pruned — they are safety nets, not routine backups.
+      - At least one archive containing the encryption key is preserved if
+        none of the kept (newest) archives already have it.
+      - When an archive is deleted, its companion _ENCRYPTION_KEY.txt file
+        (if any) is also deleted to prevent orphaned key files.
+    """
     retain = await _get_retain_count()
-    backups = _list_backup_archives(newest_first=True)
-    for old_backup in backups[retain:]:
+    all_backups = _list_backup_archives(newest_first=True)
+
+    # Separate uninstall backups from regular backups
+    regular = [b for b in all_backups if '_uninstall' not in b.name]
+    if len(regular) <= retain:
+        return
+
+    # Check if at least one backup in the KEPT set has the encryption key
+    kept = regular[:retain]
+    kept_has_key = any(_backup_has_encryption_key(b) for b in kept)
+
+    for old_backup in regular[retain:]:
         try:
-            if _backup_has_encryption_key(old_backup):
-                logger.info(f"Retention skip (has encryption key): {old_backup.name}")
+            if not kept_has_key and _backup_has_encryption_key(old_backup):
+                logger.info(f"Retention skip (last backup with encryption key): {old_backup.name}")
+                kept_has_key = True  # preserved one, rest can be deleted
                 continue
             old_backup.unlink()
             logger.info(f"Deleted old backup: {old_backup.name}")
+            # Also delete companion encryption key .txt file if present
+            _delete_companion_key_file(old_backup)
         except Exception as e:
             logger.warning(f"Could not delete old backup {old_backup}: {e}")
+
+
+def _delete_companion_key_file(archive: Path):
+    """Delete the standalone _ENCRYPTION_KEY.txt companion file for an archive."""
+    for ext in ('.tgz', '.tar.gz'):
+        base = archive.name.replace(ext, '')
+        key_file = archive.parent / f"{base}_ENCRYPTION_KEY.txt"
+        if key_file.exists():
+            try:
+                key_file.unlink()
+                logger.info(f"Deleted companion key file: {key_file.name}")
+            except Exception as e:
+                logger.warning(f"Could not delete companion key file {key_file.name}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1055,8 +1089,8 @@ async def download_backup(filename: str):
 @router.post("/upload")
 async def upload_backup(file: UploadFile = File(...)):
     """Upload a backup archive to the server for restoration."""
-    if not file.filename.endswith(".tar.gz"):
-        raise HTTPException(400, detail="File must be a .tar.gz backup archive")
+    if not file.filename.endswith(".tar.gz") and not file.filename.endswith(".tgz"):
+        raise HTTPException(400, detail="File must be a .tar.gz or .tgz backup archive")
 
     safe_name = Path(file.filename).name
     if not _is_backup_file(safe_name):
@@ -1200,7 +1234,7 @@ async def delete_backup(filename: str):
 async def backup_health():
     """Quick health check for backup subsystem."""
     backup_count = len(_list_backup_archives())
-    total_size = sum(f.stat().st_size for f in BACKUP_DIR.glob("*.tar.gz"))
+    total_size = sum(f.stat().st_size for f in _list_backup_archives())
     free = shutil.disk_usage(BACKUP_DIR).free
     return {
         "backup_dir": str(BACKUP_DIR),
