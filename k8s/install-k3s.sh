@@ -556,10 +556,6 @@ load_config() {
   PP_KUBECTL_BIN="$(which kubectl)"
   ok "kubectl resolved: ${PP_KUBECTL_BIN}"
 
-  # ── Ansible ────────────────────────────────────────────────────────────────
-  PP_ANSIBLE_PLAYBOOK_PATH="$(yaml_get patchpilot.ansible.playbookPath)"
-  PP_ANSIBLE_INVENTORY_PATH="$(yaml_get patchpilot.ansible.inventoryPath)"
-
   # ── Summary ────────────────────────────────────────────────────────────────
   echo ""
   echo -e "${CYAN}Configuration summary:${NC}"
@@ -768,67 +764,7 @@ generate_manifests() {
     esac
   fi
 
-  if [[ -n "${PP_ANSIBLE_PLAYBOOK_PATH:-}" || -n "${PP_ANSIBLE_INVENTORY_PATH:-}" ]]; then
-    generate_ansible_configmap
-  fi
-
   ok "All manifests in: ${GENERATED_DIR}/"
-}
-
-# ── Ansible ConfigMap ──────────────────────────────────────────────────────────
-generate_ansible_configmap() {
-  info "Generating Ansible ConfigMap..."
-  local cm="${GENERATED_DIR}/10-ansible-configmap.yaml"
-  cat > "${cm}" << YAML
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: patchpilot-ansible-init
-  namespace: ${PP_NAMESPACE}
-data:
-YAML
-  if [[ -n "${PP_ANSIBLE_PLAYBOOK_PATH}" && -f "${PP_ANSIBLE_PLAYBOOK_PATH}" ]]; then
-    echo "  check-os-updates.yml: |" >> "${cm}"
-    sed 's/^/    /' "${PP_ANSIBLE_PLAYBOOK_PATH}" >> "${cm}"
-    ok "Playbook included in ConfigMap"
-  fi
-  if [[ -n "${PP_ANSIBLE_INVENTORY_PATH}" && -f "${PP_ANSIBLE_INVENTORY_PATH}" ]]; then
-    echo "  hosts: |" >> "${cm}"
-    sed 's/^/    /' "${PP_ANSIBLE_INVENTORY_PATH}" >> "${cm}"
-    ok "Inventory included in ConfigMap"
-  fi
-  cat >> "${cm}" << YAML
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: patchpilot-ansible-init
-  namespace: ${PP_NAMESPACE}
-spec:
-  ttlSecondsAfterFinished: 600
-  template:
-    spec:
-      restartPolicy: OnFailure
-      containers:
-      - name: copy-ansible
-        image: busybox:1.36
-        command: ["sh","-c","cp /cm/check-os-updates.yml /ansible/ 2>/dev/null; cp /cm/hosts /ansible/ 2>/dev/null; echo done; ls /ansible/"]
-        volumeMounts:
-        - name: ansible-data
-          mountPath: /ansible
-        - name: ansible-cm
-          mountPath: /cm
-          readOnly: true
-      volumes:
-      - name: ansible-data
-        persistentVolumeClaim:
-          claimName: patchpilot-ansible-data
-      - name: ansible-cm
-        configMap:
-          name: patchpilot-ansible-init
-YAML
-  ok "Generated: 10-ansible-configmap.yaml"
 }
 
 # ── Validate StorageClasses ────────────────────────────────────────────────────

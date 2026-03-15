@@ -199,7 +199,7 @@ spec:
           'until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done']
       # Seed ansible playbooks from the backend image into the shared PVC
       - name: seed-ansible
-        image: linit01/patchpilot:backend-0.10.19-alpha
+        image: linit01/patchpilot:backend-0.10.20-alpha
         imagePullPolicy: Always
         command: ['sh', '-c', 'cp -rn /ansible-src/. /ansible/ && echo "Ansible seeded"']
         volumeMounts:
@@ -207,7 +207,7 @@ spec:
           mountPath: /ansible
       containers:
       - name: backend
-        image: linit01/patchpilot:backend-0.10.19-alpha
+        image: linit01/patchpilot:backend-0.10.20-alpha
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -335,7 +335,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: linit01/patchpilot:frontend-0.10.19-alpha
+        image: linit01/patchpilot:frontend-0.10.20-alpha
         imagePullPolicy: Always
         ports:
         - containerPort: 80

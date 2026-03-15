@@ -322,15 +322,6 @@
         <div class="field"><label>Backup retention count</label><input type="number" id="backup_retain_count" value="3"></div>
       </div>
       <div class="field"><label>Max backup size (MB)</label><input type="number" id="max_backup_size_mb" value="500"></div>
-      <div class="field">
-        <label>Ansible playbook path <span style="color:var(--muted);font-weight:400">(optional)</span></label>
-        <div class="hint">Full path on this machine to check-os-updates.yml</div>
-        <input type="text" id="ansible_playbook_path" placeholder="/home/you/ansible/check-os-updates.yml">
-      </div>
-      <div class="field">
-        <label>Ansible inventory path <span style="color:var(--muted);font-weight:400">(optional)</span></label>
-        <input type="text" id="ansible_inventory_path" placeholder="/home/you/ansible/hosts">
-      </div>
     </div>
     <div class="actions">
       <button class="btn btn-secondary" onclick="prevPage()">← Back</button>
@@ -741,8 +732,6 @@ async function deploy() {
       auto_refresh_interval:  parseInt($('auto_refresh_interval').value),
       backup_retain_count:    parseInt($('backup_retain_count').value),
       max_backup_size_mb:     parseInt($('max_backup_size_mb').value),
-      ansible_playbook_path:  $('ansible_playbook_path').value,
-      ansible_inventory_path: $('ansible_inventory_path').value,
     };
     const resp = await fetch('/api/configure/k3s', {
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)

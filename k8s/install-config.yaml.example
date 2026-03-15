@@ -55,6 +55,3 @@ patchpilot:
     ansibleSize: 1Gi
     nfsServer: ''                   # NFS server IP (nfs type only)
     nfsShare: ''                    # NFS export path (nfs type only)
-  ansible:
-    playbookPath: ''
-    inventoryPath: ''
