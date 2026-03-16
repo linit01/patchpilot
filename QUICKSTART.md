@@ -19,12 +19,11 @@ Get PatchPilot running in **under 10 minutes**.
 
 - **Docker** (Docker Desktop on Mac/Windows, Docker Engine on Linux) — must be **running**
 - **Docker Compose** (bundled with Docker Desktop, or install the plugin)
-- Your Ansible playbook (`check-os-updates.yml`) and inventory (`hosts` file)
 
 ### Install
 
 ```bash
-git clone https://github.com/yourusername/patchpilot.git
+git clone https://github.com/linit01/patchpilot.git
 cd patchpilot
 ./install.sh --docker
 ```
@@ -32,9 +31,8 @@ cd patchpilot
 The installer will:
 1. Verify Docker is installed and running
 2. Generate a Fernet encryption key and write `.env`
-3. Find (or prompt for) your Ansible playbook and inventory
-4. Build the backend image
-5. Start PostgreSQL, backend, and frontend containers
+3. Pull pre-built images from Docker Hub
+4. Start PostgreSQL, backend, and frontend containers
 
 **Dashboard:** `http://localhost:8080`
 

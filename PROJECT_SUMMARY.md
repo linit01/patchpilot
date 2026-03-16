@@ -1,13 +1,13 @@
 # PatchPilot — Project Summary
 
-**Version:** 0.10.0-alpha
+**Version:** 0.11.0-alpha
 **Status:** Active development — approaching public release
 
 ---
 
 ## What It Is
 
-PatchPilot is a self-hosted patch management dashboard for Linux and macOS systems. It monitors update status across your fleet, runs patching via Ansible, and provides a dark-themed web UI with real-time progress streaming. It includes built-in backup/restore, scheduled patching, and one-click application updates.
+PatchPilot is a self-hosted patch management dashboard for Linux and macOS systems. It monitors update status across your fleet, runs patching via Ansible, and provides a dark-themed web UI with real-time progress streaming. It includes built-in backup/restore, scheduled patching, multi-user RBAC, and one-click application updates.
 
 ## Deployment Modes
 
@@ -35,13 +35,15 @@ PatchPilot is a self-hosted patch management dashboard for Linux and macOS syste
 ## Key Features
 
 - **Multi-platform** — Debian/Ubuntu (`apt`), RHEL/CentOS (`dnf`/`yum`), macOS (`brew` + `softwareupdate` + `mas`)
+- **Multi-user RBAC** — Full Admin (app owner, sees all), Admin (own resources only), Viewer (read-only); resource ownership tracked per user
 - **Encrypted credentials** — SSH keys and sudo passwords encrypted with Fernet (AES-256) before PostgreSQL storage
-- **Saved SSH Keys Library** — store, reuse, upload, set defaults; auto-assigned to new hosts
+- **Saved SSH Keys Library** — store, reuse, upload, set defaults; auto-assigned to new hosts; per-user scoping
 - **Real-time patching** — WebSocket streaming of live Ansible output
 - **Background checks** — configurable interval (default 5 min) with countdown timer
-- **Scheduled patching** — time-based patch windows
-- **In-app updates** — automatic GitHub release checking with one-click updates for both Docker and Kubernetes
-- **Backup & restore** — full application backup with optional encryption key export and retention protection
+- **Scheduled patching** — time-based patch windows with per-user ownership
+- **In-app updates** — automatic release checking (GitHub + Docker Hub fallback) with one-click updates for both Docker and Kubernetes
+- **Debug logging toggle** — runtime-switchable verbose logging via Settings → Advanced (no restart required)
+- **Backup & restore** — full application backup with optional encryption key export, retention policy with uninstall backup exclusion
 - **Setup wizard** — first-run wizard covering admin account, settings, backup storage, and default SSH key
 - **In-app uninstall** — web-based uninstaller for both Docker Compose and Kubernetes deployments
 - **Control node protection** — detects when a managed host is also running PatchPilot; never auto-reboots it
@@ -54,13 +56,14 @@ patchpilot/
 │   ├── app.py                  # FastAPI app + startup migrations
 │   ├── ansible_runner.py       # Ansible execution + dynamic inventory
 │   ├── database.py             # PostgreSQL (asyncpg) client
-│   ├── auth.py                 # Session authentication + RBAC
+│   ├── auth.py                 # Session authentication + RBAC roles
+│   ├── rbac.py                 # Ownership helpers + permission checks
 │   ├── settings_api.py         # Hosts, SSH keys, test connection, general settings
 │   ├── setup_api.py            # First-run setup wizard API
 │   ├── schedules_api.py        # Scheduled patch windows
 │   ├── backup_restore.py       # Backup / restore logic
 │   ├── uninstall_api.py        # In-app uninstall (Docker + k8s)
-│   ├── update_checker.py       # GitHub release checker + update execution
+│   ├── update_checker.py       # Release checker + update execution (GitHub + Docker Hub)
 │   ├── encryption_utils.py     # Fernet encrypt/decrypt helpers
 │   └── requirements.txt
 ├── frontend/
@@ -96,7 +99,8 @@ patchpilot/
 - [ ] Email / Slack / webhook notifications on patch completion or failures
 - [ ] Prometheus metrics endpoint + Grafana dashboard
 - [ ] Package-level selection (patch individual packages, not whole host)
-- [ ] Rollback support (revert to previous version)
+- [ ] Rollback support (revert to previous version — deferred until schema stabilizes)
 - [ ] RHEL subscription-manager support
 - [ ] Helm chart for easier k3s deployment
-- [ ] Multi-user RBAC
+- [x] Multi-user RBAC ← completed in v0.11.0
+- [x] Debug logging toggle ← completed in v0.11.0
