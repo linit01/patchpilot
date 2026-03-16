@@ -1,11 +1,6 @@
-# Designed, built and owned by John R. Sanborn, 2026.
-# Code and design advice by Claude.AI and Ollama (local using multiple LLMs).
-# UI designs inspired by PiHole app, theme Star Trek LCARS. pi-hole.net, DAN SCHAPER
+# PatchPilot — Patch Management for Linux & macOS
 
-# contact@getpatchpilot.app
-# Git repo: linit01/patchpilot
-# Docker hub: linit01/patchpilot
-# All rights to this code and design ideas are reserved by owner.
+# https://github.com/linit01/patchpilot
 
 # <img src="frontend/patchpilot-icon.jpeg" alt="" width="40"> PatchPilot
 

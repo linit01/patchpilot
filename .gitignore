@@ -60,3 +60,12 @@ scripts/claude-context.sh
 
 #OTHER
 NOTES
+!.env.example
+scripts/push_new_build.sh
+certs/patchpilot-ca.crt
+certs/patchpilot-ca.srl
+certs/patchpilot.crt
+certs/patchpilot.csr
+certs/*.key
+patchpilot.tgz
+patchpilot.tgz.b64
