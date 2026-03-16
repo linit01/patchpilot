@@ -11,7 +11,7 @@
 
 **Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**
 
-![Version](https://img.shields.io/badge/version-0.10.0--alpha-blue)
+![Version](https://img.shields.io/badge/version-0.11.0--alpha-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
@@ -41,11 +41,14 @@
 - **In-App Updates** — Automatic update checking with one-click upgrades for both Docker Compose and Kubernetes deployments
 
 ### Security & Authentication
+- **Multi-User RBAC** — Three-tier role model: Full Admin (app owner, sees/manages all), Admin (own resources only), Viewer (read-only across all resources)
+- **Resource Ownership** — Hosts, SSH keys, and schedules tracked by creator; Admin users see only their own resources
 - **Login Required** — Session-based auth before any dashboard access
 - **Fernet Encryption (AES-256)** — All SSH private keys and sudo passwords encrypted at rest in PostgreSQL
-- **Saved SSH Keys Library** — Store, reuse, upload, and set defaults per host
+- **Saved SSH Keys Library** — Store, reuse, upload, and set defaults per host; scoped per user
 - **Per-Host SSH Configuration** — Different key, user, and port per target
 - **Control Node Protection** — Detects when a managed host is also running PatchPilot; warns before patching, never auto-reboots it
+- **Debug Logging Toggle** — Runtime-switchable verbose logging via Settings → Advanced (no restart needed)
 
 ### Infrastructure & Deployment
 - **Docker Compose** — Single-command local or LAN deployment
@@ -57,8 +60,8 @@
 ### Backup & Restore
 - **Full application backup** — Database, settings, Ansible files, and optionally the encryption key
 - **Standalone encryption key export** — Key file written alongside the backup tarball for easy retrieval
-- **Retention protection** — Backups containing the encryption key are never deleted by retention policy
-- **Web UI and CLI** — Create, download, upload, and restore backups from Settings → Backup & Restore
+- **Smart retention policy** — Configurable retain count; uninstall backups excluded from count; companion key files cleaned up; at least one encryption-key-bearing backup preserved
+- **Web UI and CLI** — Create, download, upload (.tgz and .tar.gz), and restore backups from Settings → Backup & Restore
 
 ---
 
@@ -182,7 +185,7 @@ PatchPilot includes a built-in update checker and one-click update mechanism.
 
 ### Automatic Checks
 
-The backend periodically checks GitHub Releases for new versions (default: every 24 hours). When an update is available, a badge appears on the sidebar and Settings → Updates shows the available version with release notes.
+The backend periodically checks for new versions (default: every 24 hours). It queries GitHub Releases first; if the repo is private and no token is configured, it falls back to Docker Hub tags. When an update is available, a badge appears on the sidebar and Settings → Updates shows the available version with release notes.
 
 ### One-Click Updates
 
@@ -269,7 +272,7 @@ Check logs: `docker compose logs backend` or `kubectl logs -n patchpilot deploy/
 ```
 patchpilot/
 ├── backend/                    # FastAPI application
-│   ├── app.py, ansible_runner.py, database.py, auth.py
+│   ├── app.py, ansible_runner.py, database.py, auth.py, rbac.py
 │   ├── settings_api.py, schedules_api.py, setup_api.py
 │   ├── backup_restore.py, uninstall_api.py, update_checker.py
 │   └── encryption_utils.py, requirements.txt

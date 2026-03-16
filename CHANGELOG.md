@@ -4,6 +4,61 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.11.0-alpha] — 2026-03-16
+
+### Added — Multi-User Role-Based Access Control (RBAC)
+- **Three-tier role model**: `full_admin` (app owner, exactly one), `admin` (manage own resources), `viewer` (read-only)
+- **Resource ownership**: `created_by` column added to `hosts`, `saved_ssh_keys`, and `patch_schedules` tables with automatic backfill on upgrade
+- **API-level scoping**: all host, SSH key, schedule, stats, charts, alerts, and patch-history endpoints filtered by ownership for `admin` users
+- **Write guards**: `viewer` role blocked from all mutating endpoints (create, update, delete, patch, check)
+- **Full Admin filter dropdown**: `[All Users ▾]` dropdown on Dashboard for `full_admin` to view resources by owner
+- **Owner column**: Dashboard hosts table, Settings → Hosts, SSH Keys, and Schedules all show resource owner (full_admin only)
+- **Sidebar scoping**: `admin` sees only Manage Hosts, SSH Keys, Schedules; `viewer` sees no management links or action buttons
+- **Settings tab scoping**: `admin` hidden from General, Users, Advanced, Backup, Updates tabs; `viewer` redirected to dashboard
+- **Role badges**: User management table shows "Full Admin" / "Admin" / "Viewer" with color-coded badges; delete button hidden for full_admin account
+- **`backend/rbac.py`** — new module centralizing ownership helpers (`owner_id`, `verify_host_ownership`, `verify_schedule_ownership`, `verify_ssh_key_ownership`)
+- **Startup migration**: `ensure_rbac_columns()` adds `created_by` columns, migrates `admin` → `full_admin` role, backfills existing resources to the app owner
+
+### Added — Debug Logging Toggle
+- **Pill switch** in Settings → Advanced to enable/disable verbose debug logging at runtime
+- **`GET/PUT /api/debug`** endpoints (full_admin only) to read/toggle debug mode
+- **Persisted to DB** via `debug_mode` setting — survives container restarts
+- **Runtime effect**: toggles Python log levels on root + third-party loggers (uvicorn, asyncpg, httpx, paramiko) between DEBUG and INFO without restart
+
+### Added — Docker Hub Update Fallback
+- **Update checker fallback**: when GitHub Releases API returns 404/403 (private repo, no token), automatically falls back to Docker Hub Tags API
+- Queries `hub.docker.com/v2/repositories/linit01/patchpilot/tags` for the latest `backend-*` tag
+- Eliminates the need for `GITHUB_TOKEN` on Kubernetes deployments
+
+### Changed
+- **Email field made optional**: `users.email` column is now nullable; setup wizard no longer requires email; auto-generates `{username}@patchpilot.local` when not provided; Docker and k3s installers are now consistent
+- **Ansible playbook path fields removed** from Docker web installer, k3s web installer, `webinstall/server.py`, `install-k3s.sh`, and config YAML files — playbook is baked into the Docker image and synced at startup
+- **Backup retention logic rewritten**:
+  - Uninstall backups (`*_uninstall.tgz`) excluded from retention count and never pruned
+  - Companion `_ENCRYPTION_KEY.txt` files deleted when their archive is pruned
+  - At least one encryption-key-bearing backup preserved (only if no kept backup has the key)
+  - Previously, all backups with encryption keys were skipped, causing retention to never clean up
+- **Backup upload endpoint** now accepts both `.tar.gz` and `.tgz` files (was `.tar.gz` only)
+- **Backup health endpoint** disk size calculation now counts both `.tgz` and `.tar.gz` files
+- **`require_admin`** now accepts both `full_admin` and `admin` roles
+- **Uninstall, Backup/Restore, Settings, Update endpoints** restricted to `require_full_admin`
+- **User management** restricted to `full_admin` only; cannot create another `full_admin` or delete the `full_admin` account
+
+### Fixed
+- **Sensitive data in logs**: converted 15+ `print()` statements in `ansible_runner.py` to proper `logger.debug()` calls; **removed SSH private key content** that was being printed to stdout (first 50 chars of decrypted key)
+- **Test connection debug prints**: converted all diagnostic `print()` statements in `settings_api.py` to `logger.debug()`, controlled by the debug toggle
+- **Encryption test harness**: removed `print(f"Decrypted: {decrypted}")` from `encryption_utils.py` test block
+- **Owner column race condition**: Settings page data loads (hosts, SSH keys, system info) moved to after auth check completes, so `_ppUserRole` is set before tables render
+- **Sidebar version update badge**: fixed not showing without manual refresh
+
+### Security
+- **SSH key content no longer logged**: `ansible_runner.py` line 129 previously printed `Decrypted key for {hostname}: {decrypted_key[:50]}...` to stdout on every Ansible check — removed
+- **All debug output now gated**: sensitive diagnostic prints converted to `logger.debug()` and controlled by the debug toggle (off by default)
+- **Viewer role enforced at API level**: all write endpoints return 403 for viewer role, not just hidden in UI
+
+---
+
+
 ## [0.10.0-alpha] — 2026-03-12
 
 ### Added
