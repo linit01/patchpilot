@@ -1,23 +1,38 @@
 """
-PatchPilot — License & Trial Management
+PatchPilot — License & Trial Management (LemonSqueezy Integration)
 
 Trial logic:
   - 14-day trial starts when first-run setup is completed
   - Trial status is stored in the settings table (trial_started_at)
   - Once expired, API endpoints return 403 and the UI shows an expiry screen
-  - A license key can be entered to activate (full validation in v0.12)
+
+License logic (LemonSqueezy):
+  - User enters license key from LemonSqueezy purchase
+  - Backend calls LS /v1/licenses/activate with key + install UUID
+  - LS returns instance_id — stored alongside the key
+  - Periodic validation (every 7 days) calls /v1/licenses/validate
+  - 30-day grace period if LS API is unreachable
+  - Subscription expiry/cancellation detected via validation response
 
 Settings keys used:
-  - trial_started_at   ISO timestamp of when trial began
-  - license_key        User-entered license key (validated in v0.12)
-  - license_status     'trial' | 'trial_expired' | 'active' | 'suspended'
+  - trial_started_at       ISO timestamp of when trial began
+  - license_key            LemonSqueezy license key (UUID)
+  - license_instance_id    LemonSqueezy activation instance ID
+  - license_status         'trial' | 'trial_expired' | 'active' | 'expired' | 'disabled'
+  - license_last_validated ISO timestamp of last successful validation
+  - license_customer_name  Customer name from LS (for display)
+  - license_customer_email Customer email from LS (for display)
+  - install_uuid           Unique installation identifier (generated once)
 """
-import os
+import asyncio
 import logging
+import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+import httpx
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -26,6 +41,10 @@ router = APIRouter(prefix="/api/license", tags=["license"])
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 TRIAL_DAYS = int(os.getenv("PATCHPILOT_TRIAL_DAYS", "14"))
+GRACE_DAYS = int(os.getenv("PATCHPILOT_GRACE_DAYS", "30"))
+VALIDATION_INTERVAL_HOURS = int(os.getenv("PATCHPILOT_LICENSE_CHECK_HOURS", "168"))  # 7 days
+
+LS_API_URL = "https://api.lemonsqueezy.com/v1/licenses"
 
 # ── Database pool (injected at startup) ───────────────────────────────────────
 _pool = None
@@ -45,10 +64,13 @@ async def _get_pool():
 
 # ── Settings helpers ──────────────────────────────────────────────────────────
 async def _get_setting(pool, key: str) -> Optional[str]:
-    async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT value FROM settings WHERE key = $1", key
-        )
+    try:
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT value FROM settings WHERE key = $1", key
+            )
+    except Exception:
+        return None
 
 
 async def _set_setting(pool, key: str, value: str, description: str = ""):
@@ -59,6 +81,23 @@ async def _set_setting(pool, key: str, value: str, description: str = ""):
             ON CONFLICT (key) DO UPDATE
               SET value = EXCLUDED.value, updated_at = NOW()
         """, key, value, description)
+
+
+# ── Install UUID ──────────────────────────────────────────────────────────────
+async def _get_or_create_install_uuid(pool) -> str:
+    """
+    Returns a persistent UUID for this installation.
+    Generated once, stored in settings, survives restarts.
+    Used as the instance_name for LemonSqueezy activation.
+    """
+    existing = await _get_setting(pool, "install_uuid")
+    if existing:
+        return existing
+    new_uuid = str(uuid.uuid4())
+    await _set_setting(pool, "install_uuid", new_uuid,
+                       "Unique installation identifier for license activation")
+    logger.info(f"Generated install UUID: {new_uuid}")
+    return new_uuid
 
 
 # ── Trial management ──────────────────────────────────────────────────────────
@@ -75,38 +114,108 @@ async def start_trial(pool):
     now = datetime.now(timezone.utc).isoformat()
     await _set_setting(pool, "trial_started_at", now, "UTC timestamp when trial began")
     await _set_setting(pool, "license_status", "trial", "Current license status")
+
+    # Generate install UUID early
+    await _get_or_create_install_uuid(pool)
+
     logger.info(f"Trial started: {now} ({TRIAL_DAYS} days)")
 
 
-async def get_license_status(pool) -> dict:
-    """
-    Returns the current license/trial status.
+# ── LemonSqueezy API calls ───────────────────────────────────────────────────
+async def _ls_activate(license_key: str, instance_name: str) -> dict:
+    """Call LemonSqueezy /activate endpoint."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            f"{LS_API_URL}/activate",
+            data={
+                "license_key": license_key,
+                "instance_name": instance_name,
+            },
+            headers={"Accept": "application/json"},
+        )
+        return resp.json()
 
-    Returns:
-        {
-            "status": "trial" | "trial_expired" | "active" | "no_setup",
-            "trial_days_total": 14,
-            "trial_days_remaining": int or None,
-            "trial_expires_at": ISO string or None,
-            "license_key_set": bool,
-        }
-    """
+
+async def _ls_validate(license_key: str, instance_id: str) -> dict:
+    """Call LemonSqueezy /validate endpoint."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            f"{LS_API_URL}/validate",
+            data={
+                "license_key": license_key,
+                "instance_id": instance_id,
+            },
+            headers={"Accept": "application/json"},
+        )
+        return resp.json()
+
+
+async def _ls_deactivate(license_key: str, instance_id: str) -> dict:
+    """Call LemonSqueezy /deactivate endpoint."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            f"{LS_API_URL}/deactivate",
+            data={
+                "license_key": license_key,
+                "instance_id": instance_id,
+            },
+            headers={"Accept": "application/json"},
+        )
+        return resp.json()
+
+
+# ── License status ────────────────────────────────────────────────────────────
+async def get_license_status(pool) -> dict:
+    """Returns the current license/trial status."""
     license_key = await _get_setting(pool, "license_key")
     license_status = await _get_setting(pool, "license_status")
+    instance_id = await _get_setting(pool, "license_instance_id")
+    last_validated = await _get_setting(pool, "license_last_validated")
     trial_started = await _get_setting(pool, "trial_started_at")
+    customer_name = await _get_setting(pool, "license_customer_name")
+    customer_email = await _get_setting(pool, "license_customer_email")
 
-    # If a license key is set and status is active, they're licensed
-    # (Full validation happens in v0.12 — for now, any key = active)
-    if license_key and license_status == "active":
+    # Active license — check grace period
+    if license_key and instance_id and license_status == "active":
+        grace_ok = True
+        if last_validated:
+            try:
+                lv = datetime.fromisoformat(last_validated)
+                if lv.tzinfo is None:
+                    lv = lv.replace(tzinfo=timezone.utc)
+                grace_expires = lv + timedelta(days=GRACE_DAYS)
+                if datetime.now(timezone.utc) > grace_expires:
+                    grace_ok = False
+                    await _set_setting(pool, "license_status", "expired",
+                                       "Current license status")
+                    license_status = "expired"
+            except Exception:
+                pass
+
+        if grace_ok:
+            return {
+                "status": "active",
+                "trial_days_total": TRIAL_DAYS,
+                "trial_days_remaining": None,
+                "trial_expires_at": None,
+                "license_key_set": True,
+                "customer_name": customer_name or "",
+                "customer_email": customer_email or "",
+            }
+
+    # Expired or disabled license
+    if license_status in ("expired", "disabled"):
         return {
-            "status": "active",
+            "status": license_status,
             "trial_days_total": TRIAL_DAYS,
-            "trial_days_remaining": None,
+            "trial_days_remaining": 0,
             "trial_expires_at": None,
-            "license_key_set": True,
+            "license_key_set": bool(license_key),
+            "customer_name": customer_name or "",
+            "customer_email": customer_email or "",
         }
 
-    # No trial started yet — setup hasn't been completed
+    # No trial started yet
     if not trial_started:
         return {
             "status": "no_setup",
@@ -114,6 +223,8 @@ async def get_license_status(pool) -> dict:
             "trial_days_remaining": TRIAL_DAYS,
             "trial_expires_at": None,
             "license_key_set": bool(license_key),
+            "customer_name": "",
+            "customer_email": "",
         }
 
     # Calculate trial remaining
@@ -131,7 +242,6 @@ async def get_license_status(pool) -> dict:
         expires = datetime.now(timezone.utc)
 
     if days_remaining <= 0:
-        # Update status in DB if not already expired
         if license_status != "trial_expired":
             await _set_setting(pool, "license_status", "trial_expired",
                                "Current license status")
@@ -141,6 +251,8 @@ async def get_license_status(pool) -> dict:
             "trial_days_remaining": 0,
             "trial_expires_at": expires.isoformat(),
             "license_key_set": bool(license_key),
+            "customer_name": "",
+            "customer_email": "",
         }
 
     return {
@@ -149,33 +261,26 @@ async def get_license_status(pool) -> dict:
         "trial_days_remaining": days_remaining,
         "trial_expires_at": expires.isoformat(),
         "license_key_set": bool(license_key),
+        "customer_name": "",
+        "customer_email": "",
     }
 
 
-# ── Middleware helper ─────────────────────────────────────────────────────────
+# ── Middleware helpers ─────────────────────────────────────────────────────────
 async def check_trial_active(pool) -> bool:
-    """
-    Returns True if the app is licensed or within the trial period.
-    Used by API endpoints to gate access when trial expires.
-    """
+    """Returns True if the app is licensed or within the trial period."""
     status = await get_license_status(pool)
     return status["status"] in ("trial", "active", "no_setup")
 
 
 async def require_license(pool) -> bool:
-    """
-    Returns True only if a valid license is active (not trial).
-    Used to gate features that are disabled during trial:
-      - Backup create/restore/upload/download/delete
-    """
+    """Returns True only if a valid license is active (not trial)."""
     status = await get_license_status(pool)
     return status["status"] == "active"
 
 
 async def enforce_license(pool):
-    """
-    Raises HTTP 403 if no active license. Call at the top of gated endpoints.
-    """
+    """Raises HTTP 403 if no active license."""
     if not await require_license(pool):
         raise HTTPException(
             status_code=403,
@@ -185,16 +290,69 @@ async def enforce_license(pool):
 
 
 async def enforce_trial_active(pool):
-    """
-    Raises HTTP 403 if trial has expired and no license is active.
-    Call at the top of general API endpoints after trial expires.
-    """
+    """Raises HTTP 403 if trial has expired and no license is active."""
     if not await check_trial_active(pool):
         raise HTTPException(
             status_code=403,
             detail="Your PatchPilot trial has expired. "
                    "Enter a license key or visit https://getpatchpilot.app to continue."
         )
+
+
+# ── Periodic validation background task ───────────────────────────────────────
+async def periodic_license_check():
+    """
+    Background task: validates the license key with LemonSqueezy every
+    VALIDATION_INTERVAL_HOURS. Launched from app.py startup.
+    """
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            if _pool is None:
+                await asyncio.sleep(300)
+                continue
+
+            license_key = await _get_setting(_pool, "license_key")
+            instance_id = await _get_setting(_pool, "license_instance_id")
+            license_status = await _get_setting(_pool, "license_status")
+
+            if not license_key or not instance_id or license_status != "active":
+                await asyncio.sleep(3600)
+                continue
+
+            logger.info("[License] Periodic validation check...")
+
+            try:
+                result = await _ls_validate(license_key, instance_id)
+
+                if result.get("valid"):
+                    now = datetime.now(timezone.utc).isoformat()
+                    await _set_setting(_pool, "license_last_validated", now,
+                                       "Last successful license validation")
+
+                    ls_status = result.get("license_key", {}).get("status", "")
+                    if ls_status == "expired":
+                        await _set_setting(_pool, "license_status", "expired",
+                                           "Current license status")
+                        logger.warning("[License] Subscription expired per LemonSqueezy")
+                    elif ls_status == "disabled":
+                        await _set_setting(_pool, "license_status", "disabled",
+                                           "Current license status")
+                        logger.warning("[License] License disabled by admin")
+                    else:
+                        logger.info(f"[License] Validation successful, status: {ls_status}")
+                else:
+                    error = result.get("error", "Unknown validation error")
+                    logger.warning(f"[License] Validation failed: {error}")
+
+            except Exception as e:
+                logger.warning(f"[License] Could not reach LemonSqueezy API: {e}")
+
+        except Exception as e:
+            logger.error(f"[License] Periodic check error: {e}", exc_info=True)
+
+        await asyncio.sleep(VALIDATION_INTERVAL_HOURS * 3600)
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
@@ -213,46 +371,154 @@ async def license_status_endpoint():
 @router.post("/activate")
 async def activate_license(req: LicenseKeyRequest):
     """
-    Store a license key and mark as active.
-    In v0.12 this will validate the key against the license server.
-    For now, any non-empty key activates the license.
+    Activate a license key via LemonSqueezy.
+    Sends the key + install UUID to LS /activate endpoint.
+    On success, stores the key, instance_id, and customer info.
     """
     pool = await _get_pool()
+    install_uuid = await _get_or_create_install_uuid(pool)
 
-    # Store the key
+    try:
+        result = await _ls_activate(req.license_key, install_uuid)
+    except Exception as e:
+        logger.error(f"LemonSqueezy activation error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach the license server. Check your internet connection and try again."
+        )
+
+    if result.get("error"):
+        error_msg = result["error"]
+        logger.warning(f"License activation failed: {error_msg}")
+
+        if "activation limit" in error_msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="This license key has reached its activation limit. "
+                       "Deactivate it on your other installation first, or "
+                       "contact support at https://getpatchpilot.app"
+            )
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    if not result.get("activated"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error", "Activation failed. Please check your license key.")
+        )
+
+    instance = result.get("instance", {})
+    instance_id = instance.get("id", "")
+    meta = result.get("meta", {})
+
+    now = datetime.now(timezone.utc).isoformat()
     await _set_setting(pool, "license_key", req.license_key,
                        "PatchPilot license key")
+    await _set_setting(pool, "license_instance_id", instance_id,
+                       "LemonSqueezy activation instance ID")
     await _set_setting(pool, "license_status", "active",
                        "Current license status")
+    await _set_setting(pool, "license_last_validated", now,
+                       "Last successful license validation")
+    await _set_setting(pool, "license_customer_name",
+                       meta.get("customer_name", ""),
+                       "Customer name from LemonSqueezy")
+    await _set_setting(pool, "license_customer_email",
+                       meta.get("customer_email", ""),
+                       "Customer email from LemonSqueezy")
 
-    logger.info("License key activated (v0.11 — key stored, full validation in v0.12)")
+    logger.info(f"License activated: instance={instance_id}, "
+                f"customer={meta.get('customer_name', 'unknown')}")
 
     return {
         "status": "active",
         "message": "License activated successfully.",
+        "customer_name": meta.get("customer_name", ""),
     }
 
 
 @router.post("/deactivate")
 async def deactivate_license():
-    """Remove the license key and revert to trial status."""
+    """
+    Deactivate the license key via LemonSqueezy and revert to trial.
+    Frees the activation slot so the key can be used on another machine.
+    """
     pool = await _get_pool()
 
-    trial_started = await _get_setting(pool, "trial_started_at")
+    license_key = await _get_setting(pool, "license_key")
+    instance_id = await _get_setting(pool, "license_instance_id")
 
-    # Clear key
+    if not license_key or not instance_id:
+        raise HTTPException(status_code=400, detail="No active license to deactivate.")
+
+    try:
+        result = await _ls_deactivate(license_key, instance_id)
+        if result.get("error"):
+            logger.warning(f"LS deactivation warning: {result['error']}")
+    except Exception as e:
+        logger.warning(f"Could not reach LemonSqueezy for deactivation: {e}")
+
     await _set_setting(pool, "license_key", "", "PatchPilot license key")
+    await _set_setting(pool, "license_instance_id", "",
+                       "LemonSqueezy activation instance ID")
+    await _set_setting(pool, "license_last_validated", "",
+                       "Last successful license validation")
+    await _set_setting(pool, "license_customer_name", "",
+                       "Customer name from LemonSqueezy")
+    await _set_setting(pool, "license_customer_email", "",
+                       "Customer email from LemonSqueezy")
 
-    # Determine if trial is still valid
+    trial_started = await _get_setting(pool, "trial_started_at")
     if trial_started:
         status = await get_license_status(pool)
-        if status["trial_days_remaining"] and status["trial_days_remaining"] > 0:
+        if status.get("trial_days_remaining", 0) > 0:
             await _set_setting(pool, "license_status", "trial",
                                "Current license status")
-            return {"status": "trial", "message": "License removed. Trial still active."}
+            return {"status": "trial",
+                    "message": "License deactivated. Trial still active."}
         else:
             await _set_setting(pool, "license_status", "trial_expired",
                                "Current license status")
-            return {"status": "trial_expired", "message": "License removed. Trial has expired."}
+            return {"status": "trial_expired",
+                    "message": "License deactivated. Trial has expired."}
 
-    return {"status": "no_setup", "message": "License removed."}
+    await _set_setting(pool, "license_status", "trial",
+                       "Current license status")
+    return {"status": "trial", "message": "License deactivated."}
+
+
+@router.post("/validate")
+async def validate_license_now():
+    """Manually trigger a license validation check."""
+    pool = await _get_pool()
+
+    license_key = await _get_setting(pool, "license_key")
+    instance_id = await _get_setting(pool, "license_instance_id")
+
+    if not license_key or not instance_id:
+        raise HTTPException(status_code=400, detail="No active license to validate.")
+
+    try:
+        result = await _ls_validate(license_key, instance_id)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not reach the license server: {str(e)}"
+        )
+
+    if result.get("valid"):
+        now = datetime.now(timezone.utc).isoformat()
+        await _set_setting(pool, "license_last_validated", now,
+                           "Last successful license validation")
+
+        ls_status = result.get("license_key", {}).get("status", "active")
+        if ls_status in ("expired", "disabled"):
+            await _set_setting(pool, "license_status", ls_status,
+                               "Current license status")
+            return {"valid": False, "status": ls_status,
+                    "message": f"License is {ls_status}."}
+
+        return {"valid": True, "status": "active",
+                "message": "License is valid and active."}
+    else:
+        return {"valid": False, "status": "invalid",
+                "message": result.get("error", "Validation failed.")}
