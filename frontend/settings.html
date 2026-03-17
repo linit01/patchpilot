@@ -473,6 +473,7 @@
                 <button class="tab-btn" id="tab-btn-advanced" onclick="switchTab('advanced')">🔧 Advanced</button>
                 <button class="tab-btn" id="tab-btn-backup" onclick="switchTab('backup')">💾 Backup &amp; Restore</button>
                 <button class="tab-btn" id="tab-btn-updates" onclick="switchTab('updates')">🔄 Updates</button>
+                <button class="tab-btn" id="tab-btn-license" onclick="switchTab('license')">🪪 License</button>
             </div>
             
             <!-- Hosts Tab -->
@@ -892,7 +893,20 @@
             <!-- ══════════════════════════════════════════════════════════
                  BACKUP & RESTORE TAB
                  ══════════════════════════════════════════════════════════ -->
-            <div id="backup-tab" class="tab-content" style="padding: 24px;">
+            <div id="backup-tab" class="tab-content" style="padding: 24px; position: relative;">
+
+                <!-- License Lock Overlay (shown for trial users) -->
+                <div id="backup-license-lock" class="backup-lock-overlay" style="display:none">
+                    <div class="backup-lock-card">
+                        <span style="font-size:32px">🔒</span>
+                        <h3>License Required</h3>
+                        <p>Backup &amp; restore features require an active PatchPilot license.</p>
+                        <a href="https://getpatchpilot.app" target="_blank" class="btn-purchase">Get a License</a>
+                        <p style="font-size:13px;margin-top:12px">
+                            <a href="#license" onclick="switchTab('license')" style="color:#e8993e;text-decoration:none">Enter a license key</a>
+                        </p>
+                    </div>
+                </div>
 
                 <!-- Maintenance Mode Banner -->
                 <div id="backup-maintenance-banner" style="display:none; background:rgba(243,156,18,0.15); border:1px solid rgba(243,156,18,0.4); border-radius:8px; padding:14px 18px; margin-bottom:20px; display:none; align-items:center; gap:12px;">
@@ -1095,6 +1109,55 @@
 
             </div>
             <!-- END UPDATES TAB -->
+
+            <!-- License Tab -->
+            <div id="license-tab" class="tab-content" style="padding: 24px;">
+
+                <h3 style="margin:0 0 6px; font-size:18px; font-weight:600;">License Management</h3>
+                <p style="color:var(--text-muted); font-size:13px; margin:0 0 24px;">
+                    Manage your PatchPilot license. A license is required after the 14-day trial.
+                </p>
+
+                <!-- License Status Card -->
+                <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                        <h4 style="margin:0; font-size:14px; font-weight:600;">License Status</h4>
+                        <div id="license-status-badge" style="font-size:12px; padding:4px 12px; border-radius:6px; font-weight:600;">—</div>
+                    </div>
+                    <div id="license-status-detail" style="font-size:13px; color:var(--text-secondary);">
+                        Loading...
+                    </div>
+                </div>
+
+                <!-- License Key Input -->
+                <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <h4 style="margin:0 0 12px; font-size:14px; font-weight:600;">Enter License Key</h4>
+                    <div style="display:flex; gap:10px; align-items:flex-start;">
+                        <input type="text" id="license-key-input" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+                               style="flex:1; padding:10px 14px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text-primary); font-family:'JetBrains Mono',monospace; font-size:13px;">
+                        <button class="btn btn-primary" onclick="activateLicense()" id="license-activate-btn" style="white-space:nowrap;">Activate</button>
+                    </div>
+                    <div id="license-activate-msg" style="font-size:12px; margin-top:8px; display:none;"></div>
+                </div>
+
+                <!-- Deactivate -->
+                <div id="license-deactivate-section" style="display:none; background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:20px;">
+                    <h4 style="margin:0 0 8px; font-size:14px; font-weight:600;">Deactivate License</h4>
+                    <p style="font-size:13px; color:var(--text-muted); margin:0 0 12px;">Remove the license key from this installation.</p>
+                    <button class="btn" onclick="deactivateLicense()" style="background:var(--red); color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer;">Deactivate</button>
+                </div>
+
+                <!-- Purchase Link -->
+                <div style="text-align:center; padding:16px 0;">
+                    <p style="color:var(--text-muted); font-size:13px; margin-bottom:8px;">Need a license?</p>
+                    <a href="https://getpatchpilot.app" target="_blank"
+                       style="display:inline-block; background:var(--cyan); color:var(--bg); padding:10px 28px; border-radius:8px; font-weight:600; text-decoration:none;">
+                        Visit getpatchpilot.app
+                    </a>
+                </div>
+
+            </div>
+            <!-- END LICENSE TAB -->
 
             <!-- Keep the closing div for .tabs that was already there -->
         </div>
@@ -1422,6 +1485,8 @@
             if (tabName === 'users') loadUsers();
             if (tabName === 'schedules') loadSchedules();
             if (tabName === 'updates') loadUpdateStatus();
+            if (tabName === 'license') loadLicenseStatus();
+            if (tabName === 'backup') checkBackupLicense();
         }
         
         // Handle hash-based navigation on page load
@@ -1435,7 +1500,8 @@
                 'schedules': 'schedules',
                 'advanced': 'advanced',
                 'backup': 'backup',
-                'updates': 'updates'
+                'updates': 'updates',
+                'license': 'license'
             };
             if (hash && tabMap[hash]) {
                 // Defer to let page render first
@@ -3558,8 +3624,125 @@
             }
         });
 
+        // ── License Management ─────────────────────────────────────────────────
+        async function loadLicenseStatus() {
+            try {
+                const resp = await fetch('/api/license/status', { credentials: 'include' });
+                if (!resp.ok) throw new Error('Failed to load license status');
+                const data = await resp.json();
+
+                const badge = document.getElementById('license-status-badge');
+                const detail = document.getElementById('license-status-detail');
+                const deactivateSection = document.getElementById('license-deactivate-section');
+                const keyInput = document.getElementById('license-key-input');
+
+                if (data.status === 'active') {
+                    badge.textContent = 'Licensed';
+                    badge.style.background = 'rgba(62, 200, 110, 0.15)';
+                    badge.style.color = '#3ec86e';
+                    detail.innerHTML = 'Your PatchPilot installation is licensed. All features are enabled.';
+                    deactivateSection.style.display = 'block';
+                    keyInput.disabled = true;
+                    keyInput.placeholder = '••••• (key stored)';
+                } else if (data.status === 'trial') {
+                    const days = data.trial_days_remaining;
+                    badge.textContent = `Trial — ${days} day${days !== 1 ? 's' : ''} left`;
+                    badge.style.background = 'rgba(232, 153, 62, 0.15)';
+                    badge.style.color = '#e8993e';
+                    detail.innerHTML = `Your trial expires on <strong>${new Date(data.trial_expires_at).toLocaleDateString()}</strong>.<br>` +
+                        `Backup & restore features require an active license.<br>` +
+                        `Enter a license key below or visit <a href="https://getpatchpilot.app" target="_blank" style="color:var(--cyan)">getpatchpilot.app</a> to purchase.`;
+                    deactivateSection.style.display = 'none';
+                    keyInput.disabled = false;
+                } else if (data.status === 'trial_expired') {
+                    badge.textContent = 'Trial Expired';
+                    badge.style.background = 'rgba(232, 84, 84, 0.15)';
+                    badge.style.color = '#e85454';
+                    detail.innerHTML = `Your 14-day trial has expired. Enter a license key to continue using PatchPilot.`;
+                    deactivateSection.style.display = 'none';
+                    keyInput.disabled = false;
+                } else {
+                    badge.textContent = 'No Setup';
+                    badge.style.background = 'rgba(122, 132, 148, 0.15)';
+                    badge.style.color = '#7a8494';
+                    detail.innerHTML = 'Complete the setup wizard to start your trial.';
+                    deactivateSection.style.display = 'none';
+                }
+            } catch (e) {
+                console.error('License status error:', e);
+                document.getElementById('license-status-detail').textContent = 'Could not load license status.';
+            }
+        }
+
+        async function activateLicense() {
+            const key = document.getElementById('license-key-input').value.trim();
+            if (!key) return;
+
+            const btn = document.getElementById('license-activate-btn');
+            const msg = document.getElementById('license-activate-msg');
+            btn.disabled = true;
+            btn.textContent = 'Activating...';
+            msg.style.display = 'none';
+
+            try {
+                const resp = await fetch('/api/license/activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ license_key: key })
+                });
+                const data = await resp.json();
+
+                if (resp.ok) {
+                    msg.style.display = 'block';
+                    msg.style.color = '#3ec86e';
+                    msg.textContent = '✓ ' + data.message;
+                    loadLicenseStatus();
+                } else {
+                    msg.style.display = 'block';
+                    msg.style.color = '#e85454';
+                    msg.textContent = '✗ ' + (data.detail || 'Activation failed');
+                }
+            } catch (e) {
+                msg.style.display = 'block';
+                msg.style.color = '#e85454';
+                msg.textContent = '✗ Network error — please try again';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Activate';
+            }
+        }
+
+        async function deactivateLicense() {
+            if (!confirm('Are you sure you want to deactivate your license? You will revert to trial status.')) return;
+
+            try {
+                const resp = await fetch('/api/license/deactivate', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                const data = await resp.json();
+                alert(data.message || 'License deactivated.');
+                loadLicenseStatus();
+            } catch (e) {
+                alert('Failed to deactivate license.');
+            }
+        }
+
+        async function checkBackupLicense() {
+            try {
+                const resp = await fetch('/api/license/status', { credentials: 'include' });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const lock = document.getElementById('backup-license-lock');
+                if (!lock) return;
+                lock.style.display = (data.status === 'active') ? 'none' : 'flex';
+            } catch (e) {
+                console.warn('Backup license check failed:', e);
+            }
+        }
+
     </script>
-    <!-- Host Patch Logs Modal -->
     <div id="host-logs-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7);
          z-index:1000; align-items:center; justify-content:center; padding:20px;">
         <div style="background:var(--bg-panel, #1a1a2e); border:1px solid rgba(255,255,255,0.1);

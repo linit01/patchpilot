@@ -102,6 +102,7 @@ from backup_restore import router as backup_router, set_pool as backup_set_pool,
 from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
 from update_checker import router as update_router, periodic_update_check
+from license import router as license_router, license_set_pool
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -199,6 +200,7 @@ app.include_router(backup_router)
 app.include_router(setup_router)
 app.include_router(uninstall_router)
 app.include_router(update_router)
+app.include_router(license_router)
 
 # Pydantic models
 class PatchRequest(BaseModel):
@@ -218,6 +220,7 @@ async def startup_event():
     
     # Wire pool into backup/restore router
     backup_set_pool(pool)
+    license_set_pool(pool)
     # Wire DatabaseClient so restore can rebuild both pools after a DB drop/recreate
     backup_set_db_client(db)
     # Wire post-restore callback so restore triggers an immediate host check

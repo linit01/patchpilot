@@ -23,6 +23,7 @@ def _install_defaults() -> dict:
     }
 
 from dependencies import get_db_pool
+from license import start_trial
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/setup", tags=["setup"])
@@ -228,6 +229,9 @@ async def complete_setup(payload: SetupCompleteRequest):
                 logger.info(f"[Setup] Default SSH key '{payload.ssh_key.name}' saved")
         except Exception as e:
             logger.warning(f"[Setup] SSH key save failed (non-fatal): {e}")
+
+    # Start the 14-day trial
+    await start_trial(pool)
 
     return {
         "success": True,
