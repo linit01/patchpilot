@@ -102,7 +102,7 @@ from backup_restore import router as backup_router, set_pool as backup_set_pool,
 from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
 from update_checker import router as update_router, periodic_update_check
-from license import router as license_router, license_set_pool
+from license import router as license_router, license_set_pool, periodic_license_check
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -319,6 +319,9 @@ async def startup_event():
             return None
     asyncio.create_task(periodic_update_check(_get_setting))
     print("[STARTUP] periodic_update_check loop launched")
+
+    asyncio.create_task(periodic_license_check())
+    print("[STARTUP] periodic_license_check loop launched")
 
     # Defer initial check until the DB has hosts to check.
     # After a restore + self-restart the pools need a few seconds to
