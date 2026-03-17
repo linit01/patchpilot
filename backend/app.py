@@ -102,7 +102,7 @@ from backup_restore import router as backup_router, set_pool as backup_set_pool,
 from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
 from update_checker import router as update_router, periodic_update_check
-from license import router as license_router, license_set_pool, periodic_license_check
+from license import router as license_router, license_set_pool, periodic_license_check, ensure_trial_for_existing_installs
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -270,6 +270,9 @@ async def startup_event():
 
     # ── STEP 7: RBAC — ownership columns + role migration ─────────────────────
     await ensure_rbac_columns(pool)
+
+    # ── STEP 7b: Ensure trial exists for pre-license upgrades/restores ────────
+    await ensure_trial_for_existing_installs(pool)
 
     # ── STEP 8: Apply debug mode from settings ───────────────────────────────
     try:
