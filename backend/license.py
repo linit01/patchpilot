@@ -121,6 +121,27 @@ async def start_trial(pool):
     logger.info(f"Trial started: {now} ({TRIAL_DAYS} days)")
 
 
+async def ensure_trial_for_existing_installs(pool):
+    """
+    Called at startup. Handles upgrades from pre-license versions:
+    If users exist (setup is complete) but trial_started_at is not set,
+    start the trial now. This covers restores and upgrades from older versions.
+    """
+    trial_started = await _get_setting(pool, "trial_started_at")
+    if trial_started:
+        return  # Already has trial data — nothing to do
+
+    # Check if setup is complete (users exist)
+    try:
+        async with pool.acquire() as conn:
+            user_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        if user_count and user_count > 0:
+            logger.info("[License] Existing install detected without trial data — starting trial")
+            await start_trial(pool)
+    except Exception as e:
+        logger.warning(f"[License] Could not check for existing install: {e}")
+
+
 # ── LemonSqueezy API calls ───────────────────────────────────────────────────
 async def _ls_activate(license_key: str, instance_name: str) -> dict:
     """Call LemonSqueezy /activate endpoint."""
