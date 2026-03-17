@@ -158,15 +158,20 @@ _initial_check_done = asyncio.Event()
 
 # Create FastAPI app
 def _read_version() -> str:
-    """Read version from VERSION file (repo root or Docker /app/VERSION), env override wins."""
+    """Read version from VERSION file first, fall back to APP_VERSION env var.
+    The VERSION file is updated by push_new_build.sh and is the most accurate
+    source. APP_VERSION is baked into the image at build time and may be stale
+    after an in-app upgrade that only swaps the image tag."""
+    for path in ("VERSION", "/app/VERSION", "../VERSION"):
+        try:
+            ver = open(path).read().strip()
+            if ver:
+                return ver
+        except FileNotFoundError:
+            continue
     env_ver = os.getenv("APP_VERSION")
     if env_ver:
         return env_ver
-    for path in ("VERSION", "/app/VERSION", "../VERSION"):
-        try:
-            return open(path).read().strip()
-        except FileNotFoundError:
-            continue
     return "0.0.0-dev"
 
 _APP_VERSION = _read_version()
