@@ -4,6 +4,37 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.11.1-alpha] — 2026-03-17
+
+### Added — License & Trial System
+- **14-day trial**: starts automatically when first-run setup completes; stored in settings table
+- **Trial banner**: dashboard shows amber "Trial: X days remaining" banner with link to purchase
+- **Trial expired overlay**: full-screen blocking overlay when trial ends, with purchase link and license key entry
+- **License key activation**: Settings → License tab with status display, key input, activate/deactivate
+- **`backend/license.py`** — new module: `start_trial()`, `get_license_status()`, `enforce_license()`, `enforce_trial_active()`
+- **API endpoints**: `GET /api/license/status`, `POST /api/license/activate`, `POST /api/license/deactivate`
+- **Backup/restore gated**: create, download, upload, restore, and delete backup endpoints return 403 without an active license (trial users see a lock overlay on the Backup & Restore tab)
+- **`LICENSE`** file — proprietary software license replacing MIT
+
+### Added — Landing Page & Installer
+- **`getpatchpilot.app`** — landing page on Cloudflare Pages with LCARS-themed design, feature cards, deployment paths, and screenshot gallery with click-to-expand lightbox
+- **`curl | bash` bootstrap installer** — `curl -fsSL https://getpatchpilot.app/install.sh | bash` downloads PatchPilot via git clone or release tarball, detects piped vs interactive mode, auto-selects download method when non-interactive
+- **Web wizard is now the default** install mode (option 1 when running `./install.sh` with no flags)
+
+### Changed
+- **License badge**: README badge changed from MIT to Proprietary
+- **Install mode order**: `./install.sh` interactive menu now lists Web Wizard first (default), then Docker Compose, then K3s
+
+### Removed
+- **Orphan files**: `NOTES`, `install_dependencies.sh`, `install.html.installer`, `push_new_build.sh.old`, `CHANGELOG-v0.9.7a.md`, `k8s/install-k3s.sh.orig`, `k8s/install-k3s.sh.rej`
+
+### Security
+- **Repo sanitized**: personal data (emails, IPs, hostnames, paths) scrubbed from all files and git history via `git filter-repo`
+- **`.gitignore` hardened**: added entries for `.env`, generated certs, tarballs, and developer-only scripts
+- **GitHub security features enabled**: Dependabot alerts, secret protection, push protection
+
+---
+
 ## [0.11.0-alpha] — 2026-03-16
 
 ### Added — Multi-User Role-Based Access Control (RBAC)

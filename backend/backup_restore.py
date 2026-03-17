@@ -46,6 +46,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from auth import require_full_admin
+from license import enforce_license
 
 logger = logging.getLogger(__name__)
 
@@ -1049,6 +1050,7 @@ async def create_backup(
     Trigger a backup. Runs asynchronously in the background.
     Poll /api/backup/status for progress.
     """
+    await enforce_license(_db_pool)
     global current_operation
 
     if maintenance_mode:
@@ -1074,6 +1076,7 @@ async def create_backup(
 @router.get("/download/{filename}")
 async def download_backup(filename: str):
     """Download a specific backup archive."""
+    await enforce_license(_db_pool)
     # Sanitize filename to prevent path traversal
     safe_name = Path(filename).name
     archive_path = BACKUP_DIR / safe_name
@@ -1089,6 +1092,7 @@ async def download_backup(filename: str):
 @router.post("/upload")
 async def upload_backup(file: UploadFile = File(...)):
     """Upload a backup archive to the server for restoration."""
+    await enforce_license(_db_pool)
     if not file.filename.endswith(".tar.gz") and not file.filename.endswith(".tgz"):
         raise HTTPException(400, detail="File must be a .tar.gz or .tgz backup archive")
 
@@ -1146,6 +1150,7 @@ async def restore_backup(request: RestoreRequest, background_tasks: BackgroundTa
     ⚠️  DESTRUCTIVE: drops and recreates the database.
     Must pass confirm=true to proceed.
     """
+    await enforce_license(_db_pool)
     global current_operation
 
     if not request.confirm:
@@ -1221,6 +1226,7 @@ async def restore_backup(request: RestoreRequest, background_tasks: BackgroundTa
 @router.delete("/delete/{filename}")
 async def delete_backup(filename: str):
     """Delete a backup archive from the server."""
+    await enforce_license(_db_pool)
     safe_name = Path(filename).name
     archive_path = BACKUP_DIR / safe_name
     if not archive_path.exists() or not _is_backup_file(safe_name):

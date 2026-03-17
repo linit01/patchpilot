@@ -80,21 +80,24 @@ check_not_root() {
 select_mode() {
   [[ -n "${MODE}" ]] && return
 
+  # Default to web wizard when no flag is specified
+  # Users can still pass --docker or --k3s directly
   echo -e "${CYAN}How would you like to install PatchPilot?${NC}"
   echo ""
-  echo "  1) ${GREEN}Docker Compose${NC}  — single host, quickest setup"
-  echo "  2) ${BLUE}K3s / Kubernetes${NC} — cluster deployment with Traefik + cert-manager"
-  echo "  3) ${PURPLE}Web Wizard${NC}       — browser-based guided install (http://localhost:${WEB_PORT})"
+  echo "  1) ${PURPLE}Web Wizard${NC}       — browser-based guided install (recommended)"
+  echo "  2) ${GREEN}Docker Compose${NC}  — single host CLI install"
+  echo "  3) ${BLUE}K3s / Kubernetes${NC} — cluster deployment with Traefik + cert-manager"
   echo ""
   local choice=""
   while [[ "${choice}" != "1" && "${choice}" != "2" && "${choice}" != "3" ]]; do
-    echo -en "${CYAN}Choose [1/2/3]: ${NC}"
+    echo -en "${CYAN}Choose [1/2/3] (default: 1): ${NC}"
     read -r choice
+    [[ -z "${choice}" ]] && choice="1"
   done
   case "${choice}" in
-    1) MODE="docker" ;;
-    2) MODE="k3s" ;;
-    3) MODE="web" ;;
+    1) MODE="web" ;;
+    2) MODE="docker" ;;
+    3) MODE="k3s" ;;
   esac
 }
 

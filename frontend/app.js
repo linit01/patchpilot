@@ -58,6 +58,40 @@ let AUTO_CHECK_INTERVAL = 120;
 let countdownSeconds = AUTO_CHECK_INTERVAL;
 let countdownInterval = null;
 
+// ── License / Trial check ────────────────────────────────────────────────────
+async function checkLicense() {
+    try {
+        const resp = await fetch(`${API_BASE_URL}/license/status`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        const banner = document.getElementById('trial-banner');
+        if (!banner) return;
+
+        if (data.status === 'trial') {
+            banner.style.display = 'flex';
+            banner.className = 'trial-banner trial-active';
+            const days = data.trial_days_remaining;
+            banner.innerHTML =
+                `<span>⏱ Trial: ${days} day${days !== 1 ? 's' : ''} remaining</span>` +
+                `<a href="https://getpatchpilot.app" target="_blank">Get a license</a>`;
+        } else if (data.status === 'trial_expired') {
+            banner.style.display = 'flex';
+            banner.className = 'trial-banner trial-expired';
+            banner.innerHTML =
+                `<span>🔒 Trial expired</span>` +
+                `<a href="https://getpatchpilot.app" target="_blank">Purchase a license to continue</a>`;
+            // Show the full-screen expired overlay
+            const overlay = document.getElementById('trial-expired-overlay');
+            if (overlay) overlay.style.display = 'flex';
+        } else if (data.status === 'active') {
+            banner.style.display = 'none';
+        }
+    } catch (e) {
+        console.warn('License check failed:', e);
+    }
+}
+
 function connectPatchProgressWebSocket() {
     // Close stale connections
     if (patchProgressWS) {
@@ -355,6 +389,8 @@ async function checkAuthAndInit() {
     loadDashboard();
     await fetchRefreshInterval();
     startCountdown();
+    // Check license/trial status and show banner
+    checkLicense();
     // Fetch real version from API and update the sidebar version tag
     fetch(`${API_BASE_URL}/`)
         .then(r => r.json())
