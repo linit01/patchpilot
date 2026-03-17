@@ -407,7 +407,7 @@ async def _apply_update_k8s(target_version: str):
                 ("patchpilot-frontend", "frontend"),
             ]:
                 new_image = f"{image_repo}:{component}-{target_version}"
-                # Find the container name in the deployment
+                # Update the main container
                 rc, out, err = _run(kc + [
                     "set", "image",
                     f"deployment/{deploy}",
@@ -419,6 +419,19 @@ async def _apply_update_k8s(target_version: str):
                         f"Failed to set image on {deploy}: {err}"
                     )
                 logger.info("Updated %s → %s", deploy, new_image)
+
+                # Also update the seed-ansible init container (backend only)
+                if component == "backend":
+                    rc2, _, err2 = _run(kc + [
+                        "set", "image",
+                        f"deployment/{deploy}",
+                        f"seed-ansible={new_image}",
+                        "-n", namespace,
+                    ], timeout=30)
+                    if rc2 != 0:
+                        logger.warning("Failed to update seed-ansible init container: %s", err2)
+                    else:
+                        logger.info("Updated seed-ansible → %s", new_image)
 
         # Rollout restart to pick up new images
         _update_status["step"] = "restarting"
