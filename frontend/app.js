@@ -4,6 +4,9 @@ const API_BASE_URL = '/api';  // Use relative path in production
 // WebSocket Configuration
 const WS_BASE_URL = `ws${window.location.protocol === 'https:' ? 's' : ''}://${window.location.host}`;
 
+// Purchase URL (LemonSqueezy checkout)
+const PURCHASE_URL = 'https://getpatchpilot.app/buy';
+
 // Auth State
 let currentUser = null;
 let isAuthenticated = false;
@@ -74,13 +77,13 @@ async function checkLicense() {
             const days = data.trial_days_remaining;
             banner.innerHTML =
                 `<span>⏱ Trial: ${days} day${days !== 1 ? 's' : ''} remaining</span>` +
-                `<a href="https://getpatchpilot.app" target="_blank">Get a license</a>`;
+                `<a href="${PURCHASE_URL}" target="_blank">Get a license</a>`;
         } else if (data.status === 'trial_expired') {
             banner.style.display = 'flex';
             banner.className = 'trial-banner trial-expired';
             banner.innerHTML =
                 `<span>🔒 Trial expired</span>` +
-                `<a href="https://getpatchpilot.app" target="_blank">Purchase a license to continue</a>`;
+                `<a href="${PURCHASE_URL}" target="_blank">Purchase a license to continue</a>`;
             // Show the full-screen expired overlay
             const overlay = document.getElementById('trial-expired-overlay');
             if (overlay) overlay.style.display = 'flex';

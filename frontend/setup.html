@@ -538,6 +538,10 @@
             </div>
             <div class="step-item" data-step="7">
                 <div class="step-dot">7</div>
+                <div class="step-label">License</div>
+            </div>
+            <div class="step-item" data-step="8">
+                <div class="step-dot">8</div>
                 <div class="step-label">Done</div>
             </div>
         </div>
@@ -874,8 +878,31 @@
                 </div>
             </div>
 
-            <!-- ── STEP 7: Done ────────────────────────────────── -->
+            <!-- ── STEP 7: License Key (optional) ────────────── -->
             <div class="step-panel" id="step-7" style="display:none;">
+                <div class="card-header">
+                    <h2>License Key</h2>
+                    <p>Already have a PatchPilot license? Enter your key below to activate now. Otherwise, start your free 14-day trial.</p>
+                </div>
+                <div class="card-body">
+                    <div class="alert error" id="step7-error"></div>
+                    <div class="alert info show" style="margin-bottom:20px;">
+                        <strong>Setup complete!</strong> Your 14-day free trial is already active. You can enter a license key now or any time later from Settings.
+                    </div>
+                    <div class="form-group">
+                        <label>License Key</label>
+                        <input type="text" id="license-key-input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" style="font-family:'JetBrains Mono',monospace; font-size:13px;">
+                        <div class="hint">Paste the license key you received after purchase.</div>
+                    </div>
+                </div>
+                <div class="card-footer">
+                    <button class="btn-skip" onclick="skipLicense()">Skip — Start Free Trial</button>
+                    <button class="btn btn-primary" id="activate-btn" onclick="activateLicense()">Activate License →</button>
+                </div>
+            </div>
+
+            <!-- ── STEP 8: Done ────────────────────────────────── -->
+            <div class="step-panel" id="step-8" style="display:none;">
                 <div class="done-screen">
                     <div class="done-icon">🎉</div>
                     <h2>Setup Complete!</h2>
@@ -904,7 +931,7 @@
     <script>
         const API_BASE = '/api';
         let currentStep = 1;
-        const TOTAL_STEPS = 7;
+        const TOTAL_STEPS = 8;
 
         // ── Setup state ───────────────────────────────────────
         const state = {
@@ -1372,6 +1399,8 @@
         }
 
         // ── Submit ────────────────────────────────────────────
+        let _setupResult = null;
+
         async function submitSetup() {
             const payload = {
                 admin:    state.admin,
@@ -1395,14 +1424,62 @@
                     return;
                 }
 
-                // Success — go to done screen
+                // Success — save result and go to license step
+                _setupResult = data;
                 currentStep = 7;
                 showStep(7);
-                buildDoneScreen(data);
+
+            } catch (e) {
+                showError(6, 'Connection error. Is the backend running?');
+            }
+        }
+
+        // ── License step ─────────────────────────────────────
+        function skipLicense() {
+            currentStep = 8;
+            showStep(8);
+            buildDoneScreen(_setupResult);
+            pollBackendReady();
+        }
+
+        async function activateLicense() {
+            clearError(7);
+            const key = document.getElementById('license-key-input').value.trim();
+            if (!key) {
+                showError(7, 'Please enter a license key.');
+                return;
+            }
+
+            const btn = document.getElementById('activate-btn');
+            btn.disabled = true;
+            btn.textContent = 'Activating…';
+
+            try {
+                const res = await fetch(`${API_BASE}/license/activate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ license_key: key }),
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showError(7, data.detail || 'Activation failed. Please check your key and try again.');
+                    btn.disabled = false;
+                    btn.textContent = 'Activate License →';
+                    return;
+                }
+
+                // Success — go to done screen
+                currentStep = 8;
+                showStep(8);
+                buildDoneScreen(_setupResult);
                 pollBackendReady();
 
             } catch (e) {
-                showError(5, 'Connection error. Is the backend running?');
+                showError(7, 'Connection error. Could not reach the activation server.');
+                btn.disabled = false;
+                btn.textContent = 'Activate License →';
             }
         }
 

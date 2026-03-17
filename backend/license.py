@@ -45,6 +45,7 @@ GRACE_DAYS = int(os.getenv("PATCHPILOT_GRACE_DAYS", "30"))
 VALIDATION_INTERVAL_HOURS = int(os.getenv("PATCHPILOT_LICENSE_CHECK_HOURS", "168"))  # 7 days
 
 LS_API_URL = "https://api.lemonsqueezy.com/v1/licenses"
+PURCHASE_URL = "https://getpatchpilot.app/buy"
 
 # ── Database pool (injected at startup) ───────────────────────────────────────
 _pool = None
@@ -306,7 +307,7 @@ async def enforce_license(pool):
         raise HTTPException(
             status_code=403,
             detail="This feature requires an active PatchPilot license. "
-                   "Visit https://getpatchpilot.app to purchase."
+                   f"Visit {PURCHASE_URL} to purchase."
         )
 
 
@@ -316,7 +317,7 @@ async def enforce_trial_active(pool):
         raise HTTPException(
             status_code=403,
             detail="Your PatchPilot trial has expired. "
-                   "Enter a license key or visit https://getpatchpilot.app to continue."
+                   f"Enter a license key or visit {PURCHASE_URL} to continue."
         )
 
 
@@ -417,7 +418,7 @@ async def activate_license(req: LicenseKeyRequest):
                 status_code=400,
                 detail="This license key has reached its activation limit. "
                        "Deactivate it on your other installation first, or "
-                       "contact support at https://getpatchpilot.app"
+                       f"contact support at {PURCHASE_URL}"
             )
         raise HTTPException(status_code=400, detail=error_msg)
 
