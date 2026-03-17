@@ -4,6 +4,24 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.12.0-alpha] — 2026-03-17
+
+### Added — LemonSqueezy License Validation
+- **License activation via LemonSqueezy**: `POST /api/license/activate` calls LemonSqueezy's License API to activate the key with a unique install UUID, binding the key to one installation
+- **Machine binding**: install UUID generated on first setup, persisted in database; LemonSqueezy enforces `activation_limit: 1` — key sharing across machines is blocked
+- **License validation**: `POST /api/license/validate` endpoint for manual re-validation; confirms key status (active, expired, disabled) with LemonSqueezy
+- **License deactivation**: `POST /api/license/deactivate` calls LemonSqueezy to free the activation slot, allowing the key to be used on a different machine
+- **Periodic background validation**: every 7 days, the backend validates the license with LemonSqueezy to detect subscription expiry or admin revocation
+- **30-day grace period**: if LemonSqueezy API is unreachable, the cached validation allows continued use for up to 30 days before blocking
+- **Customer info display**: customer name and email from LemonSqueezy stored and shown in the License settings tab
+- **Subscription management**: subscription expiry, cancellation, and admin-disabled states detected via validation and reflected in the app status
+
+### Changed
+- **`backend/license.py`** rewritten: replaced placeholder "any key works" logic with full LemonSqueezy License API integration using `httpx`
+- **`backend/app.py`**: added `periodic_license_check()` background task launched at startup
+
+---
+
 ## [0.11.1-alpha] — 2026-03-17
 
 ### Added — License & Trial System
