@@ -2,12 +2,25 @@
 
 Get PatchPilot running in **under 10 minutes**.
 
+**Website:** [getpatchpilot.app](https://getpatchpilot.app)
+
+---
+
+## One-Line Install
+
+```bash
+curl -fsSL https://getpatchpilot.app/install.sh | bash
+```
+
+This downloads PatchPilot (via git clone or release tarball) and launches the web-based install wizard.
+
 ---
 
 ## Choose Your Install Mode
 
 | Mode | Best for | Time |
 |------|----------|------|
+| Web Wizard (default) | Browser-based guided setup | ~5 min |
 | Docker Compose | Single host, home lab, LAN access | ~5 min |
 | K3s / Kubernetes | Cluster deployment, HTTPS, production-grade | ~10 min |
 
@@ -69,9 +82,7 @@ To add HTTPS, put a reverse proxy in front (Nginx Proxy Manager, Traefik, Caddy,
 
 On the machine where you run the installer (your Mac or Linux workstation):
 
-- **Docker** — must be installed and **running** (used to build images here, not on the cluster)
 - **`kubectl`** — configured and pointing at your k3s cluster
-- **Docker Hub account** — `linit01/patchpilot` private repo (username + access token)
 - **Python 3** with PyYAML (`pip3 install pyyaml`)
 
 In your k3s cluster:
@@ -130,13 +141,12 @@ Everything else has safe defaults. Passwords and the Fernet encryption key are a
 ```
 
 The installer will:
-1. Verify Docker, kubectl, Python prerequisites
-2. Build backend and frontend images locally
-3. Log in to Docker Hub and push both images (`linit01/patchpilot-backend`, `linit01/patchpilot-frontend`)
-4. Create a `patchpilot-dockerhub` imagePullSecret in the cluster so k3s can pull from the private repo
-5. Generate rendered Kubernetes manifests in `k8s/.generated/`
-6. Apply them to your cluster in dependency order
-7. Wait for all deployments to roll out
+1. Verify kubectl and Python prerequisites
+2. Read configuration from `k8s/install-config.yaml`
+3. Generate rendered Kubernetes manifests in `k8s/.generated/`
+4. Pull pre-built multi-arch images from Docker Hub (public)
+5. Apply manifests to your cluster in dependency order
+6. Wait for all deployments to roll out
 
 **Dashboard:** `https://patchpilot.yourdomain.com`
 
@@ -202,6 +212,24 @@ After the first check completes you'll see:
 3. Enter the sudo password
 4. Watch the real-time progress stream
 5. Dashboard auto-refreshes on completion
+
+---
+
+## Licensing
+
+PatchPilot includes a **14-day free trial**. After the trial, a license key is required to continue using the app. Backup & restore features require an active license even during the trial.
+
+### Purchase a License
+
+Visit **[getpatchpilot.app](https://getpatchpilot.app)** — $5.99/month or $49/year.
+
+### Activate
+
+1. Go to **Settings → License**
+2. Enter your license key
+3. Click **Activate**
+
+Your license is bound to one installation. To move it, deactivate first, then re-activate on the new machine.
 
 ---
 

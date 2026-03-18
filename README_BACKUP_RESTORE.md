@@ -1,5 +1,7 @@
 # PatchPilot — Backup & Restore Feature
 
+> **Note:** Backup & restore features require an active PatchPilot license. Trial users can view the backup list but cannot create, download, upload, restore, or delete backups. Purchase a license at [getpatchpilot.app](https://getpatchpilot.app).
+
 ## What's Included
 
 | File | Purpose |

@@ -6,7 +6,7 @@
 
 **Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**
 
-![Version](https://img.shields.io/badge/version-0.11.0--alpha-blue)
+![Version](https://img.shields.io/badge/version-0.12.4--alpha-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-blue)
 
 ---
@@ -16,6 +16,7 @@
 - [Features](#features)
 - [Architecture](#architecture)
 - [Installation](#installation)
+- [Licensing](#licensing)
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Updating](#updating)
@@ -57,6 +58,15 @@
 - **Standalone encryption key export** — Key file written alongside the backup tarball for easy retrieval
 - **Smart retention policy** — Configurable retain count; uninstall backups excluded from count; companion key files cleaned up; at least one encryption-key-bearing backup preserved
 - **Web UI and CLI** — Create, download, upload (.tgz and .tar.gz), and restore backups from Settings → Backup & Restore
+- **License-gated** — Backup features require an active license (trial users see a lock overlay)
+
+### Licensing & Trial
+- **14-day free trial** — Starts automatically on first-run setup; full functionality except backup/restore
+- **LemonSqueezy integration** — License keys validated via LemonSqueezy License API with machine binding
+- **Activation limit** — Each key activates on one installation; deactivate to move to a new machine
+- **Periodic validation** — Background check every 7 days confirms license status with LemonSqueezy
+- **30-day grace period** — Offline installations continue working for 30 days between validations
+- **Subscription management** — Expiry, cancellation, and admin-disabled states detected automatically
 
 ---
 
@@ -110,21 +120,23 @@ PatchPilot ships with a single installer that supports multiple deployment modes
 |-------------|-------|
 | Docker (Desktop or Engine) | Must be running |
 | Python 3.8+ | For config parsing and key generation |
-| Git | To clone the repo |
+| Git | To clone the repo (or use the curl installer) |
 
 ### Quick Install
 
 ```bash
+# One-line installer (clone or tarball — auto-detected)
+curl -fsSL https://getpatchpilot.app/install.sh | bash
+
+# Or clone and run manually
 git clone https://github.com/linit01/patchpilot.git
 cd patchpilot
-
-# Interactive web-based installer (recommended)
-./install.sh --web
-
-# Or specify directly
-./install.sh --docker   # Docker Compose
-./install.sh --k3s      # K3s / Kubernetes
+./install.sh              # Web wizard (default)
+./install.sh --docker     # Docker Compose
+./install.sh --k3s        # K3s / Kubernetes
 ```
+
+Visit **[getpatchpilot.app](https://getpatchpilot.app)** for screenshots and full details.
 
 ### Docker Compose
 
@@ -133,6 +145,30 @@ The installer generates a Fernet encryption key, writes `.env`, pulls pre-built 
 ### K3s / Kubernetes
 
 See **[KUBERNETES.md](KUBERNETES.md)** for the full step-by-step guide.
+
+---
+
+## Licensing
+
+PatchPilot includes a **14-day free trial** with full functionality (except backup/restore). After the trial, a license key is required.
+
+### Pricing
+
+| Plan | Price |
+|------|-------|
+| Monthly | $5.99/month |
+| Annual | $49/year (save 32%) |
+
+Purchase at **[getpatchpilot.app](https://getpatchpilot.app)** or via the PatchPilot store at `patchpilot.lemonsqueezy.com`.
+
+### Activating a License
+
+1. Purchase a subscription — you'll receive a license key (UUID format)
+2. Open **Settings → License** in PatchPilot
+3. Enter the key and click **Activate**
+4. PatchPilot validates the key with LemonSqueezy and binds it to your installation
+
+Each key activates on **one installation**. To move your license to a new machine, deactivate it first in Settings → License, then re-activate on the new installation.
 
 ---
 
@@ -237,9 +273,17 @@ GET  /api/updates/progress     Poll progress
 ### Backup & Restore
 ```
 GET  /api/backup/list          List backups
-POST /api/backup/create        Create backup
-POST /api/backup/restore/{f}   Restore from backup
+POST /api/backup/create        Create backup (license required)
+POST /api/backup/restore/{f}   Restore from backup (license required)
 GET  /api/backup/health        Backup health info
+```
+
+### License
+```
+GET  /api/license/status       Trial/license status
+POST /api/license/activate     Activate license key (LemonSqueezy)
+POST /api/license/deactivate   Deactivate and free activation slot
+POST /api/license/validate     Manual re-validation
 ```
 
 ### WebSocket
@@ -270,6 +314,7 @@ patchpilot/
 │   ├── app.py, ansible_runner.py, database.py, auth.py, rbac.py
 │   ├── settings_api.py, schedules_api.py, setup_api.py
 │   ├── backup_restore.py, uninstall_api.py, update_checker.py
+│   ├── license.py              # Trial/license management (LemonSqueezy)
 │   └── encryption_utils.py, requirements.txt
 ├── frontend/                   # Static HTML/JS/CSS dashboard
 ├── k8s/                        # Kubernetes manifests + installer
@@ -278,7 +323,7 @@ patchpilot/
 ├── .github/workflows/          # CI/CD pipeline
 ├── Dockerfile, Dockerfile.frontend
 ├── docker-compose.yml, docker-compose.developer.yml
-├── install.sh, nginx.conf, VERSION
+├── install.sh, nginx.conf, VERSION, LICENSE
 └── database-schema.sql
 ```
 
