@@ -1,7 +1,8 @@
 # PatchPilot — Project Summary
 
-**Version:** 0.11.0-alpha
-**Status:** Active development — approaching public release
+**Version:** 0.12.4-alpha
+**Status:** Active development — commercial licensing active, trial available
+**Website:** [getpatchpilot.app](https://getpatchpilot.app)
 
 ---
 
@@ -44,6 +45,7 @@ PatchPilot is a self-hosted patch management dashboard for Linux and macOS syste
 - **In-app updates** — automatic release checking (GitHub + Docker Hub fallback) with one-click updates for both Docker and Kubernetes
 - **Debug logging toggle** — runtime-switchable verbose logging via Settings → Advanced (no restart required)
 - **Backup & restore** — full application backup with optional encryption key export, retention policy with uninstall backup exclusion
+- **Licensing & trial** — 14-day free trial; LemonSqueezy-validated license keys with machine binding, periodic validation (7-day), 30-day grace period; backup/restore gated behind license
 - **Setup wizard** — first-run wizard covering admin account, settings, backup storage, and default SSH key
 - **In-app uninstall** — web-based uninstaller for both Docker Compose and Kubernetes deployments
 - **Control node protection** — detects when a managed host is also running PatchPilot; never auto-reboots it
@@ -64,6 +66,7 @@ patchpilot/
 │   ├── backup_restore.py       # Backup / restore logic
 │   ├── uninstall_api.py        # In-app uninstall (Docker + k8s)
 │   ├── update_checker.py       # Release checker + update execution (GitHub + Docker Hub)
+│   ├── license.py              # Trial/license management (LemonSqueezy integration)
 │   ├── encryption_utils.py     # Fernet encrypt/decrypt helpers
 │   └── requirements.txt
 ├── frontend/
@@ -80,8 +83,8 @@ patchpilot/
 │   └── templates/              # Kubernetes manifest templates (00–09)
 ├── webinstall/                 # Web-based installer UI
 ├── scripts/
-│   ├── push_new_build.sh       # Release tagging helper
-│   └── claude-context.sh       # Codebase export for AI sessions
+│   ├── claude-context.sh       # Codebase export for AI sessions
+│   └── sanitize-for-public.sh  # Repo sanitization for public release
 ├── .github/workflows/
 │   └── docker-build-push.yml   # CI: multi-arch build + auto GitHub Release
 ├── Dockerfile                  # Backend image
@@ -89,13 +92,16 @@ patchpilot/
 ├── docker-compose.yml          # Docker Compose deployment
 ├── docker-compose.developer.yml # Developer override (local builds)
 ├── nginx.conf                  # Nginx config for Docker Compose mode
-├── install.sh                  # Main installer (Docker, K3s, or Web)
+├── install.sh                  # Main installer (Docker, K3s, or Web — web wizard default)
 ├── VERSION                     # Current version string
+├── LICENSE                     # Proprietary software license
 └── database-schema.sql
 ```
 
 ## Roadmap
 
+- [ ] Windows patching (OS updates + winget app management)
+- [ ] iOS / mobile app (or responsive web UI)
 - [ ] Email / Slack / webhook notifications on patch completion or failures
 - [ ] Prometheus metrics endpoint + Grafana dashboard
 - [ ] Package-level selection (patch individual packages, not whole host)
@@ -104,3 +110,7 @@ patchpilot/
 - [ ] Helm chart for easier k3s deployment
 - [x] Multi-user RBAC ← completed in v0.11.0
 - [x] Debug logging toggle ← completed in v0.11.0
+- [x] License & trial system ← completed in v0.11.1
+- [x] LemonSqueezy license validation ← completed in v0.12.0
+- [x] Landing page & curl installer ← completed in v0.11.1
+- [x] Repo sanitization & proprietary license ← completed in v0.11.1
