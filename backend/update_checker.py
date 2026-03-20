@@ -50,16 +50,22 @@ GITHUB_OWNER = os.getenv("GITHUB_REPO_OWNER", "linit01")
 GITHUB_REPO = os.getenv("GITHUB_REPO_NAME", "patchpilot")
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
 
-# Read current app version (same logic as app.py)
+# Read current app version (same logic as app.py — VERSION file first, env fallback)
 def _read_version() -> str:
+    """Read version from VERSION file first, fall back to APP_VERSION env var.
+    The VERSION file is updated by push_new_build.sh and is the most accurate
+    source. APP_VERSION is baked into the deployment manifest and may be stale
+    after an in-app upgrade that only swaps the image tag."""
+    for path in ("VERSION", "/app/VERSION", "../VERSION"):
+        try:
+            ver = open(path).read().strip()
+            if ver:
+                return ver
+        except FileNotFoundError:
+            continue
     env_ver = os.getenv("APP_VERSION")
     if env_ver:
         return env_ver
-    for path in ("VERSION", "/app/VERSION", "../VERSION"):
-        try:
-            return open(path).read().strip()
-        except FileNotFoundError:
-            continue
     return "0.0.0-dev"
 
 CURRENT_VERSION = _read_version()
@@ -432,6 +438,30 @@ async def _apply_update_k8s(target_version: str):
                         logger.warning("Failed to update seed-ansible init container: %s", err2)
                     else:
                         logger.info("Updated seed-ansible → %s", new_image)
+
+            # ── Patch APP_VERSION env var on backend deployment ────────────
+            # kubectl set image only updates image tags; the APP_VERSION env
+            # var in the deployment spec must also be updated so the new pod
+            # reports the correct version.
+            _update_status["step"] = "patching_env"
+            _update_status["message"] = "Updating APP_VERSION in deployment..."
+
+            patch_json = json.dumps({
+                "spec": {"template": {"spec": {"containers": [{
+                    "name": "backend",
+                    "env": [{"name": "APP_VERSION", "value": target_version}],
+                }]}}}
+            })
+            rc, _, err = _run(kc + [
+                "patch", "deployment", "patchpilot-backend",
+                "-n", namespace,
+                "--type", "strategic",
+                "-p", patch_json,
+            ], timeout=30)
+            if rc != 0:
+                logger.warning("Failed to patch APP_VERSION env: %s", err)
+            else:
+                logger.info("Patched APP_VERSION → %s", target_version)
 
         # Rollout restart to pick up new images
         _update_status["step"] = "restarting"
