@@ -712,10 +712,11 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
             print(f"  WARNING: No auth method resolved! effective_key_type={effective_key_type}")
         
         # Add user@host and command
+        # Use a cross-platform command: 'hostname' works on Linux, macOS, and Windows.
         ssh_cmd.append(f"{request.ssh_user}@{request.hostname}")
-        ssh_cmd.append("uname -a")
+        ssh_cmd.append("hostname")
         
-        print(f"  Running: ssh -p {request.ssh_port} -i <keyfile> {request.ssh_user}@{request.hostname} uname -a")
+        print(f"  Running: ssh -p {request.ssh_port} -i <keyfile> {request.ssh_user}@{request.hostname} hostname")
         
         result = subprocess.run(
             ssh_cmd,
@@ -729,7 +730,22 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
         print(f"  SSH stderr={result.stderr.strip()[:200]}")
         
         if result.returncode == 0:
-            uname_output = result.stdout.strip()
+            system_info = result.stdout.strip()
+
+            # Quick OS detection: run 'echo $env:OS' which PowerShell expands
+            # to 'Windows_NT' on Windows; bash prints the literal string.
+            detected_os = None
+            try:
+                os_cmd = ssh_cmd[:-1] + ["echo $env:OS"]
+                os_result = subprocess.run(os_cmd, capture_output=True, text=True, timeout=10)
+                if os_result.returncode == 0:
+                    os_out = os_result.stdout.strip()
+                    print(f"  OS detect: '{os_out}'")
+                    if "Windows_NT" in os_out:
+                        detected_os = "Windows"
+            except Exception as e:
+                print(f"  OS detect failed: {e}")
+
             return TestConnectionResponse(
                 success=True,
                 message=f"Successfully connected to {request.hostname}",
@@ -737,7 +753,8 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
                     "hostname": request.hostname,
                     "port": request.ssh_port,
                     "user": request.ssh_user,
-                    "system_info": uname_output
+                    "system_info": system_info,
+                    "detected_os": detected_os
                 }
             )
         else:
@@ -780,8 +797,8 @@ async def _test_connection_password(request: TestConnectionRequest) -> TestConne
             password=request.ssh_password,
             timeout=10,
         )
-        stdin, stdout, stderr = client.exec_command("uname -a")
-        uname_output = stdout.read().decode().strip()
+        stdin, stdout, stderr = client.exec_command("hostname")
+        system_info = stdout.read().decode().strip()
         client.close()
         
         return TestConnectionResponse(
@@ -791,7 +808,7 @@ async def _test_connection_password(request: TestConnectionRequest) -> TestConne
                 "hostname": request.hostname,
                 "port": request.ssh_port,
                 "user": request.ssh_user,
-                "system_info": uname_output
+                "system_info": system_info
             }
         )
     except Exception as e:

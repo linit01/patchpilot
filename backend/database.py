@@ -72,9 +72,9 @@ class DatabaseClient:
             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
             ON CONFLICT (hostname)
             DO UPDATE SET
-                ip_address = EXCLUDED.ip_address,
-                os_type = EXCLUDED.os_type,
-                os_family = EXCLUDED.os_family,
+                ip_address = CASE WHEN EXCLUDED.ip_address != '' THEN EXCLUDED.ip_address ELSE hosts.ip_address END,
+                os_type = CASE WHEN EXCLUDED.os_type != '' THEN EXCLUDED.os_type ELSE hosts.os_type END,
+                os_family = CASE WHEN EXCLUDED.os_family != '' THEN EXCLUDED.os_family ELSE hosts.os_family END,
                 status = EXCLUDED.status,
                 total_updates = EXCLUDED.total_updates,
                 reboot_required = EXCLUDED.reboot_required,

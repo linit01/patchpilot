@@ -68,6 +68,12 @@ RUN pip install --no-cache-dir \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ── Ansible collections ───────────────────────────────────────────────────────
+# ansible.windows: required for managing Windows hosts over SSH (setup, win_*
+# modules, PowerShell shell plugin). Without this, Ansible cannot gather facts
+# or execute modules on Windows targets.
+RUN ansible-galaxy collection install ansible.windows
+
 # ── Application code ──────────────────────────────────────────────────────────
 COPY backend/ .
 COPY ansible/ /ansible-src/

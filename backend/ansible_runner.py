@@ -158,6 +158,17 @@ class AnsibleRunner:
                     except Exception as e:
                         logger.warning(f"Failed to decrypt password for {hostname}: {e}")
 
+                # Windows hosts require PowerShell as the shell type for Ansible
+                # over SSH. os_family is set after the first successful host check
+                # via gather_facts. For brand-new hosts, the user must set os_type
+                # to 'Windows' manually (or we detect it from the connection test).
+                os_family = (host.get('os_family') or '').strip()
+                os_type = (host.get('os_type') or '').strip()
+                if os_family == 'Windows' or os_type.startswith('Microsoft Windows'):
+                    host_vars['ansible_shell_type'] = 'powershell'
+                    host_vars['ansible_connection'] = 'ssh'
+                    host_vars['ansible_become_method'] = 'runas'
+
                 inventory_data['all']['hosts'][hostname] = host_vars
 
             logger.debug(f"Dynamic inventory for hosts: {list(inventory_data['all']['hosts'].keys())}")
@@ -671,6 +682,9 @@ class AnsibleRunner:
                     else:
                         # Clean run — mark reachable; will be refined to up-to-date or
                         # updates-available once task output is parsed below.
+                        # NOTE: setdefault is intentional — HOSTSTATUS (emitted by the
+                        # playbook) takes priority over RECAP because ignore_unreachable
+                        # masks genuine connection failures in the RECAP counters.
                         hosts_data[hostname].setdefault('status', 'up-to-date')
                         print(f"[PARSER] {hostname}: RECAP ok={match.group(2)} failed=0 unreachable=0 → reachable")
             
