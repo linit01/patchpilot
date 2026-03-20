@@ -822,6 +822,31 @@ class AnsibleRunner:
                                     'available_version': mas_match.group(3),
                                     'update_type': 'mas'
                                 })
+                            else:
+                                # Winget format: "AppName (Package.Id) 1.0.0 -> 2.0.0"
+                                # Note: winget truncates long names with ellipsis which
+                                # gets mangled into garbage Unicode over SSH, so we use
+                                # a permissive approach: match "ver -> ver" at the end,
+                                # then extract the dotted package ID separately.
+                                winget_ver = re.search(r'([\d][\d\.]+)\s+->\s+([\d][\d\.]+)\s*$', package_data)
+                                if winget_ver:
+                                    # Extract dotted package ID (e.g. Microsoft.Teams)
+                                    winget_id = re.search(r'[\s\(]([A-Za-z][\w\-]*\.[A-Za-z][\w\.\-\+]*)', package_data)
+                                    pkg_name = winget_id.group(1) if winget_id else package_data.split('(')[0].strip()[:50]
+                                    hosts_data[hostname]['update_details'].append({
+                                        'package_name': pkg_name,
+                                        'current_version': winget_ver.group(1),
+                                        'available_version': winget_ver.group(2),
+                                        'update_type': 'winget'
+                                    })
+                                else:
+                                    # Unknown format -- store raw line as a generic package
+                                    hosts_data[hostname]['update_details'].append({
+                                        'package_name': package_data[:80],
+                                        'current_version': 'unknown',
+                                        'available_version': 'available',
+                                        'update_type': 'unknown'
+                                    })
 
         # Look for reboot required status
             if 'Check if reboot required' in line:

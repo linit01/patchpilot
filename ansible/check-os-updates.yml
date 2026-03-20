@@ -226,6 +226,104 @@
       changed_when: false
       failed_when: false
 
+    # ── Windows ────────────────────────────────────────────────────────────────
+    # winget's COM/MSIX sandbox requires a full interactive user session;
+    # it cannot run directly in a non-interactive SSH session for a service
+    # account.  The Enable-PatchPilotSSH.ps1 setup script creates a
+    # scheduled task (PP-WingetCheck) that runs as the user who installed
+    # PatchPilot (who has a working winget context).  The task writes
+    # results to C:\ProgramData\PatchPilot\winget-check.txt.
+    #
+    # This playbook triggers the task, waits for completion, then reads
+    # and parses the output file.
+    - name: Run winget check via scheduled task (Windows)
+      win_shell: |
+        $ErrorActionPreference = 'SilentlyContinue'
+        $outputFile = "C:\ProgramData\PatchPilot\winget-check.txt"
+
+        # Trigger the scheduled task created by the setup script
+        $task = Get-ScheduledTask -TaskName "PP-WingetCheck" -ErrorAction SilentlyContinue
+        if (-not $task) {
+          Write-Output "NO_UPDATES"
+          Write-Output "WINGET_TASK_MISSING: PP-WingetCheck scheduled task not found. Re-run Enable-PatchPilotSSH.ps1."
+          exit 0
+        }
+
+        # Remove stale output
+        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
+
+        # Start the task and wait for it to complete
+        Start-ScheduledTask -TaskName "PP-WingetCheck"
+        $timeout = 60
+        $elapsed = 0
+        while ($elapsed -lt $timeout) {
+          Start-Sleep -Seconds 3
+          $elapsed += 3
+          $state = (Get-ScheduledTask -TaskName "PP-WingetCheck").State
+          if ($state -ne "Running") { break }
+        }
+
+        # Read and parse the output file
+        if (-not (Test-Path $outputFile)) {
+          Write-Output "NO_UPDATES"
+          exit 0
+        }
+
+        $raw = Get-Content $outputFile -Raw -Encoding UTF8
+        $lines = $raw -split "`n"
+
+        # Find the header line
+        $headerIdx = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+          if ($lines[$i] -match '^\s*Name\s+Id\s+Version\s+Available') {
+            $headerIdx = $i
+            break
+          }
+        }
+        if ($headerIdx -lt 0) {
+          Write-Output "NO_UPDATES"
+          exit 0
+        }
+
+        # Find column positions from the header
+        $header     = $lines[$headerIdx]
+        $idStart    = $header.IndexOf("Id")
+        $verStart   = $header.IndexOf("Version")
+        $availStart = $header.IndexOf("Available")
+        $srcStart   = $header.IndexOf("Source")
+
+        # Parse data lines (skip header + separator)
+        $count = 0
+        for ($i = $headerIdx + 1; $i -lt $lines.Count; $i++) {
+          $line = $lines[$i]
+          if ($line -match '^\s*-+' -or $line -match '^\s*$' -or $line -match 'upgrades? available') {
+            continue
+          }
+          if ($line.Length -le $availStart) { continue }
+
+          $name = $line.Substring(0, $idStart).Trim()
+          $id   = $line.Substring($idStart, $verStart - $idStart).Trim()
+          $ver  = $line.Substring($verStart, $availStart - $verStart).Trim()
+          if ($srcStart -gt 0 -and $line.Length -gt $srcStart) {
+            $avail = $line.Substring($availStart, $srcStart - $availStart).Trim()
+          } else {
+            $avail = $line.Substring($availStart).Trim()
+          }
+
+          if ($id -and $avail) {
+            Write-Output "$name ($id) $ver -> $avail"
+            $count++
+          }
+        }
+
+        if ($count -eq 0) {
+          Write-Output "NO_UPDATES"
+        }
+      register: winget_updates
+      when: ansible_facts['os_family'] == "Windows"
+      changed_when: false
+      failed_when: false
+
     # ── Emit package details ───────────────────────────────────────────────────
     - name: Emit Debian package details
       debug:
@@ -255,6 +353,17 @@
         - mas_updates.stdout_lines is defined
         - mas_updates.stdout_lines | length > 0
 
+    - name: Emit winget package details (Windows)
+      debug:
+        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ winget_updates.stdout_lines | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winget_updates is defined
+        - winget_updates.stdout_lines is defined
+        - winget_updates.stdout_lines | length > 0
+        - winget_updates.stdout_lines[0] != "NO_UPDATES"
+
     # ── Status ─────────────────────────────────────────────────────────────────
     - name: Show update status
       debug:
@@ -268,10 +377,12 @@
             macOS system updates available
           {% elif mas_updates is defined and mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}
             {{ mas_updates.stdout_lines | length }} App Store updates available
+          {% elif winget_updates is defined and winget_updates.stdout_lines is defined and winget_updates.stdout_lines | length > 0 and winget_updates.stdout_lines[0] != "NO_UPDATES" %}
+            {{ winget_updates.stdout_lines | length }} winget updates available
           {% else %}
             Up to date
           {% endif %}
-      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or (mas_updates is defined and mas_updates.stdout_lines is defined)
+      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or (mas_updates is defined and mas_updates.stdout_lines is defined) or (winget_updates is defined and winget_updates.stdout_lines is defined)
 
     # =========================================================================
     # APPLY UPDATES  (--tags apply-updates)
@@ -466,6 +577,29 @@
       when:
         - ansible_facts['os_family'] == "Darwin"
         - (mas_bin_path is not defined or mas_bin_path | default('') == "") or not mas_enabled
+      tags: ['never', 'apply-updates']
+
+    # ── Windows: Apply winget updates ──────────────────────────────────────────
+    - name: Apply winget updates (Windows)
+      win_shell: |
+        $ErrorActionPreference = 'SilentlyContinue'
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $result = winget upgrade --all --include-unknown --accept-source-agreements --accept-package-agreements --silent 2>&1
+        Write-Output $result
+      register: winget_upgrade_result
+      when: ansible_facts['os_family'] == "Windows"
+      failed_when: false
+      tags: ['never', 'apply-updates']
+
+    - name: Show winget update results (Windows)
+      debug:
+        msg: "{{ winget_upgrade_result.stdout_lines | default(['(no output)']) | join(' | ') }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winget_upgrade_result is defined
+        - winget_upgrade_result is not skipped
+        - winget_upgrade_result.stdout is defined
+        - winget_upgrade_result.stdout | length > 0
       tags: ['never', 'apply-updates']
 
     # ── Reboot handling ────────────────────────────────────────────────────────
