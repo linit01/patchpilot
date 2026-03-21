@@ -746,6 +746,27 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
             except Exception as e:
                 print(f"  OS detect failed: {e}")
 
+            # Auto-set os_family in DB for Windows hosts so the first Ansible
+            # check gets the right shell_type without manual SQL.
+            if detected_os == "Windows":
+                try:
+                    async with pool.acquire() as conn:
+                        # Update by host_id if provided, otherwise by hostname
+                        if request.host_id:
+                            await conn.execute(
+                                "UPDATE hosts SET os_family = 'Windows' WHERE id = $1 AND (os_family IS NULL OR os_family = '')",
+                                request.host_id
+                            )
+                            print(f"  Auto-set os_family=Windows for host_id={request.host_id}")
+                        else:
+                            await conn.execute(
+                                "UPDATE hosts SET os_family = 'Windows' WHERE hostname = $1 AND (os_family IS NULL OR os_family = '')",
+                                request.hostname
+                            )
+                            print(f"  Auto-set os_family=Windows for hostname={request.hostname}")
+                except Exception as e:
+                    print(f"  Failed to auto-set os_family: {e}")
+
             return TestConnectionResponse(
                 success=True,
                 message=f"Successfully connected to {request.hostname}",
