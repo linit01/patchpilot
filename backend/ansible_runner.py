@@ -778,6 +778,16 @@ class AnsibleRunner:
                 if match:
                     hostname = match.group(1)
                     package_data = match.group(2).strip().strip('"')
+
+                    # Skip known noise lines from softwareupdate -l output
+                    # that should never have been emitted as PACKAGE lines.
+                    _noise = package_data.lower().strip()
+                    if (_noise.startswith('software update tool') or
+                        _noise.startswith('finding available software') or
+                        _noise.startswith('no new software available') or
+                        _noise.startswith('software update found') or
+                        _noise == ''):
+                        continue
                     
                     if hostname not in hosts_data:
                         hosts_data[hostname] = {'status': 'updates-available', 'total_updates': 0, 'update_details': []}

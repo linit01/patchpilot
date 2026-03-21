@@ -340,7 +340,7 @@
     - name: Emit macOS system update details
       debug:
         msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ macos_updates.stdout_lines | default([]) }}"
+      loop: "{{ macos_updates.stdout_lines | default([]) | select('match', '^\\s*\\*') | list }}"
       when: ansible_facts['os_family'] == "Darwin" and macos_updates.stdout_lines is defined and macos_updates.stdout_lines | length > 0
 
     - name: Emit App Store package details
@@ -373,8 +373,8 @@
             {{ apt_updates.stdout_lines | length }} apt updates available
           {% elif brew_updates.stdout_lines is defined and brew_updates.stdout_lines | length > 0 %}
             {{ brew_updates.stdout_lines | length }} brew updates available
-          {% elif macos_updates.stdout is defined and 'No new software available' not in macos_updates.stdout %}
-            macOS system updates available
+          {% elif macos_updates.stdout_lines is defined and macos_updates.stdout_lines | select('match', '^\\s*\\*') | list | length > 0 %}
+            {{ macos_updates.stdout_lines | select('match', '^\\s*\\*') | list | length }} macOS system updates available
           {% elif mas_updates is defined and mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}
             {{ mas_updates.stdout_lines | length }} App Store updates available
           {% elif winget_updates is defined and winget_updates.stdout_lines is defined and winget_updates.stdout_lines | length > 0 and winget_updates.stdout_lines[0] != "NO_UPDATES" %}
