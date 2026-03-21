@@ -4,6 +4,30 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.13.1-alpha] — 2026-03-21
+
+### Added — Windows Host Support (Phase 1)
+- **Windows client management via SSH**: PatchPilot can now manage Windows 10/11 hosts over OpenSSH with PowerShell as the remote shell
+- **`Enable-PatchPilotSSH.ps1` setup script**: creates a dedicated `patchpilot` local admin service account (hidden from login screen, random password, key-only auth), installs/configures OpenSSH Server, sets firewall rules (all profiles), configures `sshd_config` for public key auth, sets PowerShell as default SSH shell, installs the SSH public key in both user and `administrators_authorized_keys`, optionally installs PSWindowsUpdate module, creates `PP-WingetCheck` scheduled task for winget update detection, and initializes winget source agreements — all in a single 10-step automated script
+- **Winget app update detection**: Ansible playbook checks for available winget updates on Windows hosts via a scheduled task mechanism (required because winget's MSIX sandbox does not work in non-interactive SSH sessions); detected updates are displayed in the dashboard with `WINGET` type badges, package IDs, and version numbers
+- **Winget app patching**: `PATCH THIS HOST` applies all available winget updates via `winget upgrade --all` using the scheduled task approach; temporarily swaps the `PP-WingetCheck` task action to an apply command, waits up to 30 minutes for completion with Ansible async/poll heartbeats, captures full output, then restores the original check action
+- **`ansible.windows` collection**: added to Dockerfile so Windows fact gathering and `win_shell` module work out of the box
+- **Auto-detect Windows OS on connection test**: the SSH connection test runs `echo $env:OS` to detect Windows hosts and automatically sets `os_family=Windows` in the database, eliminating manual bootstrapping
+- **IP address fallback**: when `ansible_default_ipv4` is unavailable (common on Windows), the parser uses the hostname as the IP address if it's already an IPv4 address
+
+### Changed
+- **`backend/ansible_runner.py`**: Windows hosts receive `ansible_shell_type=powershell`, `ansible_connection=ssh`, and `ansible_become_method=runas` in the dynamic inventory; HOSTINFO regex updated to capture multi-word OS names (e.g., "Microsoft Windows 11 Home"); winget package parser added with permissive regex that handles winget's Unicode-truncated names; PACKAGE line parser now strips trailing JSON quotes
+- **`backend/settings_api.py`**: connection test command changed from `uname -a` (Linux-only) to `hostname` (cross-platform); OS detection via `echo $env:OS` with auto-write to database
+- **`backend/database.py`**: `upsert_host` uses `CASE WHEN` to preserve existing `os_family`, `os_type`, and `ip_address` when new values are empty — prevents failed checks from blanking known OS info
+- **`ansible/check-os-updates.yml`**: added Windows winget check tasks (via scheduled task trigger, output file parsing), winget package emit, winget status reporting, and winget apply-updates tasks
+- **`Dockerfile`**: added `RUN ansible-galaxy collection install ansible.windows`
+
+### Fixed
+- **`backend/update_checker.py`**: `_read_version()` now matches `app.py` priority order (VERSION file first, `APP_VERSION` env fallback) — previously the reversed order caused the update checker to report stale versions after in-app upgrades
+- **`backend/update_checker.py`**: k8s `_apply_update_k8s()` now patches the `APP_VERSION` environment variable on the backend deployment via `kubectl patch` with strategic merge — previously only the image tag was updated, leaving the env var stale
+
+---
+
 ## [0.12.0-alpha] — 2026-03-17
 
 ### Added — LemonSqueezy License Validation

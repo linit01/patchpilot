@@ -711,11 +711,11 @@ class AnsibleRunner:
 
             # Look for host info (HOSTINFO: hostname | IP: x.x.x.x | OS: Ubuntu | Family: Debian)
             if 'HOSTINFO:' in line:
-                match = re.search(r'HOSTINFO:\s*([^\s|"]+)\s*\|\s*IP:\s*([^\s|"]+)\s*\|\s*OS:\s*([^\s|"]+)\s*\|\s*Family:\s*([^\s|"]+)', line)
+                match = re.search(r'HOSTINFO:\s*([^\s|"]+)\s*\|\s*IP:\s*([^\s|"]+)\s*\|\s*OS:\s*([^|"]+?)\s*\|\s*Family:\s*([^\s|"]+)', line)
                 if match:
                     hostname = match.group(1)
                     ip_addr = match.group(2)
-                    os_type = match.group(3)
+                    os_type = match.group(3).strip()
                     os_family = match.group(4)
                     
                     if hostname not in hosts_data:
@@ -723,6 +723,9 @@ class AnsibleRunner:
                     
                     if ip_addr != 'N/A':
                         hosts_data[hostname]['ip_address'] = ip_addr
+                    elif re.match(r'^\d+\.\d+\.\d+\.\d+$', hostname):
+                        # Hostname is already an IPv4 address — use it
+                        hosts_data[hostname]['ip_address'] = hostname
                     hosts_data[hostname]['os_type'] = os_type
                     hosts_data[hostname]['os_family'] = os_family
                     current_host = hostname
@@ -774,7 +777,7 @@ class AnsibleRunner:
                 match = re.search(r'PACKAGE:\s*([^\s|]+)\s*\|\s*(.+)', line)
                 if match:
                     hostname = match.group(1)
-                    package_data = match.group(2).strip()
+                    package_data = match.group(2).strip().strip('"')
                     
                     if hostname not in hosts_data:
                         hosts_data[hostname] = {'status': 'updates-available', 'total_updates': 0, 'update_details': []}

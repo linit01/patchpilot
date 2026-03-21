@@ -580,15 +580,70 @@
       tags: ['never', 'apply-updates']
 
     # ── Windows: Apply winget updates ──────────────────────────────────────────
+    # Reuse the PP-WingetCheck scheduled task (which already has stored user
+    # credentials) by temporarily swapping its action to run winget upgrade.
+    # After the apply completes, restore the original check action.
     - name: Apply winget updates (Windows)
       win_shell: |
         $ErrorActionPreference = 'SilentlyContinue'
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $result = winget upgrade --all --include-unknown --accept-source-agreements --accept-package-agreements --silent 2>&1
-        Write-Output $result
+        $taskName = "PP-WingetCheck"
+        $outputFile = "C:\ProgramData\PatchPilot\winget-apply.txt"
+        $checkOutputFile = "C:\ProgramData\PatchPilot\winget-check.txt"
+
+        # Verify the task exists
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if (-not $task) {
+          Write-Output "WINGET_TASK_MISSING: $taskName not found."
+          exit 1
+        }
+
+        # Save the original action so we can restore it after apply
+        $originalAction = $task.Actions[0]
+
+        # Swap action to the apply command
+        $applyCmd = "winget upgrade --all --include-unknown --accept-source-agreements --accept-package-agreements --silent --force 2>&1 | Out-File '$outputFile' -Encoding UTF8"
+        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$applyCmd`""
+        Set-ScheduledTask -TaskName $taskName -Action $applyAction | Out-Null
+
+        # Remove stale output
+        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
+
+        # Run the apply
+        Start-ScheduledTask -TaskName $taskName
+        $timeout = 1800
+        $elapsed = 0
+        while ($elapsed -lt $timeout) {
+          Start-Sleep -Seconds 10
+          $elapsed += 10
+          $state = (Get-ScheduledTask -TaskName $taskName).State
+          if ($state -ne "Running") { break }
+        }
+
+        if ($elapsed -ge $timeout) {
+          Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+          Write-Output "WARNING: Winget apply timed out after 30 minutes."
+        }
+
+        # Restore the original check action
+        $checkCmd = "winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File '$checkOutputFile' -Encoding UTF8"
+        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$checkCmd`""
+        Set-ScheduledTask -TaskName $taskName -Action $checkAction | Out-Null
+
+        # Read and output the results
+        if (Test-Path $outputFile) {
+          Get-Content $outputFile -Raw
+        } else {
+          Write-Output "No output from winget apply."
+        }
+
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+        $exitCode = if ($taskInfo) { $taskInfo.LastTaskResult } else { -1 }
+        Write-Output "WINGET_APPLY_EXIT: $exitCode"
       register: winget_upgrade_result
       when: ansible_facts['os_family'] == "Windows"
       failed_when: false
+      async: 2100
+      poll: 30
       tags: ['never', 'apply-updates']
 
     - name: Show winget update results (Windows)
