@@ -203,7 +203,8 @@ class AnsibleRunner:
                 "-i", inventory_path,
                 self.playbook_path,
                 "-v",
-                "--forks", "5"
+                "--forks", "5",
+                "--timeout", "10"
             ]
             if limit_hosts:
                 cmd.extend(["--limit", ",".join(limit_hosts)])
@@ -451,6 +452,65 @@ class AnsibleRunner:
         if duration:
             await progress_callback(f"⏱️ [{hostname}] Completed in {duration}")
 
+        # ── Winget output parsing ─────────────────────────────────────────
+        # If no apt output was detected, check for winget output patterns.
+        # Winget stdout_lines contain per-package blocks:
+        #   (1/4) Found <Name> [<PackageId>] Version <ver>
+        #   ...download progress...
+        #   Successfully installed
+        #   -or-
+        #   Installer failed with exit code: XXXX
+        if stdout_lines and not pkg_count:
+            _last_found = None
+            _winget_total = None
+            for sline in stdout_lines:
+                s = sline.strip()
+                if not s:
+                    continue
+                # Skip progress bars and spinners
+                if _re.match(r'^\s*[-\\|/]\s*$', s) or '\u2588' in s or '\u2592' in s:
+                    continue
+                if _re.match(r'^\s*$', s):
+                    continue
+
+                # "N upgrades available" — extract total
+                upgrades_m = _re.match(r'^(\d+)\s+upgrades?\s+available', s)
+                if upgrades_m:
+                    _winget_total = upgrades_m.group(1)
+                    continue
+
+                # "Found <Name> [<PackageId>] Version <ver>"
+                found_m = _re.search(r'\((\d+)/(\d+)\)\s+Found\s+(.+?)\s+\[([^\]]+)\]\s+Version\s+([\d][\d\.]*)', s)
+                if found_m:
+                    _idx = found_m.group(1)
+                    _tot = found_m.group(2)
+                    _name = found_m.group(3)
+                    _pkg_id = found_m.group(4)
+                    _ver = found_m.group(5)
+                    _last_found = {'idx': _idx, 'total': _tot, 'name': _name, 'id': _pkg_id, 'ver': _ver}
+                    await progress_callback(f"📦 [{hostname}] [{_idx}/{_tot}] {_pkg_id} ({_ver})")
+                    continue
+
+                # "Successfully installed"
+                if 'Successfully installed' in s and _last_found:
+                    await progress_callback(f"✅ [{hostname}] {_last_found['id']} ({_last_found['ver']}) installed")
+                    _last_found = None
+                    continue
+
+                # "Installer failed"
+                if 'Installer failed' in s and _last_found:
+                    exit_m = _re.search(r'exit code:\s*(\d+)', s)
+                    code = exit_m.group(1) if exit_m else '?'
+                    await progress_callback(f"❌ [{hostname}] {_last_found['id']} -- failed (exit code {code})")
+                    _last_found = None
+                    continue
+
+                # "install technology is different"
+                if 'install technology is different' in s and _last_found:
+                    await progress_callback(f"⚠️ [{hostname}] {_last_found['id']} -- skipped (different install technology)")
+                    _last_found = None
+                    continue
+
 
     async def run_patch(self, limit_hosts: List[str] = None, become_password: str = None, 
                        progress_callback=None) -> Tuple[bool, Dict]:
@@ -477,7 +537,8 @@ class AnsibleRunner:
                 self.playbook_path,
                 "--tags", "apply-updates",
                 "-v",
-                "--forks", "1"
+                "--forks", "1",
+                "--timeout", "10"
             ]
             
             # Add limit if specified
