@@ -604,6 +604,11 @@ async def ensure_settings_table(pool):
                 ('mas_timeout_seconds',  os.getenv('MAS_TIMEOUT_SECONDS', '7200'),
                  'Max seconds to wait for all App Store downloads per host (default 7200 = 2 h). '
                  'This is the Ansible async timeout — the overall ceiling for the task.'),
+                # ── Windows / winget settings ──────────────────────────────────
+                ('winget_excluded_ids',  os.getenv('WINGET_EXCLUDED_IDS', 'Microsoft.Edge'),
+                 'Comma-separated winget package IDs to skip during update checks and patching. '
+                 'Default excludes Microsoft.Edge — Edge uses a different install technology '
+                 'than winget and cannot be upgraded via winget on most installations.'),
                 # ── Update checker settings ───────────────────────────────────
                 ('update_check_enabled', 'true',
                  'Enable periodic checks for new PatchPilot releases via GitHub.'),

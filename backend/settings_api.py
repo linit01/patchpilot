@@ -43,6 +43,7 @@ class HostCreate(BaseModel):
     tags: Optional[str] = Field(None, max_length=255, description="Comma-separated tags")
     is_control_node: Optional[bool] = False
     allow_auto_reboot: Optional[bool] = True
+    os_family: Optional[str] = Field(None, max_length=50, description="OS family: Windows, Debian, Darwin, etc. Auto-detected from connection test.")
     
     @validator('ssh_key_type')
     def validate_key_type(cls, v):
@@ -264,8 +265,8 @@ async def create_host(host: HostCreate,
             INSERT INTO hosts (
                 hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted, ssh_password_encrypted,
-                notes, tags, is_control_node, allow_auto_reboot, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                notes, tags, is_control_node, allow_auto_reboot, os_family, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING 
                 id, hostname, ssh_user, ssh_port, ssh_key_type,
                 ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
@@ -274,7 +275,7 @@ async def create_host(host: HostCreate,
                 last_checked, created_at, updated_at
         """, host.hostname, host.ssh_user, host.ssh_port, host.ssh_key_type,
             ssh_key_encrypted, ssh_password_encrypted, host.notes, host.tags,
-            host.is_control_node, host.allow_auto_reboot, user['id'])
+            host.is_control_node, host.allow_auto_reboot, host.os_family or '', user['id'])
         
         # Log audit trail (wrapped — must never block the response)
         try:

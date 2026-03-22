@@ -411,6 +411,25 @@ try {
 
 Write-Step "5" "Configuring Windows Firewall..."
 
+# Ensure the active network profile is Private (not Public).
+# Windows blocks many inbound connections on Public networks even with
+# explicit firewall rules. Homelab/LAN networks should be Private.
+$netProfiles = Get-NetConnectionProfile -ErrorAction SilentlyContinue
+foreach ($profile in $netProfiles) {
+    if ($profile.NetworkCategory -eq "Public") {
+        try {
+            Set-NetConnectionProfile -InterfaceIndex $profile.InterfaceIndex -NetworkCategory Private
+            Write-Ok "Network '$($profile.Name)' on $($profile.InterfaceAlias) changed from Public to Private."
+        } catch {
+            Write-Fail "Could not change network profile for '$($profile.InterfaceAlias)' from Public to Private: $_"
+            Write-Info "SSH may not work until you change this manually:"
+            Write-Info "  Set-NetConnectionProfile -InterfaceIndex $($profile.InterfaceIndex) -NetworkCategory Private"
+        }
+    } else {
+        Write-Ok "Network '$($profile.Name)' on $($profile.InterfaceAlias) is already $($profile.NetworkCategory)."
+    }
+}
+
 $ruleName = "PatchPilot-SSH-Inbound-TCP-$SSHPort"
 
 # Check for existing rules on the target port
