@@ -26,6 +26,9 @@
     # Ansible async ceiling for the entire mas upgrade task.
     mas_timeout_seconds: "{{ lookup('env', 'MAS_TIMEOUT_SECONDS') | default('7200', true) | int }}"
 
+    # Comma-separated winget package IDs to skip (Microsoft.Edge by default).
+    winget_excluded_ids: "{{ lookup('env', 'WINGET_EXCLUDED_IDS') | default('Microsoft.Edge', true) }}"
+
   tasks:
     # ── Explicit fact gathering ────────────────────────────────────────────────
     # gather_facts: no at the play level prevents Ansible from aborting the
@@ -240,6 +243,11 @@
       win_shell: |
         $ErrorActionPreference = 'SilentlyContinue'
         $outputFile = "C:\ProgramData\PatchPilot\winget-check.txt"
+        $excludedRaw = "{{ winget_excluded_ids }}"
+        $excluded = @()
+        if ($excludedRaw) {
+          $excluded = $excludedRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        }
 
         # Trigger the scheduled task created by the setup script
         $task = Get-ScheduledTask -TaskName "PP-WingetCheck" -ErrorAction SilentlyContinue
@@ -294,6 +302,7 @@
 
         # Parse data lines (skip header + separator)
         $count = 0
+        $skipped = 0
         for ($i = $headerIdx + 1; $i -lt $lines.Count; $i++) {
           $line = $lines[$i]
           if ($line -match '^\s*-+' -or $line -match '^\s*$' -or $line -match 'upgrades? available') {
@@ -310,7 +319,18 @@
             $avail = $line.Substring($availStart).Trim()
           }
 
-          if ($id -and $avail) {
+          # Check exclusion list — match against the parsed ID and also
+          # check if any excluded ID is a substring (handles truncated IDs)
+          $isExcluded = $false
+          foreach ($exc in $excluded) {
+            if ($id -eq $exc -or $id -like "$exc*" -or $exc -like "$id*") {
+              $isExcluded = $true
+              $skipped++
+              break
+            }
+          }
+
+          if (-not $isExcluded -and $id -and $avail) {
             Write-Output "$name ($id) $ver -> $avail"
             $count++
           }
@@ -340,7 +360,7 @@
     - name: Emit macOS system update details
       debug:
         msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
-      loop: "{{ macos_updates.stdout_lines | default([]) | select('match', '^\\s*\\*') | list }}"
+      loop: "{{ macos_updates.stdout_lines | default([]) }}"
       when: ansible_facts['os_family'] == "Darwin" and macos_updates.stdout_lines is defined and macos_updates.stdout_lines | length > 0
 
     - name: Emit App Store package details
@@ -373,8 +393,8 @@
             {{ apt_updates.stdout_lines | length }} apt updates available
           {% elif brew_updates.stdout_lines is defined and brew_updates.stdout_lines | length > 0 %}
             {{ brew_updates.stdout_lines | length }} brew updates available
-          {% elif macos_updates.stdout_lines is defined and macos_updates.stdout_lines | select('match', '^\\s*\\*') | list | length > 0 %}
-            {{ macos_updates.stdout_lines | select('match', '^\\s*\\*') | list | length }} macOS system updates available
+          {% elif macos_updates.stdout is defined and 'No new software available' not in macos_updates.stdout %}
+            macOS system updates available
           {% elif mas_updates is defined and mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}
             {{ mas_updates.stdout_lines | length }} App Store updates available
           {% elif winget_updates is defined and winget_updates.stdout_lines is defined and winget_updates.stdout_lines | length > 0 and winget_updates.stdout_lines[0] != "NO_UPDATES" %}
@@ -671,5 +691,67 @@
         msg: "Rebooting for system updates"
         reboot_timeout: 300
       become: yes
-      when: ansible_facts['os_family'] == "Debian" and reboot_required.stat.exists
+      when:
+        - ansible_facts['os_family'] == "Debian"
+        - reboot_required.stat.exists
+        - allow_auto_reboot | default(false) | bool
       tags: ['never', 'apply-updates', 'reboot']
+
+    - name: Reboot skipped - auto-reboot disabled (Linux)
+      debug:
+        msg: "REBOOT_REQUIRED: {{ inventory_hostname }} needs a reboot but allow_auto_reboot is disabled."
+      when:
+        - ansible_facts['os_family'] == "Debian"
+        - reboot_required.stat.exists
+        - not (allow_auto_reboot | default(false) | bool)
+      tags: ['never', 'apply-updates']
+
+    # ── Windows reboot handling ─────────────────────────────────────────────
+    - name: Check if reboot required (Windows)
+      win_shell: |
+        $reboot = $false
+        # Check Windows Update reboot flag
+        $wuKey = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -ErrorAction SilentlyContinue
+        if ($wuKey) { $reboot = $true }
+        # Check Component Based Servicing reboot flag
+        $cbsKey = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -ErrorAction SilentlyContinue
+        if ($cbsKey) { $reboot = $true }
+        # Check if winget output indicated restart needed
+        $applyFile = "C:\ProgramData\PatchPilot\winget-apply.txt"
+        if (Test-Path $applyFile) {
+          $content = Get-Content $applyFile -Raw -ErrorAction SilentlyContinue
+          if ($content -match "Restart the application|restart.*to complete") {
+            $reboot = $true
+          }
+        }
+        if ($reboot) { Write-Output "REBOOT_REQUIRED" } else { Write-Output "NO_REBOOT" }
+      register: win_reboot_check
+      when: ansible_facts['os_family'] == "Windows"
+      changed_when: false
+      failed_when: false
+      tags: ['never', 'apply-updates']
+
+    - name: Set Windows reboot fact
+      set_fact:
+        win_reboot_needed: "{{ win_reboot_check.stdout | default('') | trim == 'REBOOT_REQUIRED' }}"
+      when: ansible_facts['os_family'] == "Windows"
+      tags: ['never', 'apply-updates']
+
+    - name: Reboot if needed (Windows)
+      win_reboot:
+        msg: "PatchPilot: Rebooting for updates"
+        reboot_timeout: 600
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - win_reboot_needed | default(false) | bool
+        - allow_auto_reboot | default(false) | bool
+      tags: ['never', 'apply-updates', 'reboot']
+
+    - name: Reboot skipped - auto-reboot disabled (Windows)
+      debug:
+        msg: "REBOOT_REQUIRED: {{ inventory_hostname }} needs a reboot but allow_auto_reboot is disabled."
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - win_reboot_needed | default(false) | bool
+        - not (allow_auto_reboot | default(false) | bool)
+      tags: ['never', 'apply-updates']
