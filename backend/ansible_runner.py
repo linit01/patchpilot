@@ -219,14 +219,15 @@ class AnsibleRunner:
                     async with self.db_client.pool.acquire() as _conn:
                         _rows = await _conn.fetch(
                             "SELECT key, value FROM settings WHERE key IN "
-                            "('mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds')"
+                            "('mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds', "
+                            "'winget_excluded_ids')"
                         )
                         for _r in _rows:
                             if _r['value'] is not None:
-                                # Empty string is valid for mas_excluded_ids (no exclusions)
+                                # Empty string is valid for exclusion lists (no exclusions)
                                 check_env[_r['key'].upper()] = _r['value']
             except Exception as _e:
-                logger.warning("Could not load mas settings for check run: %s", _e)
+                logger.warning("Could not load settings for check run: %s", _e)
 
             # Use async subprocess so the event loop stays responsive
             process = await asyncio.create_subprocess_exec(
@@ -541,6 +542,23 @@ class AnsibleRunner:
                 env['MAS_PER_APP_TIMEOUT'] = os.getenv('MAS_PER_APP_TIMEOUT', '600')
             if os.getenv('MAS_TIMEOUT_SECONDS') and 'MAS_TIMEOUT_SECONDS' not in env:
                 env['MAS_TIMEOUT_SECONDS'] = os.getenv('MAS_TIMEOUT_SECONDS', '7200')
+
+            # ── Windows / winget settings ──────────────────────────────────
+            _winget_excluded_from_db = None
+            try:
+                if self.db_client and self.db_client.pool:
+                    async with self.db_client.pool.acquire() as _conn:
+                        _row = await _conn.fetchrow(
+                            "SELECT value FROM settings WHERE key = 'winget_excluded_ids'"
+                        )
+                        if _row and _row['value'] is not None:
+                            _winget_excluded_from_db = _row['value']
+            except Exception as _we:
+                logger.warning("Could not load winget settings from DB (non-fatal): %s", _we)
+            if _winget_excluded_from_db is not None:
+                env['WINGET_EXCLUDED_IDS'] = _winget_excluded_from_db
+            elif os.getenv('WINGET_EXCLUDED_IDS'):
+                env['WINGET_EXCLUDED_IDS'] = os.getenv('WINGET_EXCLUDED_IDS', '')
             # Overall runner timeout = larger of 30 min or mas_timeout + 5 min buffer
             try:
                 _mas_secs = int(env.get('MAS_TIMEOUT_SECONDS', '7200'))

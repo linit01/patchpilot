@@ -730,6 +730,50 @@
                 <button class="btn btn-primary" onclick="saveMasSettings()" style="margin-top:4px;">
                     Save macOS Settings
                 </button>
+
+                <!-- Windows / Winget Settings -->
+                <h2 style="font-size: 20px; font-weight: 600; margin: 32px 0 20px;">🪟 Windows / Winget</h2>
+
+                <div class="form-group">
+                    <label>Excluded Winget Package IDs
+                        <span style="color:var(--text-muted);font-weight:400;font-size:12px;">
+                            (skip during update checks and patching)
+                        </span>
+                    </label>
+
+                    <!-- Tag pill display -->
+                    <div id="winget-excluded-pills" style="
+                        display:flex;flex-wrap:wrap;gap:6px;
+                        min-height:38px;padding:6px 8px;
+                        background:var(--bg-input,#1a1a2e);
+                        border:1px solid var(--border);border-radius:6px;
+                        align-items:center;
+                    "></div>
+
+                    <!-- Add new ID row -->
+                    <div style="display:flex;gap:8px;margin-top:8px;">
+                        <input type="text" id="winget-excluded-add-id"
+                               placeholder="Package ID  e.g. Microsoft.Edge"
+                               style="flex:1;font-family:monospace;color:var(--text-primary,#e0e0e0);">
+                        <button type="button" class="btn btn-secondary"
+                                onclick="wingetExcludedAddCurrent()"
+                                style="white-space:nowrap;padding:6px 14px;">+ Add ID</button>
+                    </div>
+
+                    <!-- hidden field used by saveWingetSettings() -->
+                    <input type="hidden" id="winget-excluded-ids">
+
+                    <div class="help-text">
+                        Winget package IDs to skip during automated update checks and patching.
+                        <code>Microsoft.Edge</code> is excluded by default because Edge uses a different
+                        install technology and cannot be upgraded via winget on most installations.
+                        To find a package ID run: <code>winget search &lt;name&gt;</code> on the Windows host.
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" onclick="saveWingetSettings()" style="margin-top:4px;">
+                    Save Windows Settings
+                </button>
             </div>
 
             <!-- Advanced Tab -->
@@ -1512,6 +1556,7 @@
         // Modal management
         function openAddHostModal() {
             currentEditHostId = null;
+            window._patchpilot_detected_os = null;
             document.getElementById('modal-title').textContent = 'Add Host';
             document.getElementById('host-form').reset();
             document.getElementById('hostname').disabled = false;
@@ -2054,7 +2099,14 @@
                     resultDiv.className = 'test-result test-success';
                     resultDiv.textContent = '✓ ' + result.message;
                     if (result.details && result.details.system_info) {
-                        resultDiv.textContent += '\\n\\nSystem: ' + result.details.system_info;
+                        resultDiv.textContent += '\n\nSystem: ' + result.details.system_info;
+                    }
+                    // Store detected OS for use when saving the host
+                    if (result.details && result.details.detected_os) {
+                        window._patchpilot_detected_os = result.details.detected_os;
+                        resultDiv.textContent += '\nOS: ' + result.details.detected_os;
+                    } else {
+                        window._patchpilot_detected_os = null;
                     }
                 } else {
                     resultDiv.className = 'test-result test-error';
@@ -2103,6 +2155,11 @@
             try {
                 let response;
                 
+                // Include auto-detected OS family if available from connection test
+                if (window._patchpilot_detected_os && !currentEditHostId) {
+                    data.os_family = window._patchpilot_detected_os;
+                }
+
                 if (currentEditHostId) {
                     // Update existing host
                     response = await fetch(`/api/settings/hosts/${currentEditHostId}`, {
@@ -2582,6 +2639,10 @@
                 if (settings.mas_timeout_seconds !== undefined) {
                     document.getElementById('mas-timeout-seconds').value = settings.mas_timeout_seconds.value || '7200';
                 }
+                // Windows / winget settings
+                if (settings.winget_excluded_ids !== undefined) {
+                    wingetExcludedRenderPills(settings.winget_excluded_ids.value || '');
+                }
                 updateTimezoneWarning();
             } catch (e) {
                 console.error('Failed to load settings:', e);
@@ -2727,6 +2788,89 @@
                 alert('Failed to save macOS settings: ' + e.message);
             }
         }
+
+        // ── Windows / Winget exclusion pill helpers ──────────────────────────
+        function wingetExcludedGetIds() {
+            return (document.getElementById('winget-excluded-ids').value || '')
+                .split(',').map(s => s.trim()).filter(Boolean);
+        }
+
+        function wingetExcludedSetIds(ids) {
+            document.getElementById('winget-excluded-ids').value = ids.join(',');
+        }
+
+        function wingetExcludedRenderPills(csvValue) {
+            wingetExcludedSetIds(
+                (csvValue || '').split(',').map(s => s.trim()).filter(Boolean)
+            );
+            const container = document.getElementById('winget-excluded-pills');
+            container.innerHTML = '';
+            const ids = wingetExcludedGetIds();
+            if (ids.length === 0) {
+                container.innerHTML = '<span style="color:var(--text-muted);font-size:12px;font-style:italic;">No IDs excluded — all winget packages will be checked and updated</span>';
+                return;
+            }
+            ids.forEach(id => {
+                const pill = document.createElement('span');
+                pill.style.cssText = `
+                    display:inline-flex;align-items:center;gap:6px;
+                    padding:3px 10px 3px 10px;border-radius:20px;
+                    background:rgba(0,192,239,0.12);border:1px solid rgba(0,192,239,0.3);
+                    font-size:12px;font-family:monospace;color:var(--text-primary,#e0e0e0);
+                    white-space:nowrap;
+                `;
+                pill.innerHTML = `
+                    <span>${id}</span>
+                    <button type="button" onclick="wingetExcludedRemove('${id}')" style="
+                        background:none;border:none;cursor:pointer;
+                        color:var(--text-muted);font-size:14px;line-height:1;
+                        padding:0 0 0 2px;
+                    " title="Remove">&times;</button>
+                `;
+                container.appendChild(pill);
+            });
+        }
+
+        function wingetExcludedRemove(id) {
+            const ids = wingetExcludedGetIds().filter(i => i !== id);
+            wingetExcludedRenderPills(ids.join(','));
+        }
+
+        function wingetExcludedAddCurrent() {
+            const input = document.getElementById('winget-excluded-add-id');
+            const newId = input.value.trim();
+            if (!newId || !/^[\w\.\-\+]+$/.test(newId)) {
+                alert('Please enter a valid winget package ID (e.g. Microsoft.Edge).');
+                return;
+            }
+            const ids = wingetExcludedGetIds();
+            if (ids.includes(newId)) {
+                alert('That ID is already in the exclusion list.');
+                input.value = '';
+                return;
+            }
+            ids.push(newId);
+            wingetExcludedRenderPills(ids.join(','));
+            input.value = '';
+        }
+
+        async function saveWingetSettings() {
+            const excludedIds = document.getElementById('winget-excluded-ids').value.trim();
+
+            try {
+                const res = await fetch('/api/settings/app/winget_excluded_ids', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ value: excludedIds })
+                });
+                if (!res.ok) throw new Error('Failed to save winget_excluded_ids');
+                alert('Windows / Winget settings saved!');
+            } catch (e) {
+                alert('Failed to save Windows settings: ' + e.message);
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         function updateOriginsWarning() {
             const el = document.getElementById('allowed-origins');

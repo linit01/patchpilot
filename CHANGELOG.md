@@ -4,6 +4,23 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.13.2-alpha] — 2026-03-22
+
+### Added — Windows Phase 2: Exclusions & Auto-Detect
+- **Windows/Winget exclusion settings**: new Settings > General > Windows/Winget section with pill-based UI for managing excluded winget package IDs, mirroring the existing macOS/App Store exclusion pattern; `Microsoft.Edge` is pre-filled as the default exclusion because Edge uses a different install technology and cannot be upgraded via winget
+- **Auto-detect Windows on host creation**: the connection test stores `detected_os` in the frontend; when saving a new host, `os_family` is included in the create request so the first host check works immediately without manual SQL bootstrapping
+- **Network profile auto-fix in PS setup script**: `Enable-PatchPilotSSH.ps1` now detects Public network profiles and switches them to Private automatically, preventing the SSH connectivity issue that blocked connections on fresh Windows installs
+
+### Changed
+- **`backend/app.py`**: seeds `winget_excluded_ids` setting with `Microsoft.Edge` default on startup
+- **`backend/settings_api.py`**: `HostCreate` model accepts optional `os_family`; INSERT includes `os_family` from connection test auto-detection
+- **`backend/ansible_runner.py`**: passes `WINGET_EXCLUDED_IDS` env var to both check and patch playbook runs from DB settings
+- **`ansible/check-os-updates.yml`**: winget check task filters excluded package IDs before emitting PACKAGE lines; added `winget_excluded_ids` playbook var from env; apply task uses `--force` flag
+- **`frontend/settings.html`**: Windows/Winget exclusion pill UI with add/remove/save; connection test captures `detected_os` and passes it to host creation; `loadGeneralSettings` loads `winget_excluded_ids` on page init
+- **`scripts/windows/Enable-PatchPilotSSH.ps1`**: auto-detects and fixes Public network profiles to Private before firewall configuration
+
+---
+
 ## [0.13.1-alpha] — 2026-03-21
 
 ### Added — Windows Host Support (Phase 1)
