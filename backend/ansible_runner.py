@@ -609,7 +609,7 @@ class AnsibleRunner:
                     # Show fatal errors
                     elif 'fatal:' in line_clean or 'FAILED!' in line_clean:
                         await progress_callback(f"❌ {line_clean}")
-                    # ── Async polling heartbeats (mas / long-running tasks) ──
+                    # ── Async polling heartbeats (mas / winget / long-running tasks) ──
                     # Ansible emits "ASYNC POLL on host: jid=... finished=0" every
                     # poll seconds. Without forwarding these the UI appears frozen
                     # because the shell script produces no output during downloads.
@@ -620,12 +620,12 @@ class AnsibleRunner:
                         _host_s = _host.group(1).strip() if _host else '?'
                         _fin_s  = _fin.group(1) if _fin else '0'
                         if _fin_s == '0':
-                            await progress_callback(f"⏳ [{_host_s}] App Store downloads in progress...")
+                            await progress_callback(f"⏳ [{_host_s}] Package updates in progress...")
                         # finished=1 is followed immediately by ASYNC OK/FAILED — skip
                     elif 'ASYNC OK' in line_clean:
-                        await progress_callback(f"✅ App Store task complete")
+                        await progress_callback(f"✅ Async task complete")
                     elif 'ASYNC FAILED' in line_clean:
-                        await progress_callback(f"❌ App Store task failed")
+                        await progress_callback(f"❌ Async task failed")
                     # mas result lines emitted by the "Show App Store update results" debug task.
                     # These appear AFTER the async task completes, in the debug output.
                     # Format: "msg": "START [id] name | DONE [id] name | SUMMARY: ..."

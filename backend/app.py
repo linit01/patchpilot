@@ -1340,6 +1340,43 @@ def _extract_packages_updated(output: str, hostname: str) -> list:
                 seen.add(key)
                 packages.append(f"{pkg} ({ver})")
 
+    # Strategy 3: winget output -- Ansible emits the entire changed/ok line as
+    # ONE line with an embedded JSON blob containing "stdout_lines": [...].
+    # Each entry in stdout_lines is a separate winget output line.
+    # We look for "Found <n> [PackageId] Version X" followed by
+    # "Successfully installed" to count successful winget upgrades.
+    if not packages:
+        _winget_lines = []
+        for line in output.splitlines():
+            # Try to extract stdout_lines from JSON in "changed: [host] => {json}"
+            json_m = _re.search(r'=>\s*(\{.*)', line)
+            if json_m:
+                try:
+                    data = _json.loads(json_m.group(1))
+                    _winget_lines.extend(data.get('stdout_lines', []))
+                except Exception:
+                    pass
+            # Fallback: split on JSON array separators if Found + Success on same line
+            if not _winget_lines and 'Found' in line and 'Successfully installed' in line:
+                parts = _re.split(r'",\s*"', line)
+                _winget_lines.extend(parts)
+
+        _last_found_pkg = None
+        for s in _winget_lines:
+            s = s.strip().strip('"')
+            found_m = _re.search(r'Found\s+.+?\[([^\]]+)\]\s+Version\s+([\d][\d\.]*)', s)
+            if found_m:
+                _last_found_pkg = (found_m.group(1), found_m.group(2))
+            elif 'Successfully installed' in s and _last_found_pkg:
+                pkg_id, ver = _last_found_pkg
+                key = f"{pkg_id}={ver}"
+                if key not in seen:
+                    seen.add(key)
+                    packages.append(f"{pkg_id} ({ver})")
+                _last_found_pkg = None
+            elif _re.search(r'Installer failed|install technology is different', s):
+                _last_found_pkg = None
+
     return packages
 
 
