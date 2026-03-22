@@ -894,6 +894,24 @@ class AnsibleRunner:
                         hosts_data[current_host]['reboot_required'] = False
                         break
 
+            # Windows reboot detection — check for REBOOT_REQUIRED in stdout
+            if 'REBOOT_REQUIRED' in line and 'needs a reboot' in line:
+                # Extract hostname from the debug message
+                reboot_m = re.search(r'REBOOT_REQUIRED:\s*(\S+)\s+needs a reboot', line)
+                if reboot_m:
+                    rhost = reboot_m.group(1)
+                    if rhost not in hosts_data:
+                        hosts_data[rhost] = {}
+                    hosts_data[rhost]['reboot_required'] = True
+            elif 'Set Windows reboot fact' in line or 'win_reboot_needed' in line:
+                # Check for the set_fact result
+                for j in range(i, min(i+5, len(lines))):
+                    if 'REBOOT_REQUIRED' in lines[j] and current_host:
+                        if current_host not in hosts_data:
+                            hosts_data[current_host] = {}
+                        hosts_data[current_host]['reboot_required'] = True
+                        break
+
         # Reconcile totals — always trust update_details count over parsed numbers.
         # The "Show update status" debug message only carries numeric counts for
         # apt/brew; macOS system and mas updates don't emit a count there, so
