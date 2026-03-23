@@ -1301,7 +1301,18 @@ async function pollForStatusChange(hostname) {
 // DASHBOARD CHARTS
 // =========================================================================
 
-const CHART_COLORS = ['#3498db', '#f39c12', '#2ecc71', '#e74c3c', '#9b59b6', '#00c0ef', '#ff7799', '#ffaa77'];
+const CHART_COLORS = ['#3498db', '#f39c12', '#2ecc71', '#9b59b6', '#00c0ef', '#ff7799', '#ffaa77', '#e67e22'];
+
+// Fixed color assignments for known OS families — prevents collision with FAILED_COLOR (#e74c3c)
+const OS_COLORS = {
+    'Debian':  '#f39c12',   // orange
+    'Darwin':  '#3498db',   // blue
+    'Windows': '#00c0ef',   // cyan
+    'RedHat':  '#9b59b6',   // purple
+    'Suse':    '#2ecc71',   // green
+    'Arch':    '#ff7799',   // pink
+    'Unknown': '#aaaaaa',   // gray
+};
 
 async function loadChartData() {
     try {
@@ -1310,11 +1321,19 @@ async function loadChartData() {
         });
         const data = await response.json();
 
-        // Build a stable OS → color map from the same order the donut chart uses,
-        // so patch activity bars share exactly the same colors as the OS Distribution legend.
+        // Build a stable OS → color map using fixed colors for known families,
+        // falling back to the palette for unknown ones. Never use #e74c3c (reserved for Failed).
         const osColorMap = {};
-        (data.os_distribution || []).forEach((item, i) => {
-            osColorMap[item.os] = CHART_COLORS[i % CHART_COLORS.length];
+        let fallbackIdx = 0;
+        (data.os_distribution || []).forEach((item) => {
+            if (OS_COLORS[item.os]) {
+                osColorMap[item.os] = OS_COLORS[item.os];
+            } else {
+                // Skip any color that matches FAILED_COLOR
+                let color = CHART_COLORS[fallbackIdx % CHART_COLORS.length];
+                fallbackIdx++;
+                osColorMap[item.os] = color;
+            }
         });
 
         renderPatchActivity(data.patch_activity || [], osColorMap, data.os_distribution || []);
@@ -1430,21 +1449,27 @@ function renderDonut(elementId, items, keyField, label) {
     }
     
     const total = items.reduce((sum, item) => sum + item.count, 0);
+    const isOsChart = (keyField === 'os');
     
     // Build conic-gradient segments
     let gradientParts = [];
     let angle = 0;
-    items.forEach((item, i) => {
-        const color = CHART_COLORS[i % CHART_COLORS.length];
+    let fallbackIdx = 0;
+    items.forEach((item) => {
+        const name = item[keyField] || 'Unknown';
+        const color = (isOsChart && OS_COLORS[name]) ? OS_COLORS[name] : CHART_COLORS[fallbackIdx % CHART_COLORS.length];
+        fallbackIdx++;
         const slice = (item.count / total) * 360;
         gradientParts.push(`${color} ${angle}deg ${angle + slice}deg`);
         angle += slice;
     });
     
     // Build legend
-    const legendHTML = items.map((item, i) => {
-        const color = CHART_COLORS[i % CHART_COLORS.length];
+    fallbackIdx = 0;
+    const legendHTML = items.map((item) => {
         const name = item[keyField] || 'Unknown';
+        const color = (isOsChart && OS_COLORS[name]) ? OS_COLORS[name] : CHART_COLORS[fallbackIdx % CHART_COLORS.length];
+        fallbackIdx++;
         return `<div class="donut-legend-item">
             <div class="swatch" style="background:${color}"></div>
             ${name}
