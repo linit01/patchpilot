@@ -76,6 +76,7 @@ class HostUpdate(BaseModel):
     tags: Optional[str] = Field(None, max_length=255)
     is_control_node: Optional[bool] = None
     allow_auto_reboot: Optional[bool] = None
+    os_family: Optional[str] = Field(None, max_length=50, description="OS family: Windows, Debian, Darwin, etc.")
 
 
 class HostResponse(BaseModel):
@@ -508,6 +509,11 @@ async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depen
         if host.is_control_node is not None:
             updates.append(f"is_control_node = ${param_idx}")
             values.append(host.is_control_node)
+            param_idx += 1
+
+        if host.os_family is not None and host.os_family.strip():
+            updates.append(f"os_family = ${param_idx}")
+            values.append(host.os_family)
             param_idx += 1
         
         if not updates:
