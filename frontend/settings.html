@@ -1653,20 +1653,43 @@
 
         function copyWindowsCmd() {
             const cmdEl = document.getElementById('windows-setup-cmd');
-            navigator.clipboard.writeText(cmdEl.textContent).then(() => {
-                const btn = cmdEl.parentElement.querySelector('button');
-                const orig = btn.innerHTML;
+            const text = cmdEl.textContent;
+            const btn = cmdEl.parentElement.querySelector('button');
+            const orig = btn.innerHTML;
+
+            function showSuccess() {
                 btn.innerHTML = '✅ Copied!';
                 setTimeout(() => btn.innerHTML = orig, 2000);
-            }).catch(() => {
-                // Fallback for HTTP (non-HTTPS) contexts
-                const range = document.createRange();
-                range.selectNode(cmdEl);
-                window.getSelection().removeAllRanges();
-                window.getSelection().addRange(range);
-                document.execCommand('copy');
-                window.getSelection().removeAllRanges();
-            });
+            }
+
+            function fallbackCopy() {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                try {
+                    const ok = document.execCommand('copy');
+                    if (ok) { showSuccess(); }
+                    else { btn.innerHTML = '❌ Select & copy manually'; setTimeout(() => btn.innerHTML = orig, 3000); }
+                } catch (e) {
+                    btn.innerHTML = '❌ Select & copy manually';
+                    setTimeout(() => btn.innerHTML = orig, 3000);
+                }
+                document.body.removeChild(ta);
+            }
+
+            // Clipboard API only works on HTTPS — go straight to fallback on HTTP
+            if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    navigator.clipboard.writeText(text).then(showSuccess).catch(fallbackCopy);
+                } catch (e) {
+                    fallbackCopy();
+                }
+            } else {
+                fallbackCopy();
+            }
         }
         
         function closeModal(modalId) {

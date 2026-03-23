@@ -1307,9 +1307,9 @@ const CHART_COLORS = ['#3498db', '#f39c12', '#2ecc71', '#9b59b6', '#00c0ef', '#f
 const OS_COLORS = {
     'Debian':  '#f39c12',   // orange
     'Darwin':  '#3498db',   // blue
-    'Windows': '#00c0ef',   // cyan
+    'Windows': '#2ecc71',   // green
     'RedHat':  '#9b59b6',   // purple
-    'Suse':    '#2ecc71',   // green
+    'Suse':    '#00c0ef',   // cyan
     'Arch':    '#ff7799',   // pink
     'Unknown': '#aaaaaa',   // gray
 };

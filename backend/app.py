@@ -1378,6 +1378,51 @@ def _extract_packages_updated(output: str, hostname: str) -> list:
             elif _re.search(r'Installer failed|install technology is different', s):
                 _last_found_pkg = None
 
+    # Strategy 4: Homebrew output -- look for "Upgrading <pkg>" lines followed by
+    # version info. Brew upgrade output contains lines like:
+    #   ==> Upgrading python@3.12
+    #     3.12.7 -> 3.12.8
+    # Or simpler: "==> Upgrading <n> outdated packages:" followed by "pkg ver -> ver" lines
+    if not packages:
+        _winget_lines = []
+        for line in output.splitlines():
+            json_m = _re.search(r'=>\s*(\{.*)', line)
+            if json_m:
+                try:
+                    data = _json.loads(json_m.group(1))
+                    _winget_lines.extend(data.get('stdout_lines', []))
+                except Exception:
+                    pass
+
+        _last_brew_pkg = None
+        for s in _winget_lines:
+            s = s.strip()
+            # "==> Upgrading python@3.12"
+            brew_up = _re.match(r'^==> Upgrading\s+([\w\-\.@/]+)', s)
+            if brew_up:
+                _last_brew_pkg = brew_up.group(1)
+                continue
+            # "  3.12.7 -> 3.12.8" (version line after Upgrading)
+            if _last_brew_pkg:
+                ver_m = _re.match(r'^\s*([\d][\d\.]*)\s+->\s+([\d][\d\.]*)', s)
+                if ver_m:
+                    new_ver = ver_m.group(2)
+                    key = f"{_last_brew_pkg}={new_ver}"
+                    if key not in seen:
+                        seen.add(key)
+                        packages.append(f"{_last_brew_pkg} ({new_ver})")
+                    _last_brew_pkg = None
+                    continue
+            # "pkg ver -> ver" on a single line (compact format)
+            brew_compact = _re.match(r'^([\w\-\.@/]+)\s+([\d][\d\.]*)\s+->\s+([\d][\d\.]*)', s)
+            if brew_compact:
+                pkg = brew_compact.group(1)
+                new_ver = brew_compact.group(3)
+                key = f"{pkg}={new_ver}"
+                if key not in seen:
+                    seen.add(key)
+                    packages.append(f"{pkg} ({new_ver})")
+
     return packages
 
 
