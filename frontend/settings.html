@@ -2156,7 +2156,7 @@
                 let response;
                 
                 // Include auto-detected OS family if available from connection test
-                if (window._patchpilot_detected_os && !currentEditHostId) {
+                if (window._patchpilot_detected_os) {
                     data.os_family = window._patchpilot_detected_os;
                 }
 

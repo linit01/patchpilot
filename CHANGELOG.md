@@ -4,7 +4,32 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
-## [0.13.2-alpha] — 2026-03-22
+## [0.13.7-alpha] — 2026-03-23
+
+### Fixed
+- **`os_family` auto-detect now works on both create and edit**: previously `os_family` from the connection test was only passed during host creation; if a host was re-added (edit path), it was silently dropped, causing the first host check to fail with `unreachable` because Ansible didn't know to use PowerShell
+- **`backend/settings_api.py`**: `HostUpdate` model now accepts `os_family`; the dynamic UPDATE query includes `os_family` when provided
+- **`frontend/settings.html`**: `os_family` from the connection test is now included in both create and edit save requests
+
+---
+
+## [0.13.6-alpha] — 2026-03-22
+
+### Added
+- **Live winget package streaming in patch logs**: patch output now shows per-package status during Windows patching — `📦 [host] [1/4] PackageId (ver)`, `✅ installed`, `❌ failed (exit code)`, `⚠️ skipped (different install technology)`
+- **Windows reboot handling**: after winget patching, checks registry keys and winget output for reboot indicators; reboots the host if `Allow Auto-Reboot` is enabled, matching Linux behavior
+- **`allow_auto_reboot` respected on both Linux and Windows**: reboot tasks now check the per-host setting; if disabled, host shows `Reboot Required: Yes` without rebooting
+
+### Changed
+- **SSH connection timeout reduced to 10 seconds** for both check and patch runs — improves scan time when offline hosts are in the inventory
+- **Async progress messages** now use generic "Package updates in progress" instead of hardcoded "App Store downloads"
+
+### Fixed
+- **Winget patch log package count**: `_extract_packages_updated()` now parses `stdout_lines` from the Ansible JSON blob (Strategy 3) — previously the single-line JSON format caused the sequential `Found`/`Successfully installed` tracker to fail, resulting in 0 packages recorded
+
+---
+
+## [0.13.3-alpha] — 2026-03-22
 
 ### Added — Windows Phase 2: Exclusions & Auto-Detect
 - **Windows/Winget exclusion settings**: new Settings > General > Windows/Winget section with pill-based UI for managing excluded winget package IDs, mirroring the existing macOS/App Store exclusion pattern; `Microsoft.Edge` is pre-filled as the default exclusion because Edge uses a different install technology and cannot be upgraded via winget
