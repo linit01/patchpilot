@@ -91,7 +91,7 @@ _sys.stdout = _StdoutInterceptor(_sys.stdout)
 
 from database import DatabaseClient
 from ansible_runner import AnsibleRunner
-from settings_api import router as settings_router
+from settings_api import router as settings_router, public_router as settings_public_router
 from dependencies import get_db_pool
 from auth import (router as auth_router, require_auth, require_full_admin,
                   require_write, ownership_filter, log_audit,
@@ -199,6 +199,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(settings_router)
+app.include_router(settings_public_router)
 app.include_router(auth_router)
 app.include_router(schedules_router)
 app.include_router(backup_router)
