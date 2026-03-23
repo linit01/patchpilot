@@ -77,6 +77,7 @@ RUN ansible-galaxy collection install ansible.windows
 # ── Application code ──────────────────────────────────────────────────────────
 COPY backend/ .
 COPY ansible/ /ansible-src/
+COPY scripts/ /scripts/
 COPY VERSION .
 
 # ── Runtime directories ───────────────────────────────────────────────────────
