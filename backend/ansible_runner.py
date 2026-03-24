@@ -978,7 +978,8 @@ class AnsibleRunner:
                                         })
                                     # macOS softwareupdate Title line (duplicate of * Label line):
                                     #   "Title: macOS Tahoe 26.4, Version: 26.4, Size: ..."
-                                    elif re.match(r'^Title:\s+', package_data):
+                                    #   May arrive with leading tab or literal "\t" from Ansible
+                                    elif re.match(r'^(?:\\t|\t)?\s*Title:\s+', package_data):
                                         # Skip — the * Label line already emitted this update
                                         pass
                                     else:
