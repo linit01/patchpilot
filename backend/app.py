@@ -610,6 +610,10 @@ async def ensure_settings_table(pool):
                  'Comma-separated winget package IDs to skip during update checks and patching. '
                  'Default excludes Microsoft.Edge — Edge uses a different install technology '
                  'than winget and cannot be upgraded via winget on most installations.'),
+                ('winupdate_enabled',    os.getenv('WINUPDATE_ENABLED', 'false'),
+                 'Enable Windows Update (PSWindowsUpdate) checks and patching on Windows hosts. '
+                 'Defaults to false — requires PSWindowsUpdate module installed on the target host '
+                 'and the PP-WinUpdate scheduled task created by Enable-PatchPilotSSH.ps1.'),
                 # ── Update checker settings ───────────────────────────────────
                 ('update_check_enabled', 'true',
                  'Enable periodic checks for new PatchPilot releases via GitHub.'),

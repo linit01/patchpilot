@@ -775,6 +775,23 @@
                     </div>
                 </div>
 
+                <div class="form-group">
+                    <label>Enable Windows Update (PSWindowsUpdate)</label>
+                    <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+                            <input type="checkbox" id="winupdate-enabled" style="width:16px;height:16px;">
+                            <span>Enable OS-level Windows Updates on Windows hosts</span>
+                        </label>
+                    </div>
+                    <div class="help-text">
+                        <strong>Off by default.</strong>
+                        Requires PSWindowsUpdate module and the <code>PP-WinUpdate</code> scheduled task
+                        on the target Windows host (created by <code>Enable-PatchPilotSSH.ps1</code>).
+                        When enabled, PatchPilot checks for and applies Windows security and feature updates
+                        (KB patches) in addition to winget app updates.
+                    </div>
+                </div>
+
                 <button class="btn btn-primary" onclick="saveWingetSettings()" style="margin-top:4px;">
                     Save Windows Settings
                 </button>
@@ -2766,6 +2783,9 @@
                 if (settings.winget_excluded_ids !== undefined) {
                     wingetExcludedRenderPills(settings.winget_excluded_ids.value || '');
                 }
+                if (settings.winupdate_enabled !== undefined) {
+                    document.getElementById('winupdate-enabled').checked = settings.winupdate_enabled.value === 'true';
+                }
                 updateTimezoneWarning();
             } catch (e) {
                 console.error('Failed to load settings:', e);
@@ -2979,16 +2999,23 @@
 
         async function saveWingetSettings() {
             const excludedIds = document.getElementById('winget-excluded-ids').value.trim();
+            const winupdateEnabled = document.getElementById('winupdate-enabled').checked;
 
             try {
-                const res = await fetch('/api/settings/app/winget_excluded_ids', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    credentials: 'include',
-                    body: JSON.stringify({ value: excludedIds })
-                });
-                if (!res.ok) throw new Error('Failed to save winget_excluded_ids');
-                alert('Windows / Winget settings saved!');
+                const pairs = [
+                    ['winget_excluded_ids', excludedIds],
+                    ['winupdate_enabled', winupdateEnabled ? 'true' : 'false'],
+                ];
+                for (const [key, value] of pairs) {
+                    const res = await fetch(`/api/settings/app/${key}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'include',
+                        body: JSON.stringify({ value })
+                    });
+                    if (!res.ok) throw new Error(`Failed to save ${key}`);
+                }
+                alert('Windows settings saved!');
             } catch (e) {
                 alert('Failed to save Windows settings: ' + e.message);
             }
