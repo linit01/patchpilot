@@ -69,3 +69,4 @@ certs/patchpilot.csr
 certs/*.key
 patchpilot.tgz
 patchpilot.tgz.b64
+.claude/
