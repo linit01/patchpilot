@@ -29,6 +29,9 @@
     # Comma-separated winget package IDs to skip (Microsoft.Edge by default).
     winget_excluded_ids: "{{ lookup('env', 'WINGET_EXCLUDED_IDS') | default('Microsoft.Edge', true) }}"
 
+    # Windows Update (PSWindowsUpdate) — must be explicitly enabled.
+    winupdate_enabled: "{{ lookup('env', 'WINUPDATE_ENABLED') | default('false', true) | lower == 'true' }}"
+
   tasks:
     # ── Explicit fact gathering ────────────────────────────────────────────────
     # gather_facts: no at the play level prevents Ansible from aborting the
@@ -344,6 +347,81 @@
       changed_when: false
       failed_when: false
 
+    # ── Windows Update check (PSWindowsUpdate) ────────────────────────────────
+    - name: Run Windows Update check via scheduled task (Windows)
+      win_shell: |
+        $ErrorActionPreference = 'SilentlyContinue'
+        $outputFile = "C:\ProgramData\PatchPilot\winupdate-check.txt"
+        $taskName = "PP-WinUpdate"
+
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if (-not $task) {
+          Write-Output "NO_UPDATES"
+          Write-Output "WINUPDATE_TASK_MISSING: PP-WinUpdate scheduled task not found."
+          exit 0
+        }
+
+        # Remove stale output
+        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
+
+        # Start the task and wait for it to complete
+        Start-ScheduledTask -TaskName $taskName
+        $timeout = 120
+        $elapsed = 0
+        while ($elapsed -lt $timeout) {
+          Start-Sleep -Seconds 5
+          $elapsed += 5
+          $state = (Get-ScheduledTask -TaskName $taskName).State
+          if ($state -ne "Running") { break }
+        }
+
+        # Read and parse the output file
+        if (-not (Test-Path $outputFile)) {
+          Write-Output "NO_UPDATES"
+          exit 0
+        }
+
+        $raw = Get-Content $outputFile -Raw -Encoding UTF8
+        $lines = $raw -split "`n"
+
+        $count = 0
+        foreach ($line in $lines) {
+          $line = $line.Trim()
+          if (-not $line) { continue }
+          # PSWindowsUpdate output format: "KB1234567 Title Size"
+          # or table format with Status, KB, Size, Title columns
+          if ($line -match '^\s*-+') { continue }
+          if ($line -match '^\s*Status\s+') { continue }
+          if ($line -match '^\s*$') { continue }
+          # Match lines that contain a KB number
+          if ($line -match 'KB\d+') {
+            # Extract KB and title
+            $kbMatch = [regex]::Match($line, '(KB\d+)')
+            $kb = $kbMatch.Value
+            # Clean up title -- remove status chars and extra whitespace
+            $title = $line -replace '^\s*[\-\s]*', '' -replace '\s{2,}', ' '
+            Write-Output "$title"
+            $count++
+          }
+        }
+
+        if ($count -eq 0) {
+          Write-Output "NO_UPDATES"
+        }
+      register: winupdate_updates
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winupdate_enabled | bool
+      changed_when: false
+      failed_when: false
+
+    - name: Skip Windows Update check (disabled)
+      debug:
+        msg: "Windows Update check skipped on {{ inventory_hostname }} -- winupdate_enabled=false. Enable in Settings > General > Windows."
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - not (winupdate_enabled | bool)
+
     # ── Emit package details ───────────────────────────────────────────────────
     - name: Emit Debian package details
       debug:
@@ -384,6 +462,18 @@
         - winget_updates.stdout_lines | length > 0
         - winget_updates.stdout_lines[0] != "NO_UPDATES"
 
+    - name: Emit Windows Update package details (Windows)
+      debug:
+        msg: "PACKAGE: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ winupdate_updates.stdout_lines | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winupdate_enabled | bool
+        - winupdate_updates is defined
+        - winupdate_updates.stdout_lines is defined
+        - winupdate_updates.stdout_lines | length > 0
+        - winupdate_updates.stdout_lines[0] != "NO_UPDATES"
+
     # ── Status ─────────────────────────────────────────────────────────────────
     - name: Show update status
       debug:
@@ -399,10 +489,12 @@
             {{ mas_updates.stdout_lines | length }} App Store updates available
           {% elif winget_updates is defined and winget_updates.stdout_lines is defined and winget_updates.stdout_lines | length > 0 and winget_updates.stdout_lines[0] != "NO_UPDATES" %}
             {{ winget_updates.stdout_lines | length }} winget updates available
+          {% elif winupdate_updates is defined and winupdate_updates.stdout_lines is defined and winupdate_updates.stdout_lines | length > 0 and winupdate_updates.stdout_lines[0] != "NO_UPDATES" %}
+            {{ winupdate_updates.stdout_lines | length }} Windows updates available
           {% else %}
             Up to date
           {% endif %}
-      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or (mas_updates is defined and mas_updates.stdout_lines is defined) or (winget_updates is defined and winget_updates.stdout_lines is defined)
+      when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or (mas_updates is defined and mas_updates.stdout_lines is defined) or (winget_updates is defined and winget_updates.stdout_lines is defined) or (winupdate_updates is defined and winupdate_updates.stdout_lines is defined)
 
     # =========================================================================
     # APPLY UPDATES  (--tags apply-updates)
@@ -622,7 +714,7 @@
 
         # Swap action to the apply command
         $applyCmd = "winget upgrade --all --include-unknown --accept-source-agreements --accept-package-agreements --silent --force 2>&1 | Out-File '$outputFile' -Encoding UTF8"
-        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$applyCmd`""
+        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$applyCmd`""
         Set-ScheduledTask -TaskName $taskName -Action $applyAction | Out-Null
 
         # Remove stale output
@@ -646,7 +738,7 @@
 
         # Restore the original check action
         $checkCmd = "winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File '$checkOutputFile' -Encoding UTF8"
-        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$checkCmd`""
+        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$checkCmd`""
         Set-ScheduledTask -TaskName $taskName -Action $checkAction | Out-Null
 
         # Read and output the results
@@ -675,6 +767,88 @@
         - winget_upgrade_result is not skipped
         - winget_upgrade_result.stdout is defined
         - winget_upgrade_result.stdout | length > 0
+      tags: ['never', 'apply-updates']
+
+    # ── Windows: Apply Windows Updates (PSWindowsUpdate) ────────────────────────
+    - name: Apply Windows Updates (Windows)
+      win_shell: |
+        $ErrorActionPreference = 'SilentlyContinue'
+        $taskName = "PP-WinUpdate"
+        $outputFile = "C:\ProgramData\PatchPilot\winupdate-apply.txt"
+        $checkOutputFile = "C:\ProgramData\PatchPilot\winupdate-check.txt"
+
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if (-not $task) {
+          Write-Output "WINUPDATE_TASK_MISSING: $taskName not found."
+          exit 1
+        }
+
+        # Swap action to the apply command
+        $applyCmd = "Import-Module PSWindowsUpdate; Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -AutoReboot:`$false -Confirm:`$false 2>&1 | Out-File '$outputFile' -Encoding UTF8"
+        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$applyCmd`""
+        Set-ScheduledTask -TaskName $taskName -Action $applyAction | Out-Null
+
+        # Remove stale output
+        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
+
+        # Run the apply
+        Start-ScheduledTask -TaskName $taskName
+        $timeout = 3600
+        $elapsed = 0
+        while ($elapsed -lt $timeout) {
+          Start-Sleep -Seconds 15
+          $elapsed += 15
+          $state = (Get-ScheduledTask -TaskName $taskName).State
+          if ($state -ne "Running") { break }
+        }
+
+        if ($elapsed -ge $timeout) {
+          Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+          Write-Output "WARNING: Windows Update apply timed out after 60 minutes."
+        }
+
+        # Restore the original check action
+        $checkCmd = "Import-Module PSWindowsUpdate; Get-WindowsUpdate -MicrosoftUpdate 2>&1 | Out-File '$checkOutputFile' -Encoding UTF8"
+        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$checkCmd`""
+        Set-ScheduledTask -TaskName $taskName -Action $checkAction | Out-Null
+
+        # Read output
+        if (Test-Path $outputFile) {
+          Get-Content $outputFile -Raw
+        } else {
+          Write-Output "No output from Windows Update apply."
+        }
+
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+        $exitCode = if ($taskInfo) { $taskInfo.LastTaskResult } else { -1 }
+        Write-Output "WINUPDATE_APPLY_EXIT: $exitCode"
+      register: winupdate_upgrade_result
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winupdate_enabled | bool
+      failed_when: false
+      async: 4200
+      poll: 30
+      tags: ['never', 'apply-updates']
+
+    - name: Show Windows Update results (Windows)
+      debug:
+        msg: "{{ winupdate_upgrade_result.stdout_lines | default(['(no output)']) | join(' | ') }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winupdate_enabled | bool
+        - winupdate_upgrade_result is defined
+        - winupdate_upgrade_result is not skipped
+        - winupdate_upgrade_result.stdout is defined
+        - winupdate_upgrade_result.stdout | length > 0
+      tags: ['never', 'apply-updates']
+
+    - name: Skip Windows Updates (disabled)
+      debug:
+        msg: "Windows Update apply skipped on {{ inventory_hostname }} -- winupdate_enabled=false."
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - not (winupdate_enabled | bool)
       tags: ['never', 'apply-updates']
 
     # ── Reboot handling ────────────────────────────────────────────────────────

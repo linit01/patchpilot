@@ -221,7 +221,7 @@ class AnsibleRunner:
                         _rows = await _conn.fetch(
                             "SELECT key, value FROM settings WHERE key IN "
                             "('mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds', "
-                            "'winget_excluded_ids')"
+                            "'winget_excluded_ids', 'winupdate_enabled')"
                         )
                         for _r in _rows:
                             if _r['value'] is not None:
@@ -572,7 +572,8 @@ class AnsibleRunner:
                         _rows = await _conn.fetch(
                             "SELECT key, value FROM settings WHERE key IN "
                             "('macos_system_updates_enabled', "
-                            "'mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds')"
+                            "'mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds', "
+                            "'winupdate_enabled')"
                         )
                         for _r in _rows:
                             if _r['key'] == 'macos_system_updates_enabled' and _r['value']:
@@ -620,6 +621,24 @@ class AnsibleRunner:
                 env['WINGET_EXCLUDED_IDS'] = _winget_excluded_from_db
             elif os.getenv('WINGET_EXCLUDED_IDS'):
                 env['WINGET_EXCLUDED_IDS'] = os.getenv('WINGET_EXCLUDED_IDS', '')
+
+            # ── Windows Update (PSWindowsUpdate) settings ──────────────────
+            _winupdate_from_db = None
+            try:
+                if self.db_client and self.db_client.pool:
+                    async with self.db_client.pool.acquire() as _conn:
+                        _row = await _conn.fetchrow(
+                            "SELECT value FROM settings WHERE key = 'winupdate_enabled'"
+                        )
+                        if _row and _row['value'] is not None:
+                            _winupdate_from_db = _row['value']
+            except Exception as _wue:
+                logger.warning("Could not load winupdate settings from DB (non-fatal): %s", _wue)
+            if _winupdate_from_db is not None:
+                env['WINUPDATE_ENABLED'] = _winupdate_from_db
+            elif os.getenv('WINUPDATE_ENABLED'):
+                env['WINUPDATE_ENABLED'] = os.getenv('WINUPDATE_ENABLED', 'false')
+
             # Overall runner timeout = larger of 30 min or mas_timeout + 5 min buffer
             try:
                 _mas_secs = int(env.get('MAS_TIMEOUT_SECONDS', '7200'))

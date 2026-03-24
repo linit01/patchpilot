@@ -667,14 +667,23 @@ try {
     Write-Info "Could not set ACL on $ppDataDir -- winget output may require manual cleanup."
 }
 
+# Set machine-wide execution policy to Bypass so PSWindowsUpdate and other
+# modules can load without prompts in scheduled tasks and SSH sessions.
+try {
+    Set-ExecutionPolicy Bypass -Scope LocalMachine -Force
+    Write-Ok "Execution policy set to Bypass (machine-wide)."
+} catch {
+    Write-Info "Could not set execution policy -- PSWindowsUpdate may not load in scheduled tasks."
+}
+
+# The task runs as the current admin user (who has working winget and WU access).
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+# ---- PP-WingetCheck scheduled task ----
 $taskName = "PP-WingetCheck"
 $wingetCmd = "winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File '$ppDataDir\winget-check.txt' -Encoding UTF8"
-$taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$wingetCmd`""
+$taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$wingetCmd`""
 $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
-
-# The task runs as the current admin user (who has working winget).
-# This will prompt for the current user's password.
-$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existingTask) {
@@ -692,7 +701,32 @@ try {
 } catch {
     Write-Fail "Could not create scheduled task '$taskName': $_"
     Write-Info "You can create it manually:"
-    Write-Info "  Register-ScheduledTask -TaskName 'PP-WingetCheck' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -Command `"winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File C:\ProgramData\PatchPilot\winget-check.txt -Encoding UTF8`"') -User '$currentUser' -RunLevel Highest"
+    Write-Info "  Register-ScheduledTask -TaskName 'PP-WingetCheck' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -Command `\"winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File C:\ProgramData\PatchPilot\winget-check.txt -Encoding UTF8`\"') -User '$currentUser' -RunLevel Highest"
+}
+
+# ---- PP-WinUpdate scheduled task ----
+if (-not $SkipPSWindowsUpdate) {
+    $wuTaskName = "PP-WinUpdate"
+    $wuCmd = "Import-Module PSWindowsUpdate; Get-WindowsUpdate -MicrosoftUpdate 2>&1 | Out-File '$ppDataDir\winupdate-check.txt' -Encoding UTF8"
+    $wuTaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$wuCmd`""
+    $wuTaskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+
+    $existingWuTask = Get-ScheduledTask -TaskName $wuTaskName -ErrorAction SilentlyContinue
+    if ($existingWuTask) {
+        Write-Ok "Scheduled task '$wuTaskName' already exists -- updating."
+    }
+
+    try {
+        Register-ScheduledTask -TaskName $wuTaskName -Action $wuTaskAction -Settings $wuTaskSettings -User $currentUser -RunLevel Highest -Force | Out-Null
+        Write-Ok "Scheduled task '$wuTaskName' registered as '$currentUser'."
+        Write-Info "PatchPilot triggers this task on-demand to check for Windows Updates."
+    } catch {
+        Write-Fail "Could not create scheduled task '$wuTaskName': $_"
+        Write-Info "You can create it manually:"
+        Write-Info "  Register-ScheduledTask -TaskName 'PP-WinUpdate' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `\"Import-Module PSWindowsUpdate; Get-WindowsUpdate -MicrosoftUpdate 2>&1 | Out-File C:\ProgramData\PatchPilot\winupdate-check.txt -Encoding UTF8`\"') -User '$currentUser' -RunLevel Highest"
+    }
+} else {
+    Write-Info "Skipping PP-WinUpdate scheduled task (PSWindowsUpdate was skipped)."
 }
 
 # -- Restart sshd to apply config changes --------------------------------------
@@ -782,13 +816,23 @@ if (Test-Path $ADMIN_KEYS) {
     $allPassed = $false
 }
 
-# Check scheduled task
+# Check scheduled tasks
 $ppTask = Get-ScheduledTask -TaskName "PP-WingetCheck" -ErrorAction SilentlyContinue
 if ($ppTask) {
     Write-Ok "Scheduled task 'PP-WingetCheck' exists (runs as: $($ppTask.Principal.UserId))."
 } else {
     Write-Fail "Scheduled task 'PP-WingetCheck' not found -- winget checks will not work."
     $allPassed = $false
+}
+
+$wuTask = Get-ScheduledTask -TaskName "PP-WinUpdate" -ErrorAction SilentlyContinue
+if ($wuTask) {
+    Write-Ok "Scheduled task 'PP-WinUpdate' exists (runs as: $($wuTask.Principal.UserId))."
+} elseif (-not $SkipPSWindowsUpdate) {
+    Write-Fail "Scheduled task 'PP-WinUpdate' not found -- Windows Update checks will not work."
+    $allPassed = $false
+} else {
+    Write-Info "Scheduled task 'PP-WinUpdate' skipped (PSWindowsUpdate not installed)."
 }
 
 # Summary
