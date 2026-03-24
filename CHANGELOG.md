@@ -4,6 +4,60 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.13.13-alpha] — 2026-03-24
+
+### Fixed
+- **Windows Update (PSWindowsUpdate) packages no longer show UNKNOWN badge**: added `winupdate` parser in `ansible_runner.py` that detects `KB#` in PACKAGE lines and extracts a clean title; PSWindowsUpdate check in `check-os-updates.yml` now emits structured `Title (KB#) installed -> available` format
+- **macOS system update duplicates eliminated**: `softwareupdate -l` Title lines (tab-prefixed duplicates of `* Label:` lines) are now detected and skipped — handles both real tab characters and Ansible's literal `\t` escaping
+- **Show update status combines Windows sources**: the Jinja2 `elif` chain that hid winupdate counts when winget packages existed is replaced with a combined block that sums both sources into one total
+- **Ghost host bug**: deleted hosts no longer reappear after the next periodic check — `app.py` now snapshots current DB hostnames before the upsert loop and skips any hostname that was removed while Ansible was in-flight
+
+---
+
+## [0.13.12-alpha] — 2026-03-24
+
+### Fixed
+- **Windows Update packages parsed as `winupdate` type**: first pass at KB-based parser for PSWindowsUpdate PACKAGE lines (refined in 0.13.13)
+- **macOS `Title:` line noise filter**: initial skip for `softwareupdate -l` duplicate Title lines (tab escaping fix in 0.13.13)
+
+---
+
+## [0.13.11-alpha] — 2026-03-24
+
+### Added
+- **Windows Update support via PSWindowsUpdate**: new scheduled task `PP-WinUpdate` for checking and applying OS-level Windows Updates alongside winget app updates; `winupdate_enabled` setting (default: false) gates the feature; `Enable-PatchPilotSSH.ps1` bootstraps the PSWindowsUpdate module and creates the scheduled task
+- **Separate winget and winupdate patching tasks**: `check-os-updates.yml` now has distinct check/apply paths for winget (app-level) and Windows Update (OS-level), each with their own output files and scheduled tasks
+
+---
+
+## [0.13.10-alpha] — 2026-03-23
+
+### Fixed
+- **Dashboard donut chart colors**: update type chart now uses a stable color palette instead of random assignment; `unknown` gets a distinct grey
+- **Homebrew patch activity tracking**: `_extract_patched_packages()` Strategy 4 now parses brew upgrade output (`==> Upgrading pkg` + version lines) so Homebrew patches appear in patch history with correct counts
+- **Copy button reliability**: clipboard copy for SSH keys and setup commands no longer fails silently on non-HTTPS contexts
+
+---
+
+## [0.13.9-alpha] — 2026-03-23
+
+### Added
+- **Windows agent setup endpoint**: `/api/setup/windows-agent` serves the `Enable-PatchPilotSSH.ps1` script with the default SSH public key pre-embedded — users download one script and run it, no manual key copy needed
+- **"Add Windows Host" button**: Hosts page now shows a dedicated button that opens a modal with the PowerShell setup command and copy button
+
+### Fixed
+- **Connection test OS auto-detect**: `os_family` from the SSH connection test is now correctly passed through both the create and edit host flows
+
+---
+
+## [0.13.8-alpha] — 2026-03-23
+
+### Added
+- **Windows agent setup endpoint and Add Windows Host button**: initial implementation (refined in 0.13.9)
+- **`Enable-PatchPilotSSH.ps1` improvements**: winget source agreement acceptance during setup, network profile auto-fix for Public → Private, PSWindowsUpdate pre-install step
+
+---
+
 ## [0.13.7-alpha] — 2026-03-23
 
 ### Fixed
