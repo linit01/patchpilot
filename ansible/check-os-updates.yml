@@ -388,19 +388,27 @@
         foreach ($line in $lines) {
           $line = $line.Trim()
           if (-not $line) { continue }
-          # PSWindowsUpdate output format: "KB1234567 Title Size"
-          # or table format with Status, KB, Size, Title columns
+          # PSWindowsUpdate output format varies — table with Status, KB, Size, Title columns
           if ($line -match '^\s*-+') { continue }
           if ($line -match '^\s*Status\s+') { continue }
+          if ($line -match '^\s*X\s+ComputerName') { continue }
           if ($line -match '^\s*$') { continue }
           # Match lines that contain a KB number
           if ($line -match 'KB\d+') {
-            # Extract KB and title
             $kbMatch = [regex]::Match($line, '(KB\d+)')
             $kb = $kbMatch.Value
-            # Clean up title -- remove status chars and extra whitespace
-            $title = $line -replace '^\s*[\-\s]*', '' -replace '\s{2,}', ' '
-            Write-Output "$title"
+            # Extract size (e.g. "56GB", "920019KiB", "1GB")
+            $sizeMatch = [regex]::Match($line, '(\d+(?:\.\d+)?)\s*([KMGT]i?B)', 'IgnoreCase')
+            $size = if ($sizeMatch.Success) { $sizeMatch.Value } else { "" }
+            # Extract title — remove KB, size, status chars, computer name, extra whitespace
+            $title = $line -replace '^\s*\d+\s+\S+\s+\S+\s+', '' `
+                          -replace 'KB\d+', '' `
+                          -replace '\d+(?:\.\d+)?\s*[KMGT]i?B', '' `
+                          -replace '^\s*[\-\s]+', '' `
+                          -replace '\s{2,}', ' '
+            $title = $title.Trim()
+            if (-not $title) { $title = "Windows Update" }
+            Write-Output "$title ($kb) installed -> available"
             $count++
           }
         }
@@ -487,10 +495,10 @@
             macOS system updates available
           {% elif mas_updates is defined and mas_updates.stdout_lines is defined and mas_updates.stdout_lines | length > 0 %}
             {{ mas_updates.stdout_lines | length }} App Store updates available
-          {% elif winget_updates is defined and winget_updates.stdout_lines is defined and winget_updates.stdout_lines | length > 0 and winget_updates.stdout_lines[0] != "NO_UPDATES" %}
-            {{ winget_updates.stdout_lines | length }} winget updates available
-          {% elif winupdate_updates is defined and winupdate_updates.stdout_lines is defined and winupdate_updates.stdout_lines | length > 0 and winupdate_updates.stdout_lines[0] != "NO_UPDATES" %}
-            {{ winupdate_updates.stdout_lines | length }} Windows updates available
+          {% elif (winget_updates is defined and winget_updates.stdout_lines is defined and winget_updates.stdout_lines | length > 0 and winget_updates.stdout_lines[0] != "NO_UPDATES") or (winupdate_updates is defined and winupdate_updates.stdout_lines is defined and winupdate_updates.stdout_lines | length > 0 and winupdate_updates.stdout_lines[0] != "NO_UPDATES") %}
+            {% set winget_count = (winget_updates.stdout_lines | length) if (winget_updates is defined and winget_updates.stdout_lines is defined and winget_updates.stdout_lines | length > 0 and winget_updates.stdout_lines[0] != "NO_UPDATES") else 0 %}
+            {% set winupdate_count = (winupdate_updates.stdout_lines | length) if (winupdate_updates is defined and winupdate_updates.stdout_lines is defined and winupdate_updates.stdout_lines | length > 0 and winupdate_updates.stdout_lines[0] != "NO_UPDATES") else 0 %}
+            {{ winget_count + winupdate_count }} Windows updates available
           {% else %}
             Up to date
           {% endif %}

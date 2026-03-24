@@ -962,8 +962,22 @@ async def run_ansible_check_task(limit_hosts: list = None):
     for hostname, data in hosts_data.items():
         print(f"[CHECK] {hostname} → status={data.get('status')} updates={data.get('total_updates')} "
               f"os={data.get('os_family','?')}")
+
+    # Snapshot current DB hostnames *right now* — if a host was deleted while
+    # the Ansible check was in-flight, its hostname will be absent from this
+    # set and we must NOT re-create it via upsert.
+    try:
+        current_db_hosts = await db.get_all_hosts()
+        known_hostnames = {h['hostname'] for h in current_db_hosts}
+    except Exception:
+        known_hostnames = None  # on error, allow all (safe fallback)
+
     # Update database with results
     for hostname, data in hosts_data.items():
+        # Guard: skip hosts that were deleted mid-check
+        if known_hostnames is not None and hostname not in known_hostnames:
+            print(f"[CHECK] Skipping {hostname} — not in DB (deleted during check?)")
+            continue
         try:
             host = await db.upsert_host(
                 hostname=hostname,
