@@ -951,13 +951,44 @@ class AnsibleRunner:
                                         'update_type': 'winget'
                                     })
                                 else:
-                                    # Unknown format -- store raw line as a generic package
-                                    hosts_data[hostname]['update_details'].append({
-                                        'package_name': package_data[:80],
-                                        'current_version': 'unknown',
-                                        'available_version': 'available',
-                                        'update_type': 'unknown'
-                                    })
+                                    # Windows Update (PSWindowsUpdate) format:
+                                    #   New: "Title (KB#) installed -> available"
+                                    #   Old: "KB# size Title"  or  "KB# 56GB 2026-03 Security Update..."
+                                    winupdate_kb = re.search(r'(KB\d+)', package_data)
+                                    if winupdate_kb:
+                                        kb = winupdate_kb.group(1)
+                                        # Strip trailing "installed -> available" (new format)
+                                        title = re.sub(r'\s+installed\s*->\s*available\s*$', '', package_data)
+                                        # Strip the KB token itself (and surrounding parens)
+                                        title = re.sub(r'\(?' + re.escape(kb) + r'\)?', '', title)
+                                        # Strip size tokens like "56GB", "1GB", "920019KiB"
+                                        title = re.sub(r'\b\d+(?:\.\d+)?\s*[KMGT]i?B\b', '', title, flags=re.IGNORECASE)
+                                        # Strip leading noise (line numbers, dashes, whitespace)
+                                        title = re.sub(r'^\s*[\d\-\s]+', '', title).strip(' ,')
+                                        title = re.sub(r'\s{2,}', ' ', title).strip()
+                                        # Strip empty parens left over
+                                        title = re.sub(r'\(\s*\)', '', title).strip()
+                                        if not title:
+                                            title = kb
+                                        hosts_data[hostname]['update_details'].append({
+                                            'package_name': f"{title} ({kb})" if kb not in title else title,
+                                            'current_version': 'installed',
+                                            'available_version': 'available',
+                                            'update_type': 'winupdate'
+                                        })
+                                    # macOS softwareupdate Title line (duplicate of * Label line):
+                                    #   "Title: macOS Tahoe 26.4, Version: 26.4, Size: ..."
+                                    elif re.match(r'^Title:\s+', package_data):
+                                        # Skip — the * Label line already emitted this update
+                                        pass
+                                    else:
+                                        # Unknown format -- store raw line as a generic package
+                                        hosts_data[hostname]['update_details'].append({
+                                            'package_name': package_data[:80],
+                                            'current_version': 'unknown',
+                                            'available_version': 'available',
+                                            'update_type': 'unknown'
+                                        })
 
         # Look for reboot required status
             if 'Check if reboot required' in line:
