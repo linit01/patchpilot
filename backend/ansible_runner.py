@@ -912,6 +912,14 @@ class AnsibleRunner:
                             'available_version': brew_match.group(3),
                             'update_type': 'brew'
                         })
+                    elif hosts_data.get(hostname, {}).get('os_family') == 'Darwin' and re.match(r'^[\w\-\.@/]+$', package_data):
+                        # Bare brew package name (no version info — brew outdated without --verbose)
+                        hosts_data[hostname]['update_details'].append({
+                            'package_name': package_data.strip(),
+                            'current_version': 'installed',
+                            'available_version': 'available',
+                            'update_type': 'brew'
+                        })
                     else:
                         # macOS system updates format: "* Label: macOS Sequoia 15.3-24D2068"
                         # or "   Title: macOS Sequoia 15.3, Version: 15.3, Size: 7331569K"

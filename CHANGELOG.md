@@ -4,6 +4,16 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.13.14-alpha] — 2026-03-25
+
+### Added
+- **OS icons in Dashboard and Settings**: small color SVG icons (Apple grey, Windows blue, Tux yellow/black) appear next to the OS family in the Dashboard hosts table, host detail panel, and Settings hosts list; unknown OS types show a generic server icon
+
+### Fixed
+- **Homebrew packages no longer show UNKNOWN badge**: `brew outdated` now runs with `--verbose` flag to emit version info (`pkg (ver) < ver`) that the parser can match; added bare package name fallback for Darwin hosts as a safety net
+
+---
+
 ## [0.13.13-alpha] — 2026-03-24
 
 ### Fixed

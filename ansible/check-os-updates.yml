@@ -205,7 +205,7 @@
 
     # ── macOS checks ───────────────────────────────────────────────────────────
     - name: Check for Homebrew updates (macOS)
-      shell: "{{ brew_bin_path }} outdated"
+      shell: "{{ brew_bin_path }} outdated --verbose"
       register: brew_updates
       when:
         - ansible_facts['os_family'] == "Darwin"
