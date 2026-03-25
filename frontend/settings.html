@@ -2330,6 +2330,21 @@
             }
         }
         
+        // OS icon helper (matches app.js)
+        function getOsIcon(osFamily, size = 14) {
+            const f = (osFamily || '').toLowerCase();
+            if (f === 'darwin') {
+                return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" style="vertical-align:middle;margin-right:4px;flex-shrink:0"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.81-1.31.05-2.31-1.32-3.15-2.56C4.22 16 2.97 11.2 5.81 8.09a5.07 5.07 0 0 1 4.28-2.16c1.28.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83z" fill="#A2AAAD"/><path d="M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z" fill="#A2AAAD"/></svg>`;
+            }
+            if (f === 'windows') {
+                return `<svg width="${size}" height="${size}" viewBox="0 0 16 16" style="vertical-align:middle;margin-right:4px;flex-shrink:0"><path d="M0 2.3l6.5-.9v6.3H0z" fill="#0078D4"/><path d="M7.3 1.3L16 0v7.7H7.3z" fill="#0078D4"/><path d="M0 8.5h6.5v6.3L0 13.9z" fill="#0078D4"/><path d="M7.3 8.5H16V16l-8.7-1.2z" fill="#0078D4"/></svg>`;
+            }
+            if (f === 'debian' || f === 'redhat' || f === 'suse' || f === 'archlinux' || f === 'alpine') {
+                return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" style="vertical-align:middle;margin-right:4px;flex-shrink:0"><ellipse cx="12" cy="14.5" rx="7" ry="8" fill="#333"/><ellipse cx="12" cy="14" rx="5" ry="6.5" fill="#F5C518"/><ellipse cx="12" cy="7" rx="5.5" ry="5" fill="#333"/><ellipse cx="12" cy="7.5" rx="4" ry="3.5" fill="#555"/><circle cx="10" cy="7.2" r="2" fill="white"/><circle cx="14" cy="7.2" r="2" fill="white"/><circle cx="10.3" cy="7" r="1" fill="#333"/><circle cx="14.3" cy="7" r="1" fill="#333"/><path d="M10.8 10Q12 11.2 13.2 10" fill="#E8850C" stroke="#E8850C" stroke-width="0.5"/><path d="M6.5 19Q5 21 4 22L6 22.5Q6.5 21.5 7.5 20z" fill="#E8850C"/><path d="M17.5 19Q19 21 20 22L18 22.5Q17.5 21.5 16.5 20z" fill="#E8850C"/></svg>`;
+            }
+            return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" style="vertical-align:middle;margin-right:4px;flex-shrink:0"><rect x="3" y="4" width="18" height="6" rx="2" fill="none" stroke="#888" stroke-width="1.5"/><circle cx="17" cy="7" r="1" fill="#888"/><rect x="3" y="14" width="18" height="6" rx="2" fill="none" stroke="#888" stroke-width="1.5"/><circle cx="17" cy="17" r="1" fill="#888"/></svg>`;
+        }
+
         // Load hosts list
         async function loadHosts() {
             try {
@@ -2360,7 +2375,7 @@
                     <div class="host-item">
                         <div class="host-info">
                             <div class="host-name">
-                                ${host.is_control_node ? '🏠 ' : ''}${host.hostname}
+                                ${getOsIcon(host.os_family)}${host.is_control_node ? '🏠 ' : ''}${host.hostname}
                             </div>
                             <div class="host-details">
                                 <span class="host-status status-${host.status || 'unknown'}">
