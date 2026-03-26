@@ -1,0 +1,38 @@
+# PatchPilot — Line ending normalization
+# Prevents CRLF from breaking shell scripts and configs inside Linux containers.
+# Windows PowerShell scripts keep CRLF; everything else uses LF.
+
+# Default: auto-detect
+* text=auto
+
+# Force LF on files that run inside Linux containers or are parsed by Linux tools
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.py        text eol=lf
+*.conf      text eol=lf
+*.cnf       text eol=lf
+*.cfg       text eol=lf
+*.html      text eol=lf
+*.css       text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.sql       text eol=lf
+*.env*      text eol=lf
+Dockerfile* text eol=lf
+nginx.conf  text eol=lf
+
+# PowerShell scripts keep Windows line endings
+*.ps1       text eol=crlf
+
+# Binary files — no conversion
+*.jpeg      binary
+*.jpg       binary
+*.png       binary
+*.gif       binary
+*.ico       binary
+*.tgz       binary
+*.tar.gz    binary
+*.zip       binary
