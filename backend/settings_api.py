@@ -192,6 +192,7 @@ async def list_hosts(owner: str = None,
                     h.ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
                     h.ssh_password_encrypted IS NOT NULL AS has_password,
                     h.notes, h.tags, h.status, h.is_control_node, h.allow_auto_reboot,
+                    h.os_family,
                     h.last_checked, h.created_at, h.updated_at,
                     u.username AS owner_username
                 FROM hosts h
@@ -206,6 +207,7 @@ async def list_hosts(owner: str = None,
                     h.ssh_private_key_encrypted IS NOT NULL AS has_ssh_key,
                     h.ssh_password_encrypted IS NOT NULL AS has_password,
                     h.notes, h.tags, h.status, h.is_control_node, h.allow_auto_reboot,
+                    h.os_family,
                     h.last_checked, h.created_at, h.updated_at,
                     u.username AS owner_username
                 FROM hosts h
