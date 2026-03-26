@@ -165,12 +165,11 @@ if ($Method -eq "clone") {
 } else {
     Write-Info "Fetching latest release..."
 
-    # Get tarball/zipball URL from GitHub API
-    $zipUrl = $null
+    # Resolve the tag name first (metadata endpoints need fewer permissions)
+    $tag = $null
     try {
         $release = Invoke-RestMethod -Uri $RELEASE_API -Headers $GHHeaders -TimeoutSec 15
         $tag = $release.tag_name
-        $zipUrl = $release.zipball_url
         Write-Info "Latest release: $tag"
     } catch {
         # Fallback: try tags
@@ -178,47 +177,106 @@ if ($Method -eq "clone") {
             $tags = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/tags?per_page=1" -Headers $GHHeaders -TimeoutSec 15
             if ($tags.Count -gt 0) {
                 $tag = $tags[0].name
-                $zipUrl = $tags[0].zipball_url
                 Write-Info "Latest tag: $tag"
             }
         } catch { }
     }
 
-    if (-not $zipUrl) {
-        # Final fallback: main branch
-        Write-Warn "Could not find a release -- downloading main branch"
-        $zipUrl = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/main"
+    if (-not $tag) {
+        $tag = "main"
+        Write-Warn "Could not determine version -- using main branch"
     }
 
     $tempZip = Join-Path $env:TEMP "patchpilot-download.zip"
     $tempExtract = Join-Path $env:TEMP ("patchpilot-extract-" + [System.IO.Path]::GetRandomFileName())
+    $downloaded = $false
 
+    # Strategy 1: GitHub API zipball endpoint
+    # Requires fine-grained PAT with Contents: Read-only
+    $zipballUrl = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/$tag"
     try {
-        Write-Info "Downloading..."
-        Invoke-WebRequest -Uri $zipUrl -Headers $GHHeaders -OutFile $tempZip -TimeoutSec 120
+        Write-Info "Downloading via API zipball..."
+        Invoke-WebRequest -Uri $zipballUrl -Headers $GHHeaders -OutFile $tempZip -TimeoutSec 120
+        $downloaded = $true
+        Write-Ok "Downloaded via API zipball"
+    } catch {
+        Write-Info "API zipball failed (token may need Contents:Read permission)"
+    }
 
-        Write-Info "Extracting..."
-        Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
+    # Strategy 2: Direct archive URL with token in header
+    if (-not $downloaded) {
+        $archiveUrl = "https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/tags/$tag.zip"
+        if ($tag -eq "main") {
+            $archiveUrl = "https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/heads/main.zip"
+        }
+        $archiveHeaders = @{ "User-Agent" = "PatchPilot-Installer" }
+        if ($GitHubToken) { $archiveHeaders["Authorization"] = "Bearer $GitHubToken" }
 
-        # GitHub zipballs extract to "owner-repo-hash/" -- find the actual content dir
-        $innerDir = Get-ChildItem -Path $tempExtract -Directory | Select-Object -First 1
-        if (-not $innerDir) {
-            Write-Err "Could not find extracted content."
+        try {
+            Write-Info "Trying direct archive URL..."
+            Invoke-WebRequest -Uri $archiveUrl -Headers $archiveHeaders -OutFile $tempZip -TimeoutSec 120
+            $downloaded = $true
+            Write-Ok "Downloaded via archive URL"
+        } catch {
+            Write-Info "Direct archive URL failed"
+        }
+    }
+
+    # Strategy 3: Fall back to git clone if zip methods both failed
+    if (-not $downloaded) {
+        Write-Warn "Zip download failed -- falling back to git clone"
+
+        # Check if git is available now (user might have it even though we chose zip)
+        $gitAvail = $false
+        try { $null = Get-Command git -ErrorAction Stop; $gitAvail = $true } catch { }
+
+        if ($gitAvail -and $GitHubToken) {
+            try {
+                $authUrl = "https://${GitHubToken}@github.com/${REPO_OWNER}/${REPO_NAME}.git"
+                git clone --depth 1 --branch $tag $authUrl $InstallDir 2>&1 | Out-Null
+                Write-Ok "Cloned $tag to $InstallDir"
+                # Skip the extract step below -- we already have the repo
+                $downloaded = $null  # sentinel: clone succeeded, skip extract
+            } catch {
+                Write-Err "git clone also failed: $_"
+            }
+        }
+
+        if ($downloaded -eq $false) {
+            Write-Err "All download methods failed."
+            Write-Host ""
+            Write-Host "    For private repos, your GitHub token needs these permissions:" -ForegroundColor Yellow
+            Write-Host "      Fine-grained PAT: Contents -> Read-only" -ForegroundColor Yellow
+            Write-Host "      Classic PAT:      repo scope" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "    Update token at: https://github.com/settings/tokens" -ForegroundColor Yellow
             exit 1
         }
+    }
 
-        # Move to install dir (rename the inner dir)
-        Move-Item -Path $innerDir.FullName -Destination $InstallDir -Force
-        Write-Ok "Extracted to $InstallDir"
-    } catch {
-        Write-Err "Download failed: $_"
-        if (-not $GitHubToken) {
-            Write-Host "    If the repo is private, re-run with -GitHubToken." -ForegroundColor Yellow
+    # Extract zip (skip if git clone was used above)
+    if ($downloaded -eq $true) {
+        try {
+            Write-Info "Extracting..."
+            Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
+
+            # GitHub zips extract to "owner-repo-hash/" -- find the actual content dir
+            $innerDir = Get-ChildItem -Path $tempExtract -Directory | Select-Object -First 1
+            if (-not $innerDir) {
+                Write-Err "Could not find extracted content."
+                exit 1
+            }
+
+            # Move to install dir
+            Move-Item -Path $innerDir.FullName -Destination $InstallDir -Force
+            Write-Ok "Extracted to $InstallDir"
+        } catch {
+            Write-Err "Extraction failed: $_"
+            exit 1
+        } finally {
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
         }
-        exit 1
-    } finally {
-        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
-        Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -253,7 +311,7 @@ Write-Host ""
 Write-Info "Launching PatchPilot installer..."
 Write-Host ""
 
-$installerScript = Join-Path $InstallDir "scripts" "windows" "Install-PatchPilot.ps1"
+$installerScript = Join-Path (Join-Path (Join-Path $InstallDir "scripts") "windows") "Install-PatchPilot.ps1"
 
 if (-not (Test-Path $installerScript)) {
     Write-Err "Install-PatchPilot.ps1 not found at $installerScript"
@@ -262,4 +320,4 @@ if (-not (Test-Path $installerScript)) {
 }
 
 Set-Location $InstallDir
-& $installerScript
+& "$installerScript"
