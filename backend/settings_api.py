@@ -93,6 +93,8 @@ class HostResponse(BaseModel):
     status: Optional[str]
     is_control_node: bool
     allow_auto_reboot: bool = True
+    os_family: Optional[str] = None
+    owner_username: Optional[str] = None
     last_checked: Optional[datetime]
     created_at: datetime
     updated_at: datetime
