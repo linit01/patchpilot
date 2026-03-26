@@ -8,7 +8,7 @@
 
     1. Detects or installs Python 3 (via winget)
     2. Detects Docker runtime (Docker Desktop or WSL2 Docker Engine)
-       — installs Docker Desktop via winget if neither is found
+       -- installs Docker Desktop via winget if neither is found
     3. Waits for Docker daemon to be ready
     4. Generates .env from .env.example (Fernet key, install dir)
     5. Creates the ansible/ directory with default inventory
@@ -18,11 +18,11 @@
     Run from the PatchPilot repository root as Administrator.
 
 .PARAMETER SkipDockerInstall
-    Skip Docker installation — use if Docker is already installed and you
+    Skip Docker installation -- use if Docker is already installed and you
     want to avoid the winget check.
 
 .PARAMETER SkipPython
-    Skip Python installation — use if Python 3 is already on PATH.
+    Skip Python installation -- use if Python 3 is already on PATH.
 
 .PARAMETER WebInstaller
     Launch the web installer UI instead of running Docker Compose directly.
@@ -63,7 +63,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# Resolve repo root: scripts/windows/Install-PatchPilot.ps1 → repo root (3 levels up)
+# Resolve repo root: scripts/windows/Install-PatchPilot.ps1 -> repo root (3 levels up)
 # If that doesn't look right (e.g., called from a different location), fall back to CWD.
 $REPO_ROOT = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSCommandPath))
 if (-not (Test-Path (Join-Path $REPO_ROOT "docker-compose.yml"))) {
@@ -90,7 +90,8 @@ $TOTAL_STEPS = 7
 # -- Output helpers (match Enable-PatchPilotSSH.ps1 style) ---------------------
 function Write-Step {
     param([int]$Num, [string]$Message)
-    Write-Host "`n[$Num/$TOTAL_STEPS] $Message" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "[$Num/$TOTAL_STEPS] $Message" -ForegroundColor Cyan
 }
 function Write-Ok {
     param([string]$Message)
@@ -294,7 +295,7 @@ if ($SkipDockerInstall) {
             $DockerReady = $true
             Write-Ok "Docker daemon is responsive"
         } else {
-            Write-Info "Docker found but daemon not responding — waiting..."
+            Write-Info "Docker found but daemon not responding -- waiting..."
             if ($DockerType -eq "desktop") {
                 # Try to start Docker Desktop
                 $ddPath = "${env:ProgramFiles}\Docker\Docker\Docker Desktop.exe"
@@ -324,8 +325,8 @@ if ($SkipDockerInstall) {
             }
         }
     } else {
-        # No Docker found — install Docker Desktop via winget
-        Write-Info "No Docker runtime found — installing Docker Desktop via winget..."
+        # No Docker found -- install Docker Desktop via winget
+        Write-Info "No Docker runtime found -- installing Docker Desktop via winget..."
 
         try {
             $null = Get-Command winget -ErrorAction Stop
@@ -347,17 +348,17 @@ if ($SkipDockerInstall) {
         # Docker Desktop typically requires a reboot or at least a logout after first install.
         # WSL2 backend is the default on Win11 but may need enabling.
         Write-Host ""
-        Write-Host "    ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
-        Write-Host "    ║  Docker Desktop was just installed.                         ║" -ForegroundColor Yellow
-        Write-Host "    ║                                                             ║" -ForegroundColor Yellow
-        Write-Host "    ║  You may need to:                                           ║" -ForegroundColor Yellow
-        Write-Host "    ║    1. Log out and back in (or reboot)                       ║" -ForegroundColor Yellow
-        Write-Host "    ║    2. Launch Docker Desktop and complete first-run setup     ║" -ForegroundColor Yellow
-        Write-Host "    ║    3. Accept the Docker Desktop license agreement            ║" -ForegroundColor Yellow
-        Write-Host "    ║    4. Re-run this script once Docker is running              ║" -ForegroundColor Yellow
-        Write-Host "    ║                                                             ║" -ForegroundColor Yellow
-        Write-Host "    ║  Docker Desktop uses the WSL2 backend by default on Win11.  ║" -ForegroundColor Yellow
-        Write-Host "    ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
+        Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
+        Write-Host "    |  Docker Desktop was just installed.                          |" -ForegroundColor Yellow
+        Write-Host "    |                                                              |" -ForegroundColor Yellow
+        Write-Host "    |  You may need to:                                            |" -ForegroundColor Yellow
+        Write-Host "    |    1. Log out and back in (or reboot)                        |" -ForegroundColor Yellow
+        Write-Host "    |    2. Launch Docker Desktop and complete first-run setup      |" -ForegroundColor Yellow
+        Write-Host "    |    3. Accept the Docker Desktop license agreement             |" -ForegroundColor Yellow
+        Write-Host "    |    4. Re-run this script once Docker is running               |" -ForegroundColor Yellow
+        Write-Host "    |                                                              |" -ForegroundColor Yellow
+        Write-Host "    |  Docker Desktop uses the WSL2 backend by default on Win11.   |" -ForegroundColor Yellow
+        Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
         Write-Host ""
 
         if (-not $Unattended) {
@@ -417,12 +418,12 @@ try {
     if ($wslStatus -match "Default Version: 2|WSL version: 2|WSL 2") {
         Write-Ok "WSL2 is active"
     } elseif ($wslStatus -match "WSL") {
-        Write-Ok "WSL detected (version info unavailable — Docker Desktop manages this)"
+        Write-Ok "WSL detected (version info unavailable -- Docker Desktop manages this)"
     } else {
-        Write-Info "WSL status unclear — Docker Desktop will manage the WSL2 backend"
+        Write-Info "WSL status unclear -- Docker Desktop will manage the WSL2 backend"
     }
 } catch {
-    Write-Info "Could not query WSL — Docker Desktop handles WSL2 lifecycle automatically"
+    Write-Info "Could not query WSL -- Docker Desktop handles WSL2 lifecycle automatically"
 }
 
 # ==============================================================================
@@ -431,7 +432,7 @@ try {
 Write-Step -Num 4 -Message "Configuring environment (.env)"
 
 if (Test-Path $ENV_FILE) {
-    Write-Skip "Existing .env found — preserving current configuration"
+    Write-Skip "Existing .env found -- preserving current configuration"
 } else {
     if (-not (Test-Path $ENV_EXAMPLE)) {
         Write-Fail ".env.example not found at $ENV_EXAMPLE"
@@ -476,7 +477,7 @@ if (Test-Path $ENV_FILE) {
     Write-Ok "Fernet encryption key generated and saved"
     Write-Ok "INSTALL_DIR set to $REPO_ROOT"
     Write-Host ""
-    Write-Host "    ** IMPORTANT: Keep .env safe — it contains your encryption key **" -ForegroundColor Yellow
+    Write-Host "    ** IMPORTANT: Keep .env safe -- it contains your encryption key **" -ForegroundColor Yellow
 }
 
 # ==============================================================================
@@ -502,7 +503,7 @@ if (-not (Test-Path $hostsFile)) {
         # Create minimal inventory
         Set-Content -Path $hostsFile -Value @"
 # PatchPilot Ansible Inventory
-# Managed automatically by PatchPilot — manual edits may be overwritten.
+# Managed automatically by PatchPilot -- manual edits may be overwritten.
 [all]
 "@
         Write-Ok "Created empty Ansible inventory"
@@ -519,7 +520,7 @@ if (-not (Test-Path $playbookSrc)) {
 }
 
 # ==============================================================================
-# STEP 6: Launch — Web Installer or Docker Compose
+# STEP 6: Launch -- Web Installer or Docker Compose
 # ==============================================================================
 Write-Step -Num 6 -Message "Starting PatchPilot"
 
@@ -549,13 +550,13 @@ if ($WebInstaller) {
     $webPort = 9090
     Write-Ok "Starting web installer on http://localhost:${webPort}"
     Write-Host ""
-    Write-Host "    ╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-    Write-Host "    ║  Web Installer running at:                                  ║" -ForegroundColor Green
-    Write-Host "    ║    http://localhost:$webPort                                    ║" -ForegroundColor Green
-    Write-Host "    ║                                                             ║" -ForegroundColor Green
-    Write-Host "    ║  Open this URL in your browser to complete setup.           ║" -ForegroundColor Green
-    Write-Host "    ║  Press Ctrl+C to stop the web installer.                    ║" -ForegroundColor Green
-    Write-Host "    ╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Green
+    Write-Host "    |  Web Installer running at:                                   |" -ForegroundColor Green
+    Write-Host "    |    http://localhost:$webPort                                     |" -ForegroundColor Green
+    Write-Host "    |                                                              |" -ForegroundColor Green
+    Write-Host "    |  Open this URL in your browser to complete setup.            |" -ForegroundColor Green
+    Write-Host "    |  Press Ctrl+C to stop the web installer.                     |" -ForegroundColor Green
+    Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Green
     Write-Host ""
 
     # Open browser
@@ -572,7 +573,7 @@ if ($WebInstaller) {
 
     Set-Location $REPO_ROOT
 
-    # Pull images (don't build — use pre-built from Docker Hub)
+    # Pull images (don't build -- use pre-built from Docker Hub)
     Write-Info "Pulling container images..."
     Invoke-Expression "$ComposeCmd pull"
     Write-Ok "Images pulled"
@@ -590,8 +591,7 @@ if ($WebInstaller) {
         Start-Sleep -Seconds 3
         $waited += 3
         try {
-            $resp = Invoke-WebRequest -Uri "http://localhost:$Port/api/auth/check-setup" `
-                        -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue
+            $resp = Invoke-WebRequest -Uri "http://localhost:$Port/api/auth/check-setup" -UseBasicParsing -TimeoutSec 3 -ErrorAction SilentlyContinue
             if ($resp.StatusCode -eq 200) {
                 $healthy = $true
                 break
@@ -604,7 +604,7 @@ if ($WebInstaller) {
     if ($healthy) {
         Write-Ok "Backend healthy (waited ${waited}s)"
     } else {
-        Write-Host "    Backend didn't respond in 120s — check: $ComposeCmd logs backend" -ForegroundColor Yellow
+        Write-Host "    Backend didn't respond in 120s -- check: $ComposeCmd logs backend" -ForegroundColor Yellow
     }
 
     # Check frontend
@@ -612,7 +612,7 @@ if ($WebInstaller) {
         $null = Invoke-WebRequest -Uri "http://localhost:$Port/" -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
         Write-Ok "Frontend healthy"
     } catch {
-        Write-Info "Frontend may still be starting — check: $ComposeCmd logs frontend"
+        Write-Info "Frontend may still be starting -- check: $ComposeCmd logs frontend"
     }
 
     # Open browser
