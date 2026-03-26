@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    PatchPilot — Bootstrap Installer for Windows.
+    PatchPilot -- Bootstrap Installer for Windows.
 
 .DESCRIPTION
     irm https://getpatchpilot.app/install.ps1 | iex
-      → auto-detects best download method (no prompts)
+      -> auto-detects best download method (no prompts)
 
     Or download and run directly:
       irm https://getpatchpilot.app/install.ps1 -OutFile install-patchpilot.ps1
@@ -14,7 +14,7 @@
       curl -fsSL https://getpatchpilot.app/install.sh | bash
 
     What it does:
-      1. Downloads PatchPilot (git clone or release zip — auto-detected)
+      1. Downloads PatchPilot (git clone or release zip -- auto-detected)
       2. Checks prerequisites (Docker, Python)
       3. Launches the full installer (scripts\windows\Install-PatchPilot.ps1)
 
@@ -54,10 +54,10 @@ if (-not $InstallDir) {
 }
 
 # -- Output helpers (match install.sh style) -----------------------------------
-function Write-Ok   { param([string]$m) Write-Host "✓ $m" -ForegroundColor Green }
-function Write-Err  { param([string]$m) Write-Host "✗ $m" -ForegroundColor Red }
-function Write-Warn { param([string]$m) Write-Host "! $m" -ForegroundColor Yellow }
-function Write-Info { param([string]$m) Write-Host "ℹ $m" -ForegroundColor Blue }
+function Write-Ok   { param([string]$m) Write-Host "[OK] $m" -ForegroundColor Green }
+function Write-Err  { param([string]$m) Write-Host "[FAIL] $m" -ForegroundColor Red }
+function Write-Warn { param([string]$m) Write-Host "[WARN] $m" -ForegroundColor Yellow }
+function Write-Info { param([string]$m) Write-Host "[INFO] $m" -ForegroundColor Blue }
 
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -69,17 +69,17 @@ function Test-Administrator {
 Write-Host ""
 Write-Host "    ____        __       __    ____  _ __      __" -ForegroundColor Magenta
 Write-Host "   / __ \____ _/ /______/ /_  / __ \(_) /___  / /_" -ForegroundColor Magenta
-Write-Host "  / /_/ / __ ``/ __/ ___/ __ \/ /_/ / / / __ \/ __/" -ForegroundColor Magenta
+Write-Host "  / /_/ / __  / __/ ___/ __ \/ /_/ / / / __ \/ __/" -ForegroundColor Magenta
 Write-Host " / ____/ /_/ / /_/ /__/ / / / ____/ / / /_/ / /_" -ForegroundColor Magenta
 Write-Host "/_/    \__,_/\__/\___/_/ /_/_/   /_/_/\____/\__/" -ForegroundColor Magenta
 Write-Host ""
-Write-Host "Bootstrap Installer (Windows) — https://getpatchpilot.app" -ForegroundColor Blue
+Write-Host "Bootstrap Installer (Windows) -- https://getpatchpilot.app" -ForegroundColor Blue
 Write-Host ""
 
 # -- Pre-flight ----------------------------------------------------------------
 if (-not (Test-Administrator)) {
     Write-Err "This script must be run as Administrator."
-    Write-Host "    Right-click PowerShell → 'Run as Administrator', then try again."
+    Write-Host "    Right-click PowerShell and select 'Run as Administrator', then try again."
     exit 1
 }
 
@@ -97,7 +97,7 @@ if (Test-Path $InstallDir) {
             exit 0
         }
     } else {
-        Write-Err "Directory '$InstallDir' already exists. Remove it or set `$env:PATCHPILOT_DIR to a different path."
+        Write-Err "Directory already exists. Remove it or set PATCHPILOT_DIR env var to a different path."
         exit 1
     }
 }
@@ -114,11 +114,15 @@ if ($GitHubToken) { $GHHeaders["Authorization"] = "Bearer $GitHubToken" }
 $Method = ""
 
 if ([Environment]::UserInteractive -and $Host.Name -eq "ConsoleHost" -and $HasGit) {
-    # Interactive — let user choose
+    # Interactive -- let user choose
     Write-Host "How would you like to download PatchPilot?" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  1) " -NoNewline; Write-Host "git clone" -ForegroundColor Green -NoNewline; Write-Host "        — latest code, easy to update with git pull"
-    Write-Host "  2) " -NoNewline; Write-Host "Release zip" -ForegroundColor Blue -NoNewline; Write-Host "      — stable release archive, no git required"
+    Write-Host "  1) " -NoNewline
+    Write-Host "git clone" -ForegroundColor Green -NoNewline
+    Write-Host "        -- latest code, easy to update with git pull"
+    Write-Host "  2) " -NoNewline
+    Write-Host "Release zip" -ForegroundColor Blue -NoNewline
+    Write-Host "      -- stable release archive, no git required"
     Write-Host ""
 
     $choice = ""
@@ -171,8 +175,7 @@ if ($Method -eq "clone") {
     } catch {
         # Fallback: try tags
         try {
-            $tags = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/tags?per_page=1" `
-                        -Headers $GHHeaders -TimeoutSec 15
+            $tags = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/tags?per_page=1" -Headers $GHHeaders -TimeoutSec 15
             if ($tags.Count -gt 0) {
                 $tag = $tags[0].name
                 $zipUrl = $tags[0].zipball_url
@@ -183,12 +186,12 @@ if ($Method -eq "clone") {
 
     if (-not $zipUrl) {
         # Final fallback: main branch
-        Write-Warn "Could not find a release — downloading main branch"
+        Write-Warn "Could not find a release -- downloading main branch"
         $zipUrl = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/zipball/main"
     }
 
     $tempZip = Join-Path $env:TEMP "patchpilot-download.zip"
-    $tempExtract = Join-Path $env:TEMP "patchpilot-extract-$([System.IO.Path]::GetRandomFileName())"
+    $tempExtract = Join-Path $env:TEMP ("patchpilot-extract-" + [System.IO.Path]::GetRandomFileName())
 
     try {
         Write-Info "Downloading..."
@@ -197,7 +200,7 @@ if ($Method -eq "clone") {
         Write-Info "Extracting..."
         Expand-Archive -Path $tempZip -DestinationPath $tempExtract -Force
 
-        # GitHub zipballs extract to "owner-repo-hash/" — find the actual content dir
+        # GitHub zipballs extract to "owner-repo-hash/" -- find the actual content dir
         $innerDir = Get-ChildItem -Path $tempExtract -Directory | Select-Object -First 1
         if (-not $innerDir) {
             Write-Err "Could not find extracted content."
@@ -225,22 +228,21 @@ Write-Info "Checking prerequisites..."
 
 $Missing = @()
 try { $null = Get-Command docker -ErrorAction Stop } catch { $Missing += "docker" }
-try {
-    $pyFound = $false
-    foreach ($cmd in @("python", "python3", "py")) {
-        try {
-            $ver = & $cmd --version 2>&1
-            if ($ver -match "Python 3\.") { $pyFound = $true; break }
-        } catch { }
-    }
-    if (-not $pyFound) { $Missing += "python3" }
-} catch { $Missing += "python3" }
+
+$pyFound = $false
+foreach ($cmd in @("python", "python3", "py")) {
+    try {
+        $ver = & $cmd --version 2>&1
+        if ($ver -match "Python 3\.") { $pyFound = $true; break }
+    } catch { }
+}
+if (-not $pyFound) { $Missing += "python3" }
 
 if ($Missing.Count -gt 0) {
     Write-Host ""
     Write-Warn "Missing prerequisites: $($Missing -join ', ')"
     Write-Host ""
-    Write-Host "    That's OK — the full installer will install them automatically via winget." -ForegroundColor Cyan
+    Write-Host "    That's OK -- the full installer will install them automatically via winget." -ForegroundColor Cyan
     Write-Host ""
 } else {
     Write-Ok "All prerequisites found"
