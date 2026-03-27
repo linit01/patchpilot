@@ -128,6 +128,16 @@ Write-Host "  PatchPilot v$PP_VERSION -- Windows Docker Setup" -ForegroundColor 
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
+# -- Clean up auto-resume scheduled task if we're running from one -----------
+$resumeTaskName = "PatchPilotInstallResume"
+$resumeTask = Get-ScheduledTask -TaskName $resumeTaskName -ErrorAction SilentlyContinue
+if ($resumeTask) {
+    Write-Info "Resuming install after reboot..."
+    Unregister-ScheduledTask -TaskName $resumeTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Ok "Auto-resume task cleaned up"
+    Write-Host ""
+}
+
 # -- Pre-flight checks ---------------------------------------------------------
 if (-not (Test-Administrator)) {
     Write-Fail "This script must be run as Administrator."
@@ -413,10 +423,43 @@ if ($SkipDockerInstall) {
             Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
             Write-Host "    |  Windows features were enabled that require a reboot.         |" -ForegroundColor Yellow
             Write-Host "    |                                                              |" -ForegroundColor Yellow
-            Write-Host "    |  Please reboot your computer, then re-run this script.        |" -ForegroundColor Yellow
-            Write-Host "    |  The script will resume from where it left off.               |" -ForegroundColor Yellow
+            Write-Host "    |  The installer will automatically resume after you log back   |" -ForegroundColor Yellow
+            Write-Host "    |  in. A PowerShell window will open to continue the install.   |" -ForegroundColor Yellow
             Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
             Write-Host ""
+
+            # Build the command that will run after reboot
+            # Use the full path to this script so it works regardless of CWD
+            $scriptPath = $PSCommandPath
+            $resumeArgs = ""
+            if ($SkipPython)        { $resumeArgs += " -SkipPython" }
+            if ($WebInstaller)      { $resumeArgs += " -WebInstaller" }
+            if ($Unattended)        { $resumeArgs += " -Unattended" }
+            if ($Port -ne 8080)     { $resumeArgs += " -Port $Port" }
+
+            $taskName = "PatchPilotInstallResume"
+            $psCommand = "Set-ExecutionPolicy Bypass -Scope Process -Force; & '$scriptPath'$resumeArgs"
+
+            # Create a scheduled task that runs once at logon, as the current user, elevated
+            try {
+                # Remove any leftover task from a previous attempt
+                Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+                $action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoExit -NoProfile -Command `"$psCommand`""
+                $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+                $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+                # RunLevel Highest = run as admin
+                $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType Interactive
+
+                Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+                Write-Ok "Scheduled auto-resume task for after reboot"
+                Write-Info "Task name: $taskName (will self-delete on next run)"
+            } catch {
+                Write-Warn "Could not create resume task: $_"
+                Write-Host "    After reboot, manually re-run:" -ForegroundColor Cyan
+                Write-Host "      & '$scriptPath'" -ForegroundColor Cyan
+            }
 
             if (-not $Unattended) {
                 $rebootNow = Read-Host "    Reboot now? [Y/n]"
@@ -426,8 +469,7 @@ if ($SkipDockerInstall) {
                     Restart-Computer -Force
                 }
             }
-            Write-Host "    After reboot, re-run:" -ForegroundColor Cyan
-            Write-Host "      .\Install-PatchPilot.ps1" -ForegroundColor Cyan
+            Write-Host "    Reboot when ready -- the installer will resume automatically." -ForegroundColor Cyan
             exit 0
         }
 
