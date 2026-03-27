@@ -185,7 +185,7 @@ if ($SkipPython) {
     }
 
     if (-not $PythonCmd) {
-        Write-Info "Python 3 not found -- installing via winget..."
+        Write-Info "Python 3 not found -- installing via winget (this may take a minute)..."
 
         # Check winget is available
         try {
@@ -473,23 +473,42 @@ if ($SkipDockerInstall) {
             exit 0
         }
 
-        # -- Step 2b: Install/update WSL2 ---------------------------------------
-        Write-Info "Installing/updating WSL2..."
-        try {
-            # wsl --install ensures WSL2 is set up with a default distro
-            # --no-launch prevents opening a distro window
-            # On systems where WSL is already enabled, this updates the WSL kernel
-            wsl --install --no-launch 2>&1 | Out-Null
+        # -- Step 2b: Ensure WSL2 is ready ----------------------------------------
+        # Docker Desktop manages its own WSL2 distro, so we only need the kernel
+        # updated and WSL2 set as default. We do NOT need to install Ubuntu or
+        # any other distro -- that's what causes wsl --install to hang.
+        Write-Info "Configuring WSL2..."
 
-            # Set WSL2 as the default version
-            wsl --set-default-version 2 2>&1 | Out-Null
-            Write-Ok "WSL2 installed and set as default"
-        } catch {
-            Write-Info "WSL2 setup returned non-zero (may already be configured): $_"
+        # Check if WSL2 is already functional
+        $wslReady = $false
+        try {
+            $wslStatus = wsl --status 2>&1
+            if ($LASTEXITCODE -eq 0) { $wslReady = $true }
+        } catch { }
+
+        if ($wslReady) {
+            Write-Ok "WSL2 is already configured"
+        } else {
+            # Set WSL2 as default version (this works even without a distro)
+            try {
+                wsl --set-default-version 2 2>&1 | Out-Null
+                Write-Ok "WSL2 set as default version"
+            } catch {
+                Write-Info "Could not set WSL2 default (may need kernel update)"
+            }
+
+            # Update the WSL kernel (lightweight, no distro download)
+            try {
+                Write-Info "Updating WSL kernel (this may take a minute)..."
+                wsl --update --no-launch 2>&1 | Out-Null
+                Write-Ok "WSL kernel updated"
+            } catch {
+                Write-Info "WSL kernel update returned non-zero (may already be current)"
+            }
         }
 
         # -- Step 2c: Install Docker Desktop ------------------------------------
-        Write-Info "Installing Docker Desktop via winget..."
+        Write-Info "Installing Docker Desktop via winget (this may take several minutes)..."
         try {
             winget install --id Docker.DockerDesktop --source winget --accept-source-agreements --accept-package-agreements --silent
             Write-Ok "Docker Desktop installed via winget"
