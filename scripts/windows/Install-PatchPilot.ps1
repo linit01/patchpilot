@@ -456,7 +456,7 @@ if ($SkipDockerInstall) {
                 Write-Ok "Scheduled auto-resume task for after reboot"
                 Write-Info "Task name: $taskName (will self-delete on next run)"
             } catch {
-                Write-Warn "Could not create resume task: $_"
+                Write-Skip "Could not create resume task: $_"
                 Write-Host "    After reboot, manually re-run:" -ForegroundColor Cyan
                 Write-Host "      & '$scriptPath'" -ForegroundColor Cyan
             }
@@ -491,7 +491,7 @@ if ($SkipDockerInstall) {
         # -- Step 2c: Install Docker Desktop ------------------------------------
         Write-Info "Installing Docker Desktop via winget..."
         try {
-            winget install --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Docker.DockerDesktop --source winget --accept-source-agreements --accept-package-agreements --silent
             Write-Ok "Docker Desktop installed via winget"
         } catch {
             Write-Fail "Failed to install Docker Desktop: $_"
@@ -516,7 +516,7 @@ if ($SkipDockerInstall) {
             Write-Info "Launching Docker Desktop..."
             Start-Process $ddPath
         } else {
-            Write-Warn "Could not find Docker Desktop executable to auto-launch."
+            Write-Skip "Could not find Docker Desktop executable to auto-launch."
             Write-Host "    Please start Docker Desktop manually." -ForegroundColor Yellow
         }
 
