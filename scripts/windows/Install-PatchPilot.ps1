@@ -187,13 +187,31 @@ if ($SkipPython) {
         }
 
         try {
-            winget install --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Python.Python.3.12 --source winget --accept-source-agreements --accept-package-agreements --silent
             Write-Ok "Python 3.12 installed via winget"
 
-            # Refresh PATH for this session
+            # Refresh PATH for this session from registry
             $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
             $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
             $env:Path    = "$machinePath;$userPath"
+
+            # Also add common Python install locations that winget uses
+            # winget installs Python to AppData\Local\Programs\Python\PythonXY
+            $pythonSearchPaths = @(
+                "$env:LOCALAPPDATA\Programs\Python\Python312",
+                "$env:LOCALAPPDATA\Programs\Python\Python312\Scripts",
+                "$env:LOCALAPPDATA\Programs\Python\Python311",
+                "$env:LOCALAPPDATA\Programs\Python\Python311\Scripts",
+                "$env:ProgramFiles\Python312",
+                "$env:ProgramFiles\Python312\Scripts",
+                "$env:ProgramFiles\Python311",
+                "$env:ProgramFiles\Python311\Scripts"
+            )
+            foreach ($p in $pythonSearchPaths) {
+                if ((Test-Path $p) -and ($env:Path -notlike "*$p*")) {
+                    $env:Path = "$p;$env:Path"
+                }
+            }
 
             # Re-detect
             foreach ($cmd in @("python", "python3", "py")) {
@@ -205,6 +223,21 @@ if ($SkipPython) {
                         break
                     }
                 } catch { }
+            }
+
+            # Last resort: search the filesystem directly
+            if (-not $PythonCmd) {
+                $found = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs\Python" -Filter "python.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $found) {
+                    $found = Get-ChildItem -Path "$env:ProgramFiles" -Filter "python.exe" -Recurse -Depth 3 -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "Python3" } | Select-Object -First 1
+                }
+                if ($found) {
+                    $pyDir = $found.DirectoryName
+                    $env:Path = "$pyDir;$env:Path"
+                    $PythonCmd = $found.FullName
+                    $ver = & $PythonCmd --version 2>&1
+                    Write-Ok "Found at: $PythonCmd ($ver)"
+                }
             }
 
             if (-not $PythonCmd) {
@@ -325,8 +358,8 @@ if ($SkipDockerInstall) {
             }
         }
     } else {
-        # No Docker found -- install Docker Desktop via winget
-        Write-Info "No Docker runtime found -- installing Docker Desktop via winget..."
+        # No Docker found -- need to install Docker Desktop
+        # This requires: Windows features enabled -> WSL2 installed -> Docker Desktop
 
         try {
             $null = Get-Command winget -ErrorAction Stop
@@ -336,6 +369,85 @@ if ($SkipDockerInstall) {
             exit 1
         }
 
+        # -- Step 2a: Enable required Windows features --------------------------
+        Write-Info "Checking Windows virtualization features..."
+
+        $needsReboot = $false
+
+        # Virtual Machine Platform (required for WSL2)
+        $vmpFeature = Get-WindowsOptionalFeature -Online -FeatureName "VirtualMachinePlatform" -ErrorAction SilentlyContinue
+        if ($vmpFeature -and $vmpFeature.State -ne "Enabled") {
+            Write-Info "Enabling Virtual Machine Platform..."
+            $result = Enable-WindowsOptionalFeature -Online -FeatureName "VirtualMachinePlatform" -NoRestart -ErrorAction SilentlyContinue
+            if ($result.RestartNeeded) { $needsReboot = $true }
+            Write-Ok "Virtual Machine Platform enabled"
+        } else {
+            Write-Ok "Virtual Machine Platform: already enabled"
+        }
+
+        # Windows Hypervisor Platform (optional but improves performance)
+        $whpFeature = Get-WindowsOptionalFeature -Online -FeatureName "HypervisorPlatform" -ErrorAction SilentlyContinue
+        if ($whpFeature -and $whpFeature.State -ne "Enabled") {
+            Write-Info "Enabling Windows Hypervisor Platform..."
+            $result = Enable-WindowsOptionalFeature -Online -FeatureName "HypervisorPlatform" -NoRestart -ErrorAction SilentlyContinue
+            if ($result.RestartNeeded) { $needsReboot = $true }
+            Write-Ok "Windows Hypervisor Platform enabled"
+        } else {
+            Write-Ok "Windows Hypervisor Platform: already enabled"
+        }
+
+        # Microsoft-Windows-Subsystem-Linux (WSL base feature)
+        $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -ErrorAction SilentlyContinue
+        if ($wslFeature -and $wslFeature.State -ne "Enabled") {
+            Write-Info "Enabling Windows Subsystem for Linux..."
+            $result = Enable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -NoRestart -ErrorAction SilentlyContinue
+            if ($result.RestartNeeded) { $needsReboot = $true }
+            Write-Ok "Windows Subsystem for Linux enabled"
+        } else {
+            Write-Ok "Windows Subsystem for Linux: already enabled"
+        }
+
+        # If features were just enabled, a reboot is required before WSL2 works
+        if ($needsReboot) {
+            Write-Host ""
+            Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
+            Write-Host "    |  Windows features were enabled that require a reboot.         |" -ForegroundColor Yellow
+            Write-Host "    |                                                              |" -ForegroundColor Yellow
+            Write-Host "    |  Please reboot your computer, then re-run this script.        |" -ForegroundColor Yellow
+            Write-Host "    |  The script will resume from where it left off.               |" -ForegroundColor Yellow
+            Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
+            Write-Host ""
+
+            if (-not $Unattended) {
+                $rebootNow = Read-Host "    Reboot now? [Y/n]"
+                if ($rebootNow -notmatch "^[Nn]") {
+                    Write-Info "Rebooting in 10 seconds... (Ctrl+C to cancel)"
+                    Start-Sleep -Seconds 10
+                    Restart-Computer -Force
+                }
+            }
+            Write-Host "    After reboot, re-run:" -ForegroundColor Cyan
+            Write-Host "      .\Install-PatchPilot.ps1" -ForegroundColor Cyan
+            exit 0
+        }
+
+        # -- Step 2b: Install/update WSL2 ---------------------------------------
+        Write-Info "Installing/updating WSL2..."
+        try {
+            # wsl --install ensures WSL2 is set up with a default distro
+            # --no-launch prevents opening a distro window
+            # On systems where WSL is already enabled, this updates the WSL kernel
+            wsl --install --no-launch 2>&1 | Out-Null
+
+            # Set WSL2 as the default version
+            wsl --set-default-version 2 2>&1 | Out-Null
+            Write-Ok "WSL2 installed and set as default"
+        } catch {
+            Write-Info "WSL2 setup returned non-zero (may already be configured): $_"
+        }
+
+        # -- Step 2c: Install Docker Desktop ------------------------------------
+        Write-Info "Installing Docker Desktop via winget..."
         try {
             winget install --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements --silent
             Write-Ok "Docker Desktop installed via winget"
@@ -345,48 +457,58 @@ if ($SkipDockerInstall) {
             exit 1
         }
 
-        # Docker Desktop typically requires a reboot or at least a logout after first install.
-        # WSL2 backend is the default on Win11 but may need enabling.
-        Write-Host ""
-        Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
-        Write-Host "    |  Docker Desktop was just installed.                          |" -ForegroundColor Yellow
-        Write-Host "    |                                                              |" -ForegroundColor Yellow
-        Write-Host "    |  You may need to:                                            |" -ForegroundColor Yellow
-        Write-Host "    |    1. Log out and back in (or reboot)                        |" -ForegroundColor Yellow
-        Write-Host "    |    2. Launch Docker Desktop and complete first-run setup      |" -ForegroundColor Yellow
-        Write-Host "    |    3. Accept the Docker Desktop license agreement             |" -ForegroundColor Yellow
-        Write-Host "    |    4. Re-run this script once Docker is running               |" -ForegroundColor Yellow
-        Write-Host "    |                                                              |" -ForegroundColor Yellow
-        Write-Host "    |  Docker Desktop uses the WSL2 backend by default on Win11.   |" -ForegroundColor Yellow
-        Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
+        # -- Step 2d: Launch and wait for Docker Desktop ------------------------
         Write-Host ""
 
-        if (-not $Unattended) {
-            Write-Host "    Press Enter after Docker Desktop is running, or Ctrl+C to exit." -ForegroundColor Cyan
-            Read-Host
-        }
-
-        # Refresh PATH
+        # Refresh PATH so we can find Docker Desktop
         $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
         $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
         $env:Path    = "$machinePath;$userPath"
 
+        # Auto-launch Docker Desktop
+        $ddPath = "${env:ProgramFiles}\Docker\Docker\Docker Desktop.exe"
+        if (-not (Test-Path $ddPath)) {
+            $ddPath = Join-Path $env:LOCALAPPDATA "Docker\Docker Desktop.exe"
+        }
+        if (Test-Path $ddPath) {
+            Write-Info "Launching Docker Desktop..."
+            Start-Process $ddPath
+        } else {
+            Write-Warn "Could not find Docker Desktop executable to auto-launch."
+            Write-Host "    Please start Docker Desktop manually." -ForegroundColor Yellow
+        }
+
+        Write-Info "Waiting for Docker daemon to start (this may take 60-90 seconds on first run)..."
+
         # Wait for Docker to come up
         $waited = 0
-        while ($waited -lt 180) {
+        $maxWait = 180
+        while ($waited -lt $maxWait) {
             Start-Sleep -Seconds 5
             $waited += 5
+            Write-Host "." -NoNewline
             if (Test-DockerReady) {
                 $DockerReady = $true
                 $DockerType = Get-DockerType
+                Write-Host ""
                 Write-Ok "Docker daemon ready ($DockerType, waited ${waited}s)"
                 break
             }
         }
 
         if (-not $DockerReady) {
-            Write-Fail "Docker daemon not responding after install."
-            Write-Host "    Open Docker Desktop, complete setup, then re-run this script with -SkipDockerInstall."
+            Write-Host ""
+            Write-Fail "Docker daemon did not start within ${maxWait} seconds."
+            Write-Host ""
+            Write-Host "    This can happen if:" -ForegroundColor Yellow
+            Write-Host "      - Docker Desktop needs you to accept the license on first run" -ForegroundColor Yellow
+            Write-Host "      - A reboot is still pending" -ForegroundColor Yellow
+            Write-Host "      - Virtualization is not enabled in BIOS/UEFI settings" -ForegroundColor Yellow
+            Write-Host "      - You are running inside a VM without nested virtualization" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "    Next steps:" -ForegroundColor Cyan
+            Write-Host "      1. Open Docker Desktop and complete any first-run prompts" -ForegroundColor Cyan
+            Write-Host "      2. Re-run this script with: -SkipDockerInstall" -ForegroundColor Cyan
             exit 1
         }
     }
@@ -409,22 +531,25 @@ if (-not $ComposeCmd) {
 }
 
 # ==============================================================================
-# STEP 3: WSL2 check (Docker Desktop needs it)
+# STEP 3: Verify Docker + WSL2 status
 # ==============================================================================
-Write-Step -Num 3 -Message "Verifying WSL2 backend"
+Write-Step -Num 3 -Message "Verifying Docker and WSL2"
 
 try {
     $wslStatus = wsl --status 2>&1
     if ($wslStatus -match "Default Version: 2|WSL version: 2|WSL 2") {
         Write-Ok "WSL2 is active"
     } elseif ($wslStatus -match "WSL") {
-        Write-Ok "WSL detected (version info unavailable -- Docker Desktop manages this)"
+        Write-Ok "WSL detected (Docker Desktop manages the WSL2 lifecycle)"
     } else {
-        Write-Info "WSL status unclear -- Docker Desktop will manage the WSL2 backend"
+        Write-Info "WSL status check inconclusive -- Docker Desktop will manage this"
     }
 } catch {
-    Write-Info "Could not query WSL -- Docker Desktop handles WSL2 lifecycle automatically"
+    Write-Info "Could not query WSL status -- Docker Desktop manages WSL2 automatically"
 }
+
+Write-Ok "Docker type: $DockerType"
+Write-Ok "Docker Compose: $ComposeCmd"
 
 # ==============================================================================
 # STEP 4: Generate .env
