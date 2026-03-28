@@ -431,7 +431,7 @@ if ($SkipDockerInstall) {
             # Build the command that will run after reboot
             # Use the full path to this script so it works regardless of CWD
             $scriptPath = $PSCommandPath
-            $resumeArgs = ""
+            $resumeArgs = " -SkipDockerInstall::`$false"
             if ($SkipPython)        { $resumeArgs += " -SkipPython" }
             if ($WebInstaller)      { $resumeArgs += " -WebInstaller" }
             if ($Unattended)        { $resumeArgs += " -Unattended" }
@@ -461,15 +461,11 @@ if ($SkipDockerInstall) {
                 Write-Host "      & '$scriptPath'" -ForegroundColor Cyan
             }
 
-            if (-not $Unattended) {
-                $rebootNow = Read-Host "    Reboot now? [Y/n]"
-                if ($rebootNow -notmatch "^[Nn]") {
-                    Write-Info "Rebooting in 10 seconds... (Ctrl+C to cancel)"
-                    Start-Sleep -Seconds 10
-                    Restart-Computer -Force
-                }
-            }
-            Write-Host "    Reboot when ready -- the installer will resume automatically." -ForegroundColor Cyan
+            # NEVER auto-reboot -- always let the user do it manually.
+            # Auto-reboot from a scheduled task context causes reboot loops.
+            Write-Host "    Please reboot your computer now. The installer will resume" -ForegroundColor Cyan
+            Write-Host "    automatically when you log back in." -ForegroundColor Cyan
+            Write-Host ""
             exit 0
         }
 
