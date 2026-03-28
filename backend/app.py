@@ -102,7 +102,7 @@ from backup_restore import router as backup_router, set_pool as backup_set_pool,
 from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
 from update_checker import router as update_router, periodic_update_check
-from license import router as license_router, license_set_pool, periodic_license_check, ensure_trial_for_existing_installs
+from license import router as license_router, license_set_pool, periodic_license_check, ensure_trial_for_existing_installs, enforce_trial_active, check_trial_active
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -1171,6 +1171,10 @@ async def periodic_ansible_check():
             pass
         await asyncio.sleep(interval)
         try:
+            # Skip check if trial has expired
+            if not await check_trial_active(db.pool):
+                logger.info("Periodic check skipped -- trial expired or no active license")
+                continue
             print(f"[{datetime.now()}] Periodic check loop firing (interval={interval}s)")
             await run_ansible_check_task()
         except Exception as e:
@@ -1194,6 +1198,10 @@ async def schedule_checker_loop():
         logger.warning("[Scheduler] Timed out waiting for initial host check (120s) — starting anyway")
     while True:
         try:
+            # Skip schedule execution if trial has expired
+            if not await check_trial_active(db.pool):
+                await asyncio.sleep(60)
+                continue
             await check_and_run_schedules()
         except Exception as e:
             logger.error(f"Schedule checker error: {e}")
@@ -2377,7 +2385,8 @@ async def dismiss_reboot_alert(hostname: str,
 
 @app.post("/api/check")
 async def trigger_check(background_tasks: BackgroundTasks,
-                        user: dict = Depends(require_write)):
+                        user: dict = Depends(require_write),
+                        pool_dep: asyncpg.Pool = Depends(get_db_pool)):
     """Trigger an immediate Ansible check (PROTECTED).
 
     If a check is already running, we schedule one to run immediately after
@@ -2386,6 +2395,7 @@ async def trigger_check(background_tasks: BackgroundTasks,
     running causes the entire request to be discarded — the frontend polls
     for 3 minutes and nothing happens until the next periodic timer fires.
     """
+    await enforce_trial_active(pool_dep)
     if _ansible_check_lock.locked() or _ansible_patch_running:
         # Already busy — queue a follow-up run instead of silently dropping
         async def _run_after_current():
@@ -2406,6 +2416,7 @@ async def trigger_single_host_check(hostname: str, background_tasks: BackgroundT
                                     user: dict = Depends(require_write),
                                     pool: asyncpg.Pool = Depends(get_db_pool)):
     """Trigger an immediate Ansible check for a single host (ownership-scoped, write-only)"""
+    await enforce_trial_active(pool)
     host = await db.get_host_by_hostname(hostname)
     if not host:
         raise HTTPException(status_code=404, detail=f"Host {hostname} not found")
@@ -2444,6 +2455,7 @@ async def trigger_patch(patch_request: PatchRequest, background_tasks: Backgroun
                         user: dict = Depends(require_write),
                         pool_dep: asyncpg.Pool = Depends(get_db_pool)):
     """Trigger patching for specific hosts (ownership-scoped, write-only)"""
+    await enforce_trial_active(pool_dep)
     if not patch_request.hostnames:
         raise HTTPException(status_code=400, detail="No hostnames provided")
     

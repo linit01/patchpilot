@@ -14,6 +14,7 @@ from datetime import time as dt_time, datetime
 
 from dependencies import get_db_pool
 from auth import require_auth, require_write
+from license import enforce_trial_active
 from encryption_utils import encrypt_credential, decrypt_credential
 from rbac import owner_id, owner_id_or_param, verify_schedule_ownership, verify_host_ownership
 
@@ -186,6 +187,7 @@ async def list_schedules(owner: str = None,
 async def create_schedule(schedule: ScheduleCreate, pool: asyncpg.Pool = Depends(get_db_pool),
                           user: dict = Depends(require_write)):
     """Create a new auto-patch schedule (write-only, sets created_by)"""
+    await enforce_trial_active(pool)
     # Validate time format
     try:
         start = dt_time.fromisoformat(schedule.start_time)
@@ -282,6 +284,7 @@ async def update_schedule(schedule_id: str, schedule: ScheduleUpdate,
                           pool: asyncpg.Pool = Depends(get_db_pool),
                           user: dict = Depends(require_write)):
     """Update an existing schedule (ownership-scoped, write-only)"""
+    await enforce_trial_active(pool)
     try:
         sched_uuid = uuid.UUID(schedule_id)
     except ValueError:
@@ -345,6 +348,7 @@ async def update_schedule(schedule_id: str, schedule: ScheduleUpdate,
 async def delete_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
                           user: dict = Depends(require_write)):
     """Delete a schedule (ownership-scoped, write-only)"""
+    await enforce_trial_active(pool)
     try:
         sched_uuid = uuid.UUID(schedule_id)
     except ValueError:
@@ -366,6 +370,7 @@ async def delete_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_
 async def trigger_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
                            user: dict = Depends(require_write)):
     """Manually trigger a schedule to run now (ownership-scoped, write-only)"""
+    await enforce_trial_active(pool)
     try:
         sched_uuid = uuid.UUID(schedule_id)
     except ValueError:
