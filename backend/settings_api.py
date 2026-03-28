@@ -20,6 +20,7 @@ from encryption_utils import encrypt_credential, decrypt_credential, validate_ss
 from dependencies import get_db_pool
 from sync_ansible_inventory import sync_ansible_inventory
 from auth import require_auth, require_full_admin, require_write, ownership_filter
+from license import enforce_trial_active
 from rbac import (owner_id, owner_id_or_param, verify_host_ownership,
                   verify_host_ownership_by_hostname, verify_ssh_key_ownership)
 
@@ -237,6 +238,7 @@ async def create_host(host: HostCreate,
     Raises:
         HTTPException: If hostname already exists or validation fails
     """
+    await enforce_trial_active(pool)
     # Check if hostname already exists
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
@@ -404,6 +406,7 @@ async def get_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
 async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depends(get_db_pool),
                       user: dict = Depends(require_write)):
     """Update an existing host configuration (ownership-scoped, write-only)."""
+    await enforce_trial_active(pool)
     try:
         host_uuid = uuid.UUID(host_id)
     except ValueError:
@@ -565,6 +568,7 @@ async def update_host(host_id: str, host: HostUpdate, pool: asyncpg.Pool = Depen
 async def delete_host(host_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
                       user: dict = Depends(require_write)):
     """Delete a host configuration (ownership-scoped, write-only)."""
+    await enforce_trial_active(pool)
     try:
         host_uuid = uuid.UUID(host_id)
     except ValueError:
@@ -606,6 +610,7 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
     Test SSH connection to a host using the ssh command directly.
     This matches how Ansible connects, avoiding paramiko key format issues.
     """
+    await enforce_trial_active(pool)
     import subprocess
     import tempfile
     
@@ -864,6 +869,7 @@ async def import_hosts(request: BulkImportRequest, pool: asyncpg.Pool = Depends(
     - csv: CSV with columns: hostname,ssh_user,ssh_port,tags,notes
     - json: JSON array of host objects
     """
+    await enforce_trial_active(pool)
     import json as json_lib
     import csv
     import io
