@@ -128,16 +128,6 @@ Write-Host "  PatchPilot v$PP_VERSION -- Windows Docker Setup" -ForegroundColor 
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# -- Clean up auto-resume scheduled task if we're running from one -----------
-$resumeTaskName = "PatchPilotInstallResume"
-$resumeTask = Get-ScheduledTask -TaskName $resumeTaskName -ErrorAction SilentlyContinue
-if ($resumeTask) {
-    Write-Info "Resuming install after reboot..."
-    Unregister-ScheduledTask -TaskName $resumeTaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Ok "Auto-resume task cleaned up"
-    Write-Host ""
-}
-
 # -- Pre-flight checks ---------------------------------------------------------
 if (-not (Test-Administrator)) {
     Write-Fail "This script must be run as Administrator."
@@ -428,19 +418,22 @@ if ($SkipDockerInstall) {
             Write-Host "    +--------------------------------------------------------------+" -ForegroundColor Yellow
             Write-Host ""
 
-            # Build the command that will run after reboot
-            # Use the full path to this script so it works regardless of CWD
+            # Create a scheduled task that runs ONCE at next logon.
+            # Safety: the task command deletes itself as its very first action,
+            # before running the installer. This guarantees it can never loop.
             $scriptPath = $PSCommandPath
-            $resumeArgs = " -SkipDockerInstall::`$false"
+            $resumeArgs = ""
             if ($SkipPython)        { $resumeArgs += " -SkipPython" }
             if ($WebInstaller)      { $resumeArgs += " -WebInstaller" }
             if ($Unattended)        { $resumeArgs += " -Unattended" }
             if ($Port -ne 8080)     { $resumeArgs += " -Port $Port" }
 
             $taskName = "PatchPilotInstallResume"
-            $psCommand = "Set-ExecutionPolicy Bypass -Scope Process -Force; & '$scriptPath'$resumeArgs"
 
-            # Create a scheduled task that runs once at logon, as the current user, elevated
+            # The command deletes the task FIRST, then runs the installer.
+            # Even if the installer crashes, the task is already gone.
+            $psCommand = "Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false -ErrorAction SilentlyContinue; Set-ExecutionPolicy Bypass -Scope Process -Force; & '$scriptPath'$resumeArgs"
+
             try {
                 # Remove any leftover task from a previous attempt
                 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -454,17 +447,17 @@ if ($SkipDockerInstall) {
 
                 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
                 Write-Ok "Scheduled auto-resume task for after reboot"
-                Write-Info "Task name: $taskName (will self-delete on next run)"
+                Write-Info "The task self-deletes before running -- it can never loop."
             } catch {
                 Write-Skip "Could not create resume task: $_"
-                Write-Host "    After reboot, manually re-run:" -ForegroundColor Cyan
-                Write-Host "      & '$scriptPath'" -ForegroundColor Cyan
             }
 
-            # NEVER auto-reboot -- always let the user do it manually.
-            # Auto-reboot from a scheduled task context causes reboot loops.
-            Write-Host "    Please reboot your computer now. The installer will resume" -ForegroundColor Cyan
-            Write-Host "    automatically when you log back in." -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host "    Please reboot now. The installer will resume when you log in." -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host "    If you prefer to resume manually after reboot:" -ForegroundColor DarkGray
+            Write-Host "      Set-ExecutionPolicy Bypass -Scope Process -Force" -ForegroundColor DarkGray
+            Write-Host "      & '$scriptPath'" -ForegroundColor DarkGray
             Write-Host ""
             exit 0
         }
