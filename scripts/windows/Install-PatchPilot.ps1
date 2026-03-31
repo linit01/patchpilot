@@ -688,7 +688,7 @@ if (-not (Test-Path $hostsFile)) {
 }
 
 # Copy playbook if not present
-$playbookSrc  = Join-Path $REPO_ROOT "ansible" "check-os-updates.yml"
+$playbookSrc  = Join-Path (Join-Path $REPO_ROOT "ansible") "check-os-updates.yml"
 if (-not (Test-Path $playbookSrc)) {
     # Playbook should already be in the repo's ansible/ dir
     Write-Info "Playbook will be available from the repo's ansible/ directory"
