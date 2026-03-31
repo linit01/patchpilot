@@ -1280,6 +1280,17 @@
                             and configures key-based authentication. Once the script completes, fill in the
                             hostname below and save.
                         </p>
+                        <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                            <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Need to generate an SSH key first?</summary>
+                            <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                                <p style="margin: 0 0 8px 0;">Run this on the <strong>PatchPilot server</strong> (or wherever you manage keys):</p>
+                                <pre style="margin: 0 0 8px 0; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 4px; font-size: 12px; white-space: pre-wrap;">ssh-keygen -t ed25519 -C "patchpilot"</pre>
+                                <p style="margin: 0; font-size: 12px; color: var(--text-muted);">
+                                    Add the <strong>private key</strong> to PatchPilot via Settings → SSH Keys.
+                                    The setup script above automatically installs the <strong>public key</strong> on the Windows host.
+                                </p>
+                            </div>
+                        </details>
                     </div>
                     <h3 style="margin: 20px 0 10px 0; font-size: 15px; color: var(--cyan, #00c0ef);">
                         Step 2: Add the host details
@@ -1393,6 +1404,17 @@
                         </button>
                         <span id="key-file-name" style="margin-left: 10px; font-size: 0.9em; color: var(--text-muted);"></span>
                     </div>
+                    <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                        <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Don't have an SSH key? Generate one now</summary>
+                        <div style="margin-top: 8px; padding: 12px; background: var(--bg-input, #1a1a2e); border: 1px solid var(--border); border-radius: 6px;">
+                            <p style="margin: 0 0 8px 0;"><strong>Linux / macOS / Windows</strong> — run in a terminal or PowerShell:</p>
+                            <pre style="margin: 0 0 8px 0; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; font-size: 12px; white-space: pre-wrap;">ssh-keygen -t ed25519 -C "patchpilot"</pre>
+                            <p style="margin: 0; font-size: 12px; color: var(--text-muted);">
+                                Accept the default path (<code>~/.ssh/id_ed25519</code>), then upload the <strong>private key</strong> here.
+                                Copy the <strong>public key</strong> (<code>.pub</code>) to each host's <code>~/.ssh/authorized_keys</code>.
+                            </p>
+                        </div>
+                    </details>
                 </div>
 
                 <div class="form-group">

@@ -867,6 +867,19 @@
 ...
 -----END OPENSSH PRIVATE KEY-----" style="font-family: monospace; font-size: 12px; min-height: 200px;"></textarea>
                         <div class="hint">Upload your <code>~/.ssh/id_ed25519</code> or <code>id_rsa</code> private key file, or paste its contents above. The key is encrypted at rest.</div>
+                        <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                            <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Don't have an SSH key? Generate one now</summary>
+                            <div style="margin-top: 8px; padding: 12px; background: var(--bg-input, #1a1a2e); border: 1px solid var(--border); border-radius: 6px;">
+                                <p style="margin: 0 0 8px 0;"><strong>Linux / macOS</strong> — open a terminal:</p>
+                                <pre style="margin: 0 0 12px 0; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; font-size: 12px; white-space: pre-wrap;">ssh-keygen -t ed25519 -C "patchpilot"</pre>
+                                <p style="margin: 0 0 8px 0;"><strong>Windows</strong> — open PowerShell:</p>
+                                <pre style="margin: 0 0 12px 0; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; font-size: 12px; white-space: pre-wrap;">ssh-keygen -t ed25519 -C "patchpilot"</pre>
+                                <p style="margin: 0; font-size: 12px; color: var(--text-muted);">
+                                    Press Enter to accept the default path (<code>~/.ssh/id_ed25519</code>). Set a passphrase or leave blank.
+                                    Then upload the <strong>private key</strong> file above. Copy the <strong>public key</strong> (<code>~/.ssh/id_ed25519.pub</code>) to each host's <code>~/.ssh/authorized_keys</code>.
+                                </p>
+                            </div>
+                        </details>
                     </div>
                 </div>
                 <div class="card-footer">

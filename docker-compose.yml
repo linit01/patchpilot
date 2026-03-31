@@ -52,7 +52,7 @@ services:
 
   # ── Backend (FastAPI) ───────────────────────────────────────────────────────
   backend:
-    image: linit01/patchpilot:backend-0.14.9-alpha
+    image: linit01/patchpilot:backend-0.14.10-alphs
     # build: .    # uncomment when using docker-compose.developer.yml
     container_name: patchpilot-backend-1
     restart: unless-stopped
@@ -105,7 +105,7 @@ services:
 
   # ── Frontend (Nginx) ────────────────────────────────────────────────────────
   frontend:
-    image: linit01/patchpilot:frontend-0.14.9-alpha
+    image: linit01/patchpilot:frontend-0.14.10-alphs
     # frontend files are baked into the image; nginx.conf is rendered at startup
     # via envsubst so the same image works for Docker Compose and Kubernetes.
     # use docker-compose.developer.yml to override with local source mounts
