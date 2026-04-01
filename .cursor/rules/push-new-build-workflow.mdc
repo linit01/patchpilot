@@ -1,0 +1,17 @@
+---
+description: PatchPilot release workflow — push_new_build.sh output and approval gate
+alwaysApply: true
+---
+
+# PatchPilot — `push_new_build.sh` release workflow
+
+When the user requests a release build using `scripts/push_new_build.sh` (PatchPilot repo: format `./scripts/push_new_build.sh v0.x.y-suffix "commit message style comment"` — triggers GitHub Actions CI and Docker Hub):
+
+1. **Run** the script only after the user supplies the version and message (or confirms args).
+2. **Show the full script output** in the chat — paste the raw terminal output, not only a summary.
+3. **Do not** treat the release as complete or give a bare "yes / we're done" **before** that output is shown.
+4. After showing output, report success or failure clearly (exit code, errors).
+5. **Stop and wait** for the user to reply with **`approve`** or **`no`**.
+6. **If `approve`**: continue with any follow-on steps they want (git, docs, etc.). **If `no`**: do not proceed with further release-related actions.
+
+This gate is mandatory; the user always acknowledges with `approve` or `no` before continuation.

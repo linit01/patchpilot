@@ -38,6 +38,7 @@ from packaging.version import Version, InvalidVersion
 from pydantic import BaseModel
 
 from auth import require_full_admin, require_auth
+from uninstall_api import _own_container_id
 
 logger = logging.getLogger("patchpilot.updates")
 
@@ -206,6 +207,29 @@ def _run(cmd: list[str], timeout: int = 90) -> tuple[int, str, str]:
         return 1, "", f"Command not found: {e}"
     except Exception as e:
         return 1, "", str(e)
+
+
+def _container_id_from_cgroup() -> Optional[str]:
+    """
+    Fallback when HOSTNAME is not the container id (custom hostname, rare layouts).
+    cgroup-based parsing is unreliable on Docker Desktop (cgroup v2); prefer
+    _own_container_id() which matches uninstall_api.
+    """
+    try:
+        with open("/proc/self/cgroup") as f:
+            for line in f:
+                if "docker" not in line and "containerd" not in line:
+                    continue
+                parts = line.strip().split("/")
+                for part in reversed(parts):
+                    if len(part) < 12:
+                        continue
+                    head = part[:12]
+                    if all(c in "0123456789abcdefABCDEF" for c in head):
+                        return head.lower()
+        return None
+    except (OSError, FileNotFoundError):
+        return None
 
 
 def _kubectl() -> list[str]:
@@ -624,32 +648,28 @@ async def _apply_update_docker(target_version: str):
         # Inside the container, the compose file is at /install/docker-compose.yml
         # but the host path is whatever was mounted as .:/install.
         # We can get it via `docker inspect` on our own container.
+        # Resolve host bind-mount path for `.:/install` (needed for helper's compose).
+        # Use the same container-id strategy as uninstall_api: Docker sets HOSTNAME to
+        # the container id by default. Pure cgroup parsing breaks on Docker Desktop
+        # (cgroup v2 / docker-desktop paths) and could leave our_container_id unset.
         host_project_dir = None
-        try:
-            # Get our own container ID
-            with open("/proc/self/cgroup") as f:
-                for line in f:
-                    if "docker" in line or "containerd" in line:
-                        # Extract container ID from cgroup path
-                        parts = line.strip().split("/")
-                        for part in reversed(parts):
-                            if len(part) >= 12 and all(c in "0123456789abcdef" for c in part[:12]):
-                                our_container_id = part
-                                break
-                        break
-
-            if our_container_id:
-                rc, inspect_out, _ = _run(
-                    ["docker", "inspect", our_container_id,
-                     "--format", '{{range .Mounts}}{{if eq .Destination "/install"}}{{.Source}}{{end}}{{end}}'],
-                    timeout=10,
-                )
-                if rc == 0 and inspect_out:
-                    # Docker Desktop may prefix with /host_mnt
-                    host_project_dir = inspect_out.replace("/host_mnt", "")
-                    logger.info("Resolved host project dir: %s", host_project_dir)
-        except Exception as e:
-            logger.warning("Failed to resolve host project dir: %s", e)
+        our_container_id = _own_container_id() or _container_id_from_cgroup()
+        if our_container_id:
+            rc, inspect_out, _ = _run(
+                ["docker", "inspect", our_container_id,
+                 "--format",
+                 '{{range .Mounts}}{{if eq .Destination "/install"}}{{.Source}}{{end}}{{end}}'],
+                timeout=10,
+            )
+            if rc == 0 and inspect_out:
+                # Legacy Docker Desktop Linux used /host_mnt prefix on sources
+                host_project_dir = inspect_out.strip().replace("/host_mnt", "")
+                logger.info("Resolved host project dir: %s", host_project_dir)
+        else:
+            logger.warning(
+                "Could not resolve container id from HOSTNAME/cgroup; "
+                "will rely on INSTALL_DIR if set",
+            )
 
         if not host_project_dir:
             # Fallback: check INSTALL_DIR env var
