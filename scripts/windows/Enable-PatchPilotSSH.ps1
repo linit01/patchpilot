@@ -679,22 +679,47 @@ try {
 # The task runs as the current admin user (who has working winget and WU access).
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
+# ---- Install hidden launcher VBS + helper scripts ----
+# wscript.exe is a GUI subsystem app — it does NOT allocate a console, so
+# Win11 will not flash conhost when Task Scheduler starts it.  The .vbs script
+# launches powershell.exe with window style 0 (hidden), which in turn uses
+# ProcessStartInfo.CreateNoWindow for child processes like winget.exe.
+$wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
+$hiddenVbsSrc = Join-Path $PSScriptRoot "PatchPilot-AnsibleHiddenLaunch.vbs"
+$hiddenVbsDest = Join-Path $ppDataDir "PatchPilot-AnsibleHiddenLaunch.vbs"
+if (Test-Path $hiddenVbsSrc) {
+    Copy-Item -Path $hiddenVbsSrc -Destination $hiddenVbsDest -Force
+    Write-Ok "Installed PatchPilot-AnsibleHiddenLaunch.vbs → $hiddenVbsDest"
+} else {
+    Write-Info "PatchPilot-AnsibleHiddenLaunch.vbs not found beside this script."
+    Write-Info "Expected path: $hiddenVbsSrc"
+    Write-Info "Scheduled tasks will fall back to powershell.exe (may flash on Win11)."
+}
+
 # ---- PP-WingetCheck scheduled task ----
-# Uses PatchPilot-WingetTask.ps1 + CreateNoWindow so winget does not flash conhost on Win11.
+# winget check does NOT need admin — register at Limited RunLevel.
+# Using wscript as the executable eliminates the conhost flash entirely.
 $taskName = "PP-WingetCheck"
 $wingetScriptSrc = Join-Path $PSScriptRoot "PatchPilot-WingetTask.ps1"
 $wingetScriptDest = Join-Path $ppDataDir "PatchPilot-WingetTask.ps1"
 if (Test-Path $wingetScriptSrc) {
     Copy-Item -Path $wingetScriptSrc -Destination $wingetScriptDest -Force
     Write-Ok "Installed PatchPilot-WingetTask.ps1 → $wingetScriptDest"
+}
+
+if ((Test-Path $hiddenVbsDest) -and (Test-Path $wingetScriptDest)) {
+    $wingetTaskArgs = '//nologo //B "' + $hiddenVbsDest + '" "' + $wingetScriptDest + '" Check'
+    $taskAction = New-ScheduledTaskAction -Execute $wscriptExe -Argument $wingetTaskArgs
+} elseif (Test-Path $wingetScriptDest) {
+    Write-Info "VBS launcher not available — using powershell.exe directly for PP-WingetCheck."
     $wingetPsArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wingetScriptDest`" Check"
+    $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $wingetPsArgs
 } else {
-    Write-Warn "PatchPilot-WingetTask.ps1 not found beside this script — using legacy winget line (may flash console on Win11)."
-    Write-Info "Expected path: $wingetScriptSrc"
+    Write-Info "PatchPilot-WingetTask.ps1 not found — using legacy winget command line."
     $wingetCmd = "winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File '$ppDataDir\winget-check.txt' -Encoding UTF8"
     $wingetPsArgs = "-NoProfile -WindowStyle Hidden -Command `"$wingetCmd`""
+    $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $wingetPsArgs
 }
-$taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $wingetPsArgs
 $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -707,20 +732,38 @@ try {
         Write-Info "Registering scheduled task as '$currentUser'..."
         Write-Info "In unattended mode, the task may need to be re-registered with credentials."
     }
-    Register-ScheduledTask -TaskName $taskName -Action $taskAction -Settings $taskSettings -User $currentUser -RunLevel Highest -Force | Out-Null
-    Write-Ok "Scheduled task '$taskName' registered as '$currentUser'."
+    # Limited RunLevel — winget check does not need elevation.
+    # Apply (winget upgrade) temporarily swaps the action to Highest via the playbook.
+    Register-ScheduledTask -TaskName $taskName -Action $taskAction -Settings $taskSettings -User $currentUser -RunLevel Limited -Force | Out-Null
+    Write-Ok "Scheduled task '$taskName' registered as '$currentUser' (RunLevel: Limited)."
     Write-Info "PatchPilot triggers this task on-demand to check for winget updates."
 } catch {
     Write-Fail "Could not create scheduled task '$taskName': $_"
-    Write-Info "You can create it manually after copying PatchPilot-WingetTask.ps1 to $ppDataDir :"
-    Write-Info "  Register-ScheduledTask -TaskName 'PP-WingetCheck' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\ProgramData\PatchPilot\PatchPilot-WingetTask.ps1 Check') -User '$currentUser' -RunLevel Highest"
+    Write-Info "You can create it manually:"
+    Write-Info "  `$w='$wscriptExe'; `$a='//nologo //B `"$hiddenVbsDest`" `"$wingetScriptDest`" Check'"
+    Write-Info "  Register-ScheduledTask -TaskName '$taskName' -Action (New-ScheduledTaskAction -Execute `$w -Argument `$a) -User '$currentUser' -RunLevel Limited"
 }
 
 # ---- PP-WinUpdate scheduled task ----
+# PSWindowsUpdate needs admin → RunLevel Highest.  Still use wscript launcher
+# to avoid the conhost flash; the task itself requests elevation silently
+# because it runs under the registered user's stored credentials.
 if (-not $SkipPSWindowsUpdate) {
     $wuTaskName = "PP-WinUpdate"
-    $wuCmd = "Import-Module PSWindowsUpdate; Get-WindowsUpdate -MicrosoftUpdate 2>&1 | Out-File '$ppDataDir\winupdate-check.txt' -Encoding UTF8"
-    $wuTaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$wuCmd`""
+    $wuScriptSrc = Join-Path $PSScriptRoot "PatchPilot-WinUpdateTask.ps1"
+    $wuScriptDest = Join-Path $ppDataDir "PatchPilot-WinUpdateTask.ps1"
+    if (Test-Path $wuScriptSrc) {
+        Copy-Item -Path $wuScriptSrc -Destination $wuScriptDest -Force
+        Write-Ok "Installed PatchPilot-WinUpdateTask.ps1 → $wuScriptDest"
+    }
+
+    if ((Test-Path $hiddenVbsDest) -and (Test-Path $wuScriptDest)) {
+        $wuTaskArgs = '//nologo //B "' + $hiddenVbsDest + '" "' + $wuScriptDest + '" Check'
+        $wuTaskAction = New-ScheduledTaskAction -Execute $wscriptExe -Argument $wuTaskArgs
+    } else {
+        $wuCmd = "Import-Module PSWindowsUpdate; Get-WindowsUpdate -MicrosoftUpdate 2>&1 | Out-File '$ppDataDir\winupdate-check.txt' -Encoding UTF8"
+        $wuTaskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$wuCmd`""
+    }
     $wuTaskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 
     $existingWuTask = Get-ScheduledTask -TaskName $wuTaskName -ErrorAction SilentlyContinue
@@ -730,12 +773,13 @@ if (-not $SkipPSWindowsUpdate) {
 
     try {
         Register-ScheduledTask -TaskName $wuTaskName -Action $wuTaskAction -Settings $wuTaskSettings -User $currentUser -RunLevel Highest -Force | Out-Null
-        Write-Ok "Scheduled task '$wuTaskName' registered as '$currentUser'."
+        Write-Ok "Scheduled task '$wuTaskName' registered as '$currentUser' (RunLevel: Highest)."
         Write-Info "PatchPilot triggers this task on-demand to check for Windows Updates."
     } catch {
         Write-Fail "Could not create scheduled task '$wuTaskName': $_"
         Write-Info "You can create it manually:"
-        Write-Info "  Register-ScheduledTask -TaskName 'PP-WinUpdate' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `\"Import-Module PSWindowsUpdate; Get-WindowsUpdate -MicrosoftUpdate 2>&1 | Out-File C:\ProgramData\PatchPilot\winupdate-check.txt -Encoding UTF8`\"') -User '$currentUser' -RunLevel Highest"
+        Write-Info "  `$w='$wscriptExe'; `$a='//nologo //B `"$hiddenVbsDest`" `"$wuScriptDest`" Check'"
+        Write-Info "  Register-ScheduledTask -TaskName '$wuTaskName' -Action (New-ScheduledTaskAction -Execute `$w -Argument `$a) -User '$currentUser' -RunLevel Highest"
     }
 } else {
     Write-Info "Skipping PP-WinUpdate scheduled task (PSWindowsUpdate was skipped)."

@@ -15,6 +15,27 @@ if (-not $task) {
     exit 0
 }
 
+# ── Auto-fix: migrate legacy task to wscript launcher ─────────────────────
+# Existing installs registered PP-WinUpdate with powershell.exe as the
+# executable, which flashes conhost on Win11.  Switch to wscript.exe.
+# PSWindowsUpdate needs admin, so RunLevel stays Highest.
+$currentExe = $task.Actions[0].Execute
+$vbsPath = Join-Path $pp 'PatchPilot-AnsibleHiddenLaunch.vbs'
+$wuScript = Join-Path $pp 'PatchPilot-WinUpdateTask.ps1'
+if ($currentExe -match 'powershell' -and (Test-Path $vbsPath) -and (Test-Path $wuScript)) {
+    try {
+        $wscriptExe = Join-Path $env:SystemRoot 'System32\wscript.exe'
+        $newArgs = '//nologo //B "' + $vbsPath + '" "' + $wuScript + '" Check'
+        $newAction = New-ScheduledTaskAction -Execute $wscriptExe -Argument $newArgs
+        $newSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+        $taskUser = $task.Principal.UserId
+        Register-ScheduledTask -TaskName $taskName -Action $newAction -Settings $newSettings -User $taskUser -RunLevel Highest -Force | Out-Null
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    } catch {
+        # Non-fatal — proceed with original task
+    }
+}
+
 if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
 
 Start-ScheduledTask -TaskName $taskName

@@ -23,6 +23,39 @@ if (-not $task) {
     exit 0
 }
 
+# ── Auto-fix: migrate legacy task to wscript launcher + Limited RunLevel ──
+# Existing installs registered PP-WingetCheck with powershell.exe + Highest,
+# which flashes conhost on Win11.  Fix in-place without requiring re-setup.
+$needsReRegister = $false
+$taskUser = $task.Principal.UserId
+
+# Check 1: task executable should be wscript.exe, not powershell.exe
+$currentExe = $task.Actions[0].Execute
+$vbsPath = Join-Path $pp 'PatchPilot-AnsibleHiddenLaunch.vbs'
+$wingetScript = Join-Path $pp 'PatchPilot-WingetTask.ps1'
+if ($currentExe -match 'powershell' -and (Test-Path $vbsPath) -and (Test-Path $wingetScript)) {
+    $needsReRegister = $true
+}
+
+# Check 2: RunLevel should be Limited (winget check doesn't need admin)
+if ($task.Principal.RunLevel -eq 'Highest') {
+    $needsReRegister = $true
+}
+
+if ($needsReRegister -and (Test-Path $vbsPath) -and (Test-Path $wingetScript)) {
+    try {
+        $wscriptExe = Join-Path $env:SystemRoot 'System32\wscript.exe'
+        $newArgs = '//nologo //B "' + $vbsPath + '" "' + $wingetScript + '" Check'
+        $newAction = New-ScheduledTaskAction -Execute $wscriptExe -Argument $newArgs
+        $newSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+        Register-ScheduledTask -TaskName 'PP-WingetCheck' -Action $newAction -Settings $newSettings -User $taskUser -RunLevel Limited -Force | Out-Null
+        # Re-fetch the task after re-registration
+        $task = Get-ScheduledTask -TaskName 'PP-WingetCheck' -ErrorAction SilentlyContinue
+    } catch {
+        # Non-fatal — proceed with original task
+    }
+}
+
 if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
 
 Start-ScheduledTask -TaskName 'PP-WingetCheck'
