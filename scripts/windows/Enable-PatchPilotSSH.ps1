@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Prepares a Windows host for PatchPilot management by creating a dedicated
     service account, configuring OpenSSH Server, firewall rules, and public
@@ -680,9 +680,21 @@ try {
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 # ---- PP-WingetCheck scheduled task ----
+# Uses PatchPilot-WingetTask.ps1 + CreateNoWindow so winget does not flash conhost on Win11.
 $taskName = "PP-WingetCheck"
-$wingetCmd = "winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File '$ppDataDir\winget-check.txt' -Encoding UTF8"
-$taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$wingetCmd`""
+$wingetScriptSrc = Join-Path $PSScriptRoot "PatchPilot-WingetTask.ps1"
+$wingetScriptDest = Join-Path $ppDataDir "PatchPilot-WingetTask.ps1"
+if (Test-Path $wingetScriptSrc) {
+    Copy-Item -Path $wingetScriptSrc -Destination $wingetScriptDest -Force
+    Write-Ok "Installed PatchPilot-WingetTask.ps1 → $wingetScriptDest"
+    $wingetPsArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wingetScriptDest`" Check"
+} else {
+    Write-Warn "PatchPilot-WingetTask.ps1 not found beside this script — using legacy winget line (may flash console on Win11)."
+    Write-Info "Expected path: $wingetScriptSrc"
+    $wingetCmd = "winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File '$ppDataDir\winget-check.txt' -Encoding UTF8"
+    $wingetPsArgs = "-NoProfile -WindowStyle Hidden -Command `"$wingetCmd`""
+}
+$taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $wingetPsArgs
 $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -700,8 +712,8 @@ try {
     Write-Info "PatchPilot triggers this task on-demand to check for winget updates."
 } catch {
     Write-Fail "Could not create scheduled task '$taskName': $_"
-    Write-Info "You can create it manually:"
-    Write-Info "  Register-ScheduledTask -TaskName 'PP-WingetCheck' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -Command `\"winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File C:\ProgramData\PatchPilot\winget-check.txt -Encoding UTF8`\"') -User '$currentUser' -RunLevel Highest"
+    Write-Info "You can create it manually after copying PatchPilot-WingetTask.ps1 to $ppDataDir :"
+    Write-Info "  Register-ScheduledTask -TaskName 'PP-WingetCheck' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\ProgramData\PatchPilot\PatchPilot-WingetTask.ps1 Check') -User '$currentUser' -RunLevel Highest"
 }
 
 # ---- PP-WinUpdate scheduled task ----
