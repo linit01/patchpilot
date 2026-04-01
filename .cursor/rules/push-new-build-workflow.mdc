@@ -5,7 +5,19 @@ alwaysApply: true
 
 # PatchPilot — `push_new_build.sh` release workflow
 
-When the user requests a release build using `scripts/push_new_build.sh` (PatchPilot repo: format `./scripts/push_new_build.sh v0.x.y-suffix "commit message style comment"` — triggers GitHub Actions CI and Docker Hub):
+When the user requests a release build using `scripts/push_new_build.sh` (PatchPilot repo — triggers GitHub Actions CI and Docker Hub):
+
+**Invocation (exact shape):**
+
+```text
+./scripts/push_new_build.sh <version> "<comment>"
+```
+
+- **`<version>`** — tag form **with** `v`, e.g. `v0.14.11-alpha`.
+- **`<comment>`** — **only** the change summary in quotes. Do **not** include `<version>:` or repeat the version inside the string; the script prepends `v…` and `: ` to form the git commit message (see `scripts/push_new_build.sh`).
+
+**Correct:** `./scripts/push_new_build.sh v0.14.11-alpha "Fix Win11 Docker upgrade container id resolution"`  
+**Wrong second arg:** `"v0.14.11-alpha: Fix Win11 ..."` (duplicates version; script adds it).
 
 1. **Run** the script only after the user supplies the version and message (or confirms args).
 2. **Show the full script output** in the chat — paste the raw terminal output, not only a summary.
