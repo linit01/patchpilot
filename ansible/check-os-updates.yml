@@ -240,188 +240,99 @@
     # PatchPilot (who has a working winget context).  The task writes
     # results to C:\ProgramData\PatchPilot\winget-check.txt.
     #
-    # This playbook triggers the task, waits for completion, then reads
-    # and parses the output file.
-    - name: Run winget check via scheduled task (Windows)
-      win_shell: |
-        $ErrorActionPreference = 'SilentlyContinue'
-        $outputFile = "C:\ProgramData\PatchPilot\winget-check.txt"
-        $excludedRaw = "{{ winget_excluded_ids }}"
-        $excluded = @()
-        if ($excludedRaw) {
-          $excluded = $excludedRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        }
+    # This playbook copies helper scripts to ProgramData, runs the heavy work
+    # via wscript.exe (hidden window), then slurps the orchestrator stdout file.
+    # Windows: avoid large win_shell blocks — each Ansible PS invocation flashes conhost on Win11.
+    # Ship PatchPilot-AnsibleHiddenLaunch.vbs + orchestrator .ps1 under playbook_dir/windows-client/;
+    # wscript.exe runs the heavy script with window style 0 (hidden).
+    - name: Copy PatchPilot Windows Ansible helpers to target (Windows)
+      win_copy:
+        src: "{{ playbook_dir }}/windows-client/{{ item }}"
+        dest: "C:/ProgramData/PatchPilot/{{ item }}"
+      loop:
+        - PatchPilot-AnsibleHiddenLaunch.vbs
+        - PatchPilot-WingetOrchestrator.ps1
+        - PatchPilot-WinUpdateOrchestrator.ps1
+      when: ansible_facts['os_family'] == "Windows"
+      changed_when: false
 
-        # Trigger the scheduled task created by the setup script
-        $task = Get-ScheduledTask -TaskName "PP-WingetCheck" -ErrorAction SilentlyContinue
-        if (-not $task) {
-          Write-Output "NO_UPDATES"
-          Write-Output "WINGET_TASK_MISSING: PP-WingetCheck scheduled task not found. Re-run Enable-PatchPilotSSH.ps1."
-          exit 0
-        }
+    - name: Write winget exclusion list for orchestrator (Windows)
+      win_copy:
+        content: "{{ winget_excluded_ids }}\n"
+        dest: C:/ProgramData/PatchPilot/winget-excluded-ids.txt
+      when: ansible_facts['os_family'] == "Windows"
+      changed_when: false
 
-        # Remove stale output
-        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
-
-        # Start the task and wait for it to complete
-        Start-ScheduledTask -TaskName "PP-WingetCheck"
-        $timeout = 60
-        $elapsed = 0
-        while ($elapsed -lt $timeout) {
-          Start-Sleep -Seconds 3
-          $elapsed += 3
-          $state = (Get-ScheduledTask -TaskName "PP-WingetCheck").State
-          if ($state -ne "Running") { break }
-        }
-
-        # Read and parse the output file
-        if (-not (Test-Path $outputFile)) {
-          Write-Output "NO_UPDATES"
-          exit 0
-        }
-
-        $raw = Get-Content $outputFile -Raw -Encoding UTF8
-        $lines = $raw -split "`n"
-
-        # Find the header line
-        $headerIdx = -1
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-          if ($lines[$i] -match '^\s*Name\s+Id\s+Version\s+Available') {
-            $headerIdx = $i
-            break
-          }
-        }
-        if ($headerIdx -lt 0) {
-          Write-Output "NO_UPDATES"
-          exit 0
-        }
-
-        # Find column positions from the header
-        $header     = $lines[$headerIdx]
-        $idStart    = $header.IndexOf("Id")
-        $verStart   = $header.IndexOf("Version")
-        $availStart = $header.IndexOf("Available")
-        $srcStart   = $header.IndexOf("Source")
-
-        # Parse data lines (skip header + separator)
-        $count = 0
-        $skipped = 0
-        for ($i = $headerIdx + 1; $i -lt $lines.Count; $i++) {
-          $line = $lines[$i]
-          if ($line -match '^\s*-+' -or $line -match '^\s*$' -or $line -match 'upgrades? available') {
-            continue
-          }
-          if ($line.Length -le $availStart) { continue }
-
-          $name = $line.Substring(0, $idStart).Trim()
-          $id   = $line.Substring($idStart, $verStart - $idStart).Trim()
-          $ver  = $line.Substring($verStart, $availStart - $verStart).Trim()
-          if ($srcStart -gt 0 -and $line.Length -gt $srcStart) {
-            $avail = $line.Substring($availStart, $srcStart - $availStart).Trim()
-          } else {
-            $avail = $line.Substring($availStart).Trim()
-          }
-
-          # Check exclusion list — match against the parsed ID and also
-          # check if any excluded ID is a substring (handles truncated IDs)
-          $isExcluded = $false
-          foreach ($exc in $excluded) {
-            if ($id -eq $exc -or $id -like "$exc*" -or $exc -like "$id*") {
-              $isExcluded = $true
-              $skipped++
-              break
-            }
-          }
-
-          if (-not $isExcluded -and $id -and $avail) {
-            Write-Output "$name ($id) $ver -> $avail"
-            $count++
-          }
-        }
-
-        if ($count -eq 0) {
-          Write-Output "NO_UPDATES"
-        }
-      register: winget_updates
+    - name: Run winget check via hidden WScript launcher (Windows)
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-WingetOrchestrator.ps1'
       when: ansible_facts['os_family'] == "Windows"
       changed_when: false
       failed_when: false
 
+    - name: Read winget orchestrator stdout file (Windows)
+      ansible.windows.win_slurp:
+        src: C:/ProgramData/PatchPilot/winget-ansible-stdout.txt
+      register: winget_slurp
+      when: ansible_facts['os_family'] == "Windows"
+      failed_when: false
+
+    - name: Build winget_updates fact for parser (Windows)
+      set_fact:
+        winget_updates:
+          stdout: "{{ winget_slurp.content | b64decode }}"
+          stdout_lines: "{{ (winget_slurp.content | b64decode).splitlines() }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winget_slurp.content is defined
+        - (winget_slurp.content | length) > 0
+
+    - name: Fallback winget_updates when orchestrator or slurp failed (Windows)
+      set_fact:
+        winget_updates:
+          stdout: "NO_UPDATES"
+          stdout_lines: ["NO_UPDATES", "WINGET_ORCHESTRATOR_OR_SLURP_FAILED"]
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winget_updates is not defined
+
     # ── Windows Update check (PSWindowsUpdate) ────────────────────────────────
-    - name: Run Windows Update check via scheduled task (Windows)
-      win_shell: |
-        $ErrorActionPreference = 'SilentlyContinue'
-        $outputFile = "C:\ProgramData\PatchPilot\winupdate-check.txt"
-        $taskName = "PP-WinUpdate"
-
-        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        if (-not $task) {
-          Write-Output "NO_UPDATES"
-          Write-Output "WINUPDATE_TASK_MISSING: PP-WinUpdate scheduled task not found."
-          exit 0
-        }
-
-        # Remove stale output
-        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
-
-        # Start the task and wait for it to complete
-        Start-ScheduledTask -TaskName $taskName
-        $timeout = 120
-        $elapsed = 0
-        while ($elapsed -lt $timeout) {
-          Start-Sleep -Seconds 5
-          $elapsed += 5
-          $state = (Get-ScheduledTask -TaskName $taskName).State
-          if ($state -ne "Running") { break }
-        }
-
-        # Read and parse the output file
-        if (-not (Test-Path $outputFile)) {
-          Write-Output "NO_UPDATES"
-          exit 0
-        }
-
-        $raw = Get-Content $outputFile -Raw -Encoding UTF8
-        $lines = $raw -split "`n"
-
-        $count = 0
-        foreach ($line in $lines) {
-          $line = $line.Trim()
-          if (-not $line) { continue }
-          # PSWindowsUpdate output format varies — table with Status, KB, Size, Title columns
-          if ($line -match '^\s*-+') { continue }
-          if ($line -match '^\s*Status\s+') { continue }
-          if ($line -match '^\s*X\s+ComputerName') { continue }
-          if ($line -match '^\s*$') { continue }
-          # Match lines that contain a KB number
-          if ($line -match 'KB\d+') {
-            $kbMatch = [regex]::Match($line, '(KB\d+)')
-            $kb = $kbMatch.Value
-            # Extract size (e.g. "56GB", "920019KiB", "1GB")
-            $sizeMatch = [regex]::Match($line, '(\d+(?:\.\d+)?)\s*([KMGT]i?B)', 'IgnoreCase')
-            $size = if ($sizeMatch.Success) { $sizeMatch.Value } else { "" }
-            # Extract title — remove KB, size, status chars, computer name, extra whitespace
-            $title = $line -replace '^\s*\d+\s+\S+\s+\S+\s+', '' `
-                          -replace 'KB\d+', '' `
-                          -replace '\d+(?:\.\d+)?\s*[KMGT]i?B', '' `
-                          -replace '^\s*[\-\s]+', '' `
-                          -replace '\s{2,}', ' '
-            $title = $title.Trim()
-            if (-not $title) { $title = "Windows Update" }
-            Write-Output "$title ($kb) installed -> available"
-            $count++
-          }
-        }
-
-        if ($count -eq 0) {
-          Write-Output "NO_UPDATES"
-        }
-      register: winupdate_updates
+    - name: Run Windows Update check via hidden WScript launcher (Windows)
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-WinUpdateOrchestrator.ps1'
       when:
         - ansible_facts['os_family'] == "Windows"
         - winupdate_enabled | bool
       changed_when: false
       failed_when: false
+
+    - name: Read Windows Update orchestrator stdout file (Windows)
+      ansible.windows.win_slurp:
+        src: C:/ProgramData/PatchPilot/winupdate-ansible-stdout.txt
+      register: winupdate_slurp
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winupdate_enabled | bool
+      failed_when: false
+
+    - name: Build winupdate_updates fact for parser (Windows)
+      set_fact:
+        winupdate_updates:
+          stdout: "{{ winupdate_slurp.content | b64decode }}"
+          stdout_lines: "{{ (winupdate_slurp.content | b64decode).splitlines() }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winupdate_enabled | bool
+        - winupdate_slurp.content is defined
+        - (winupdate_slurp.content | length) > 0
+
+    - name: Fallback winupdate_updates when orchestrator or slurp failed (Windows)
+      set_fact:
+        winupdate_updates:
+          stdout: "NO_UPDATES"
+          stdout_lines: ["NO_UPDATES", "WINUPDATE_ORCHESTRATOR_OR_SLURP_FAILED"]
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - winupdate_enabled | bool
+        - winupdate_updates is not defined
 
     - name: Skip Windows Update check (disabled)
       debug:
