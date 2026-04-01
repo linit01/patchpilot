@@ -1,0 +1,13 @@
+---
+description: Do not edit patchpilot-k3s — separate copy managed by the operator
+alwaysApply: true
+---
+
+# `patchpilot-k3s` is off-limits
+
+The directory / repo copy **`patchpilot-k3s`** is a parallel tree the operator maintains themselves.
+
+- **Do not** change, create, delete, or refactor files under **`patchpilot-k3s`** unless the operator **explicitly** asks to work there in that conversation.
+- **Do** restrict codebase edits to **`patchpilot`** (this project) by default.
+
+If the operator wants the same change in both places, they will sync **`patchpilot-k3s`** on their own unless they clearly request edits in **`patchpilot-k3s`**.

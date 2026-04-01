@@ -19,11 +19,19 @@ When the user requests a release build using `scripts/push_new_build.sh` (PatchP
 **Correct:** `./scripts/push_new_build.sh v0.14.11-alpha "Fix Win11 Docker upgrade container id resolution"`  
 **Wrong second arg:** `"v0.14.11-alpha: Fix Win11 ..."` (duplicates version; script adds it).
 
-1. **Run** the script only after the user supplies the version and message (or confirms args).
-2. **Show the full script output** in the chat — paste the raw terminal output, not only a summary.
-3. **Do not** treat the release as complete or give a bare "yes / we're done" **before** that output is shown.
-4. After showing output, report success or failure clearly (exit code, errors).
-5. **Stop and wait** for the user to reply with **`approve`** or **`no`**.
-6. **If `approve`**: continue with any follow-on steps they want (git, docs, etc.). **If `no`**: do not proceed with further release-related actions.
+## Push approval (mandatory)
 
-This gate is mandatory; the user always acknowledges with `approve` or `no` before continuation.
+- **`git push` / `git push origin <tag>` must not run** until the operator has **explicitly approved** in the conversation. Use **`approve`** or **`yes`** (meaning: proceed with commit and push) — treat anything else, silence, or ambiguity as **no push**.
+- **Do not** pipe `yes` into the script, fake confirmations, or run `PATCHPILOT_RELEASE_APPROVED=1` **before** that explicit approval for this release attempt.
+- **Non-interactive runs** (agent/CI without a TTY): the script updates files only and exits **2** until the operator approves; then run again with `PATCHPILOT_RELEASE_APPROVED=1` and the **same** `<version>` and `"<comment>"`.
+- **If unsure** whether the user approved a push for this run, **ask** before running git push or setting `PATCHPILOT_RELEASE_APPROVED=1`.
+
+## After a prepare-only run (exit 2)
+
+1. Paste the **full** script output (raw terminal).
+2. Wait for **`approve`** or **`yes`** (push allowed) or **`no`** / anything else (no push).
+3. Only if **approve/yes**: run  
+   `PATCHPILOT_RELEASE_APPROVED=1 ./scripts/push_new_build.sh <version> "<comment>"`  
+   Show that output too.
+
+Human use from a real terminal can still type `yes` at the script’s interactive prompt (no env var needed).
