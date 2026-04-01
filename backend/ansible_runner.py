@@ -5,11 +5,23 @@ import os
 import asyncio
 import tempfile
 import json
+from pathlib import Path
 from typing import Dict, List, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
 from encryption_utils import decrypt_credential
+
+
+def _patchpilot_app_version() -> str:
+    """Single-line VERSION at repo root (next to backend/). Used to skip redundant win_copy on Windows."""
+    try:
+        vf = Path(__file__).resolve().parent.parent / "VERSION"
+        if vf.is_file():
+            return vf.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return "unknown"
 
 class AnsibleRunner:
     def __init__(self, playbook_path: str, inventory_path: str, db_client=None):
@@ -228,6 +240,7 @@ class AnsibleRunner:
             check_env['PYTHONUNBUFFERED'] = '1'
             check_env['ANSIBLE_FORCE_COLOR'] = '0'
             check_env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
+            check_env['PATCHPILOT_APP_VERSION'] = _patchpilot_app_version()
             try:
                 if self.db_client and self.db_client.pool:
                     async with self.db_client.pool.acquire() as _conn:
@@ -581,6 +594,7 @@ class AnsibleRunner:
             env['PYTHONUNBUFFERED'] = '1'
             env['ANSIBLE_FORCE_COLOR'] = '0'
             env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
+            env['PATCHPILOT_APP_VERSION'] = _patchpilot_app_version()
 
             # ── macOS / App Store settings ────────────────────────────────
             # Load mas config from DB settings (user-configurable via UI).
