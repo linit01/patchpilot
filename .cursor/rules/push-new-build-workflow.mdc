@@ -25,16 +25,20 @@ When the user asks to push a release with **`scripts/push_new_build.sh`** (Patch
    - **Agent / non‑TTY:** it **stops** before that git push (exit **2**) and prints what would run.
 4. At that gate the agent **does not** complete the push. It **stops**, pastes the **full script output**, and **asks in this chat** for **final approval**.
 5. Operator replies in chat:
-   - **`approve`** (or clearly affirmative **`yes`** if they use that word for “push to CI”) — agent may run the **follow‑up** that performs commit/tag/`git push` (e.g. `PATCHPILOT_RELEASE_APPROVED=1` with the **same** version and comment, per `scripts/push_new_build.sh`).
+   - **`approve`** — only after this exact approval token (case‑insensitive) in **this chat** may the agent run the follow‑up that performs commit/tag/`git push` (e.g. `PATCHPILOT_RELEASE_APPROVED=1` with the **same** version and comment, per `scripts/push_new_build.sh`).
    - **`no`** — **cancel**: do **not** push to CI; do **not** set `PATCHPILOT_RELEASE_APPROVED=1`; leave follow‑up git steps undone (operator can discard local file edits if they want).
+
+## Ambiguous requests (critical)
+
+If the user says things like **“run the push script,”** **“run push on uncommitted changes,”** or **“prepare a release”** without having just typed **`approve`**, treat that as **prepare only**: run the script **without** `PATCHPILOT_RELEASE_APPROVED=1` (or stop after reviewing output) so it exits **2** when non‑interactive, show the printed re‑run command, and **wait for `approve` or `no`**. Do **not** infer approval from “go ahead,” “push it,” “do it,” or similar unless the same message **also** contains **`approve`**.
 
 ## Agent must never
 
 - Pipe **`yes`** into the script or auto‑answer the script’s prompts.
-- Set **`PATCHPILOT_RELEASE_APPROVED=1`** or run **`git push`** until the operator has replied **`approve`** in chat for **that** run.
+- Set **`PATCHPILOT_RELEASE_APPROVED=1`**, run **`git push`**, or push tags **until the operator’s message for that release contains `approve`** (case‑insensitive). **No substitute phrase counts.**
 
 ## If unsure
 
 Ask in chat before any push.
 
-Human-only: from a real terminal you can type **`yes`** at the script’s prompt yourself; the agent still uses the **chat** **`approve`** / **`no`** gate when the agent ran the prepare step.
+Human-only: from a real terminal you can type **`yes`** at the script’s prompt yourself; the **agent** still may only complete the push after chat **`approve`** (not merely “yes” in chat unless you later change this rule).
