@@ -720,9 +720,9 @@
         # Save the original action so we can restore it after apply
         $originalAction = $task.Actions[0]
 
-        # Swap action to the apply command
-        $applyCmd = "winget upgrade --all --include-unknown --accept-source-agreements --accept-package-agreements --silent --force 2>&1 | Out-File '$outputFile' -Encoding UTF8"
-        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$applyCmd`""
+        # Swap action to the apply command (CreateNoWindow via PatchPilot-WingetTask.ps1)
+        $wingetScript = "C:\ProgramData\PatchPilot\PatchPilot-WingetTask.ps1"
+        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wingetScript`" Apply"
         Set-ScheduledTask -TaskName $taskName -Action $applyAction | Out-Null
 
         # Remove stale output
@@ -744,9 +744,8 @@
           Write-Output "WARNING: Winget apply timed out after 30 minutes."
         }
 
-        # Restore the original check action
-        $checkCmd = "winget upgrade --include-unknown --accept-source-agreements 2>&1 | Out-File '$checkOutputFile' -Encoding UTF8"
-        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"$checkCmd`""
+        # Restore the check action (same as Enable-PatchPilotSSH registration)
+        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wingetScript`" Check"
         Set-ScheduledTask -TaskName $taskName -Action $checkAction | Out-Null
 
         # Read and output the results
