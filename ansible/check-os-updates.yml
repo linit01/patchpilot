@@ -237,78 +237,29 @@
       failed_when: false
 
     # ── Windows ────────────────────────────────────────────────────────────────
-    # win_shell flashes conhost on Win11; use win_command → wscript → hidden PS1.
-    # win_copy also opens a remote PS session — skip syncing helpers when the version
-    # stamp matches PATCHPILOT_APP_VERSION (set by the PatchPilot backend).
-    # Helper sync is tagged "always" so --tags apply-updates still deploys *.ps1 for patch.
-    - name: Read remote Windows helper bundle version stamp (Windows)
-      ansible.windows.slurp:
-        src: C:/ProgramData/PatchPilot/.patchpilot_helpers_version
-      register: _helper_stamp_slurp
-      when: ansible_facts['os_family'] == "Windows"
-      failed_when: false
-      ignore_errors: true
-      tags: ['always']
+    # CONHOST FLASH MITIGATION: Every Ansible module call on a Windows host
+    # over SSH spawns powershell.exe which flashes a console window on Win11.
+    # Steady-state check cycle uses only 3 remote module calls:
+    #   1. setup (fact gathering — unavoidable)
+    #   2. win_command → wscript (hidden — no flash) — runs combined scan
+    #   3. slurp — reads the single JSON result file
+    # Config (exclusion list, WU flag) is passed as environment variables to
+    # the scan script which writes them to disk — no separate win_copy.
+    # The helpers version check is done inside CombinedScan.ps1: it compares
+    # PATCHPILOT_APP_VERSION to the on-disk stamp and reports needs_refresh
+    # in the JSON.  If true, Ansible pushes new helpers and re-runs the scan.
 
-    - name: Decide if Windows helper scripts need refresh (Windows)
-      set_fact:
-        _helpers_need_refresh: >-
-          {% if _helper_stamp_slurp.failed | default(false) %}true{% elif _helper_stamp_slurp.content is not defined %}true{% else %}{{ (lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) | trim)
-          != ((_helper_stamp_slurp.content | b64decode) | trim) }}{% endif %}
-      when: ansible_facts['os_family'] == "Windows"
-      ignore_errors: true
-      tags: ['always']
-
-    - name: Assume Windows helpers need refresh if version check failed (Windows)
-      set_fact:
-        _helpers_need_refresh: true
-      when:
-        - ansible_facts['os_family'] == "Windows"
-        - _helpers_need_refresh is not defined
-      tags: ['always']
-
-    # Trailing slash on src = copy directory contents (ansible.windows.win_copy).
-    - name: Copy PatchPilot Windows helper bundle when version changed (Windows)
-      ansible.windows.win_copy:
-        src: "{{ playbook_dir }}/windows-client/"
-        dest: "C:/ProgramData/PatchPilot/"
-      when:
-        - ansible_facts['os_family'] == "Windows"
-        - _helpers_need_refresh | bool
-      changed_when: false
-      tags: ['always']
-
-    - name: Write helper bundle version stamp after sync (Windows)
-      ansible.windows.win_copy:
-        content: "{{ lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) }}\n"
-        dest: C:/ProgramData/PatchPilot/.patchpilot_helpers_version
-      when:
-        - ansible_facts['os_family'] == "Windows"
-        - _helpers_need_refresh | bool
-      changed_when: false
-      tags: ['always']
-
-    - name: Write winget exclusion list for orchestrator (Windows)
-      win_copy:
-        content: "{{ winget_excluded_ids }}\n"
-        dest: C:/ProgramData/PatchPilot/winget-excluded-ids.txt
-      when: ansible_facts['os_family'] == "Windows"
-      changed_when: false
-
-    - name: Write Windows Update enabled flag for combined scan (Windows)
-      ansible.windows.win_copy:
-        content: "{{ 'true' if winupdate_enabled | bool else 'false' }}"
-        dest: C:/ProgramData/PatchPilot/winupdate-enabled.flag
-      when: ansible_facts['os_family'] == "Windows"
-      changed_when: false
-
+    # ── Combined scan (single win_command — hidden via wscript) ────────────
     - name: Run Windows scan bundle via single hidden WScript launcher (Windows)
       win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-CombinedScan.ps1'
       environment:
         WINUPDATE_ENABLED: "{{ 'true' if winupdate_enabled | bool else 'false' }}"
+        PP_WINGET_EXCLUDED_IDS: "{{ winget_excluded_ids }}"
+        PATCHPILOT_APP_VERSION: "{{ lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) }}"
       when: ansible_facts['os_family'] == "Windows"
       changed_when: false
       failed_when: false
+      tags: ['always']
 
     - name: Read Windows scan bundle JSON (single slurp) (Windows)
       ansible.windows.slurp:
@@ -316,6 +267,7 @@
       register: scan_bundle_slurp
       when: ansible_facts['os_family'] == "Windows"
       failed_when: false
+      tags: ['always']
 
     - name: Decode Windows scan bundle (Windows)
       set_fact:
@@ -325,6 +277,125 @@
         - scan_bundle_slurp.content is defined
         - (scan_bundle_slurp.content | length) > 0
       ignore_errors: true
+      tags: ['always']
+
+    # ── Helper script sync (only when version changed) ─────────────────────
+    - name: Copy PatchPilot Windows helper bundle when version changed (Windows)
+      ansible.windows.win_copy:
+        src: "{{ playbook_dir }}/windows-client/"
+        dest: "C:/ProgramData/PatchPilot/"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is defined
+        - _scan_bundle.needs_refresh | default(false) | bool
+      changed_when: false
+      tags: ['always']
+
+    - name: Write helper bundle version stamp after sync (Windows)
+      ansible.windows.win_copy:
+        content: "{{ lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) }}\n"
+        dest: C:/ProgramData/PatchPilot/.patchpilot_helpers_version
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is defined
+        - _scan_bundle.needs_refresh | default(false) | bool
+      changed_when: false
+      tags: ['always']
+
+    # Re-run scan after helper refresh so results use the new scripts
+    - name: Re-run Windows scan after helper refresh (Windows)
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-CombinedScan.ps1'
+      environment:
+        WINUPDATE_ENABLED: "{{ 'true' if winupdate_enabled | bool else 'false' }}"
+        PP_WINGET_EXCLUDED_IDS: "{{ winget_excluded_ids }}"
+        PATCHPILOT_APP_VERSION: "{{ lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is defined
+        - _scan_bundle.needs_refresh | default(false) | bool
+      changed_when: false
+      failed_when: false
+      tags: ['always']
+
+    - name: Re-read scan bundle after helper refresh (Windows)
+      ansible.windows.slurp:
+        src: C:/ProgramData/PatchPilot/ansible-scan-bundle.json
+      register: scan_bundle_slurp
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is defined
+        - _scan_bundle.needs_refresh | default(false) | bool
+      failed_when: false
+      tags: ['always']
+
+    - name: Re-decode scan bundle after helper refresh (Windows)
+      set_fact:
+        _scan_bundle: "{{ scan_bundle_slurp.content | b64decode | from_json }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is defined
+        - _scan_bundle.needs_refresh | default(false) | bool
+        - scan_bundle_slurp.content is defined
+        - (scan_bundle_slurp.content | length) > 0
+      ignore_errors: true
+      tags: ['always']
+
+    # ── First-run bootstrap: no scan bundle exists yet ─────────────────────
+    # On first ever check (fresh Windows host), there's no bundle JSON and
+    # no helper scripts.  Force a helper sync + scan.
+    - name: Bootstrap Windows helpers on first run (Windows)
+      ansible.windows.win_copy:
+        src: "{{ playbook_dir }}/windows-client/"
+        dest: "C:/ProgramData/PatchPilot/"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is not defined
+      changed_when: false
+      tags: ['always']
+
+    - name: Write version stamp on first run (Windows)
+      ansible.windows.win_copy:
+        content: "{{ lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) }}\n"
+        dest: C:/ProgramData/PatchPilot/.patchpilot_helpers_version
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is not defined
+      changed_when: false
+      tags: ['always']
+
+    - name: Run initial scan on first run (Windows)
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-CombinedScan.ps1'
+      environment:
+        WINUPDATE_ENABLED: "{{ 'true' if winupdate_enabled | bool else 'false' }}"
+        PP_WINGET_EXCLUDED_IDS: "{{ winget_excluded_ids }}"
+        PATCHPILOT_APP_VERSION: "{{ lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is not defined
+      changed_when: false
+      failed_when: false
+      tags: ['always']
+
+    - name: Read scan bundle on first run (Windows)
+      ansible.windows.slurp:
+        src: C:/ProgramData/PatchPilot/ansible-scan-bundle.json
+      register: scan_bundle_slurp
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is not defined
+      failed_when: false
+      tags: ['always']
+
+    - name: Decode scan bundle on first run (Windows)
+      set_fact:
+        _scan_bundle: "{{ scan_bundle_slurp.content | b64decode | from_json }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is not defined
+        - scan_bundle_slurp.content is defined
+        - (scan_bundle_slurp.content | length) > 0
+      ignore_errors: true
+      tags: ['always']
 
     - name: Build winget_updates from bundle (Windows)
       set_fact:
