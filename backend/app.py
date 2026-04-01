@@ -250,6 +250,16 @@ async def startup_event():
     else:
         print(f"WARNING: Bundled playbook not found at {_src_playbook}")
 
+    _src_wc = Path("/ansible-src/windows-client")
+    _dst_wc = Path("/ansible/windows-client")
+    if _src_wc.is_dir():
+        try:
+            _dst_wc.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.copytree(_src_wc, _dst_wc, dirs_exist_ok=True)
+            print(f"Windows-client scripts synced: {_src_wc} → {_dst_wc}")
+        except Exception as _e:
+            print(f"WARNING: Could not sync windows-client: {_e}")
+
     # ── STEP 1: Core schema (hosts, packages, patch_history) ─────────────────
     # Must run BEFORE any column-check helpers that assume the tables exist.
     await ensure_core_tables(pool)
@@ -1157,7 +1167,7 @@ async def run_ansible_patch_task(hostnames: List[str], become_password: Optional
 async def periodic_ansible_check():
     """Run Ansible check periodically, reading interval from settings"""
     while True:
-        # Read interval from settings (default 120s)
+        # Read interval from settings (seconds). UI "Disabled" stores 0 — must not use max(30,0).
         interval = 120
         try:
             pool = db.pool
@@ -1165,10 +1175,20 @@ async def periodic_ansible_check():
                 row = await conn.fetchval(
                     "SELECT value FROM settings WHERE key = 'refresh_interval'"
                 )
-                if row:
-                    interval = max(30, int(row))  # Floor at 30s
+                if row is not None and str(row).strip() != "":
+                    v = int(row)
+                    if v == 0:
+                        interval = 0
+                    else:
+                        interval = max(30, v)
         except Exception:
             pass
+
+        if interval == 0:
+            # Disabled: poll DB periodically so turning checks back on takes effect without restart
+            await asyncio.sleep(60)
+            continue
+
         await asyncio.sleep(interval)
         try:
             # Skip check if trial has expired

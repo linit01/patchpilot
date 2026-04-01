@@ -1,37 +1,40 @@
 ---
-description: PatchPilot release workflow — push_new_build.sh output and approval gate
+description: PatchPilot release workflow — push_new_build.sh and chat final approval
 alwaysApply: true
 ---
 
 # PatchPilot — `push_new_build.sh` release workflow
 
-When the user requests a release build using `scripts/push_new_build.sh` (PatchPilot repo — triggers GitHub Actions CI and Docker Hub):
+When the user asks to push a release with **`scripts/push_new_build.sh`** (PatchPilot → GitHub → CI → Docker Hub):
 
-**Invocation (exact shape):**
+## Invocation
 
 ```text
 ./scripts/push_new_build.sh <version> "<comment>"
 ```
 
-- **`<version>`** — tag form **with** `v`, e.g. `v0.14.11-alpha`.
-- **`<comment>`** — **only** the change summary in quotes. Do **not** include `<version>:` or repeat the version inside the string; the script prepends `v…` and `: ` to form the git commit message (see `scripts/push_new_build.sh`).
+- **`<version>`** — with `v`, e.g. `v0.14.13-alpha`.
+- **`<comment>`** — **only** the summary in quotes (no `v…:` prefix; the script adds it).
 
-**Correct:** `./scripts/push_new_build.sh v0.14.11-alpha "Fix Win11 Docker upgrade container id resolution"`  
-**Wrong second arg:** `"v0.14.11-alpha: Fix Win11 ..."` (duplicates version; script adds it).
+## What the operator expects (non‑negotiable)
 
-## Push approval (mandatory)
+1. **`git add`** — include **all files agreed for this release** (the script also runs `git add -A` as part of the git step).
+2. **Run** `push_new_build.sh` with the chosen `<version>` and `"<comment>"`.
+3. The script reaches a **final gate before CI**:
+   - **Interactive terminal:** it prompts **yes/no** before commit/tag/push.
+   - **Agent / non‑TTY:** it **stops** before that git push (exit **2**) and prints what would run.
+4. At that gate the agent **does not** complete the push. It **stops**, pastes the **full script output**, and **asks in this chat** for **final approval**.
+5. Operator replies in chat:
+   - **`approve`** (or clearly affirmative **`yes`** if they use that word for “push to CI”) — agent may run the **follow‑up** that performs commit/tag/`git push` (e.g. `PATCHPILOT_RELEASE_APPROVED=1` with the **same** version and comment, per `scripts/push_new_build.sh`).
+   - **`no`** — **cancel**: do **not** push to CI; do **not** set `PATCHPILOT_RELEASE_APPROVED=1`; leave follow‑up git steps undone (operator can discard local file edits if they want).
 
-- **`git push` / `git push origin <tag>` must not run** until the operator has **explicitly approved** in the conversation. Use **`approve`** or **`yes`** (meaning: proceed with commit and push) — treat anything else, silence, or ambiguity as **no push**.
-- **Do not** pipe `yes` into the script, fake confirmations, or run `PATCHPILOT_RELEASE_APPROVED=1` **before** that explicit approval for this release attempt.
-- **Non-interactive runs** (agent/CI without a TTY): the script updates files only and exits **2** until the operator approves; then run again with `PATCHPILOT_RELEASE_APPROVED=1` and the **same** `<version>` and `"<comment>"`.
-- **If unsure** whether the user approved a push for this run, **ask** before running git push or setting `PATCHPILOT_RELEASE_APPROVED=1`.
+## Agent must never
 
-## After a prepare-only run (exit 2)
+- Pipe **`yes`** into the script or auto‑answer the script’s prompts.
+- Set **`PATCHPILOT_RELEASE_APPROVED=1`** or run **`git push`** until the operator has replied **`approve`** in chat for **that** run.
 
-1. Paste the **full** script output (raw terminal).
-2. Wait for **`approve`** or **`yes`** (push allowed) or **`no`** / anything else (no push).
-3. Only if **approve/yes**: run  
-   `PATCHPILOT_RELEASE_APPROVED=1 ./scripts/push_new_build.sh <version> "<comment>"`  
-   Show that output too.
+## If unsure
 
-Human use from a real terminal can still type `yes` at the script’s interactive prompt (no env var needed).
+Ask in chat before any push.
+
+Human-only: from a real terminal you can type **`yes`** at the script’s prompt yourself; the agent still uses the **chat** **`approve`** / **`no`** gate when the agent ran the prepare step.
