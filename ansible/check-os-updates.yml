@@ -270,7 +270,7 @@
       failed_when: false
 
     - name: Read winget orchestrator stdout file (Windows)
-      ansible.windows.win_slurp:
+      ansible.windows.slurp:
         src: C:/ProgramData/PatchPilot/winget-ansible-stdout.txt
       register: winget_slurp
       when: ansible_facts['os_family'] == "Windows"
@@ -305,7 +305,7 @@
       failed_when: false
 
     - name: Read Windows Update orchestrator stdout file (Windows)
-      ansible.windows.win_slurp:
+      ansible.windows.slurp:
         src: C:/ProgramData/PatchPilot/winupdate-ansible-stdout.txt
       register: winupdate_slurp
       when:
