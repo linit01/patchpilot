@@ -41,6 +41,10 @@
     # to the next host in the inventory.
     - name: Gather facts (explicit — allows failures without aborting play)
       setup:
+        gather_subset:
+          - '!all'
+          - 'distribution'
+          - 'network'
       register: setup_result
       ignore_errors: true
       ignore_unreachable: true
@@ -233,28 +237,56 @@
       failed_when: false
 
     # ── Windows ────────────────────────────────────────────────────────────────
-    # winget's COM/MSIX sandbox requires a full interactive user session;
-    # it cannot run directly in a non-interactive SSH session for a service
-    # account.  The Enable-PatchPilotSSH.ps1 setup script creates a
-    # scheduled task (PP-WingetCheck) that runs as the user who installed
-    # PatchPilot (who has a working winget context).  The task writes
-    # results to C:\ProgramData\PatchPilot\winget-check.txt.
-    #
-    # This playbook copies helper scripts to ProgramData, runs the heavy work
-    # via wscript.exe (hidden window), then slurps the orchestrator stdout file.
-    # Windows: avoid large win_shell blocks — each Ansible PS invocation flashes conhost on Win11.
-    # Ship PatchPilot-AnsibleHiddenLaunch.vbs + orchestrator .ps1 under playbook_dir/windows-client/;
-    # wscript.exe runs the heavy script with window style 0 (hidden).
-    - name: Copy PatchPilot Windows Ansible helpers to target (Windows)
-      win_copy:
-        src: "{{ playbook_dir }}/windows-client/{{ item }}"
-        dest: "C:/ProgramData/PatchPilot/{{ item }}"
-      loop:
-        - PatchPilot-AnsibleHiddenLaunch.vbs
-        - PatchPilot-WingetOrchestrator.ps1
-        - PatchPilot-WinUpdateOrchestrator.ps1
+    # win_shell flashes conhost on Win11; use win_command → wscript → hidden PS1.
+    # win_copy also opens a remote PS session — skip syncing helpers when the version
+    # stamp matches PATCHPILOT_APP_VERSION (set by the PatchPilot backend).
+    # Helper sync is tagged "always" so --tags apply-updates still deploys *.ps1 for patch.
+    - name: Read remote Windows helper bundle version stamp (Windows)
+      ansible.windows.slurp:
+        src: C:/ProgramData/PatchPilot/.patchpilot_helpers_version
+      register: _helper_stamp_slurp
       when: ansible_facts['os_family'] == "Windows"
+      failed_when: false
+      ignore_errors: true
+      tags: ['always']
+
+    - name: Decide if Windows helper scripts need refresh (Windows)
+      set_fact:
+        _helpers_need_refresh: >-
+          {% if _helper_stamp_slurp.failed | default(false) %}true{% elif _helper_stamp_slurp.content is not defined %}true{% else %}{{ (lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) | trim)
+          != ((_helper_stamp_slurp.content | b64decode) | trim) }}{% endif %}
+      when: ansible_facts['os_family'] == "Windows"
+      ignore_errors: true
+      tags: ['always']
+
+    - name: Assume Windows helpers need refresh if version check failed (Windows)
+      set_fact:
+        _helpers_need_refresh: true
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _helpers_need_refresh is not defined
+      tags: ['always']
+
+    # Trailing slash on src = copy directory contents (ansible.windows.win_copy).
+    - name: Copy PatchPilot Windows helper bundle when version changed (Windows)
+      ansible.windows.win_copy:
+        src: "{{ playbook_dir }}/windows-client/"
+        dest: "C:/ProgramData/PatchPilot/"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _helpers_need_refresh | bool
       changed_when: false
+      tags: ['always']
+
+    - name: Write helper bundle version stamp after sync (Windows)
+      ansible.windows.win_copy:
+        content: "{{ lookup('env', 'PATCHPILOT_APP_VERSION') | default('unknown', true) }}\n"
+        dest: C:/ProgramData/PatchPilot/.patchpilot_helpers_version
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _helpers_need_refresh | bool
+      changed_when: false
+      tags: ['always']
 
     - name: Write winget exclusion list for orchestrator (Windows)
       win_copy:
@@ -263,30 +295,49 @@
       when: ansible_facts['os_family'] == "Windows"
       changed_when: false
 
-    - name: Run winget check via hidden WScript launcher (Windows)
-      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-WingetOrchestrator.ps1'
+    - name: Write Windows Update enabled flag for combined scan (Windows)
+      ansible.windows.win_copy:
+        content: "{{ 'true' if winupdate_enabled | bool else 'false' }}"
+        dest: C:/ProgramData/PatchPilot/winupdate-enabled.flag
+      when: ansible_facts['os_family'] == "Windows"
+      changed_when: false
+
+    - name: Run Windows scan bundle via single hidden WScript launcher (Windows)
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-CombinedScan.ps1'
+      environment:
+        WINUPDATE_ENABLED: "{{ 'true' if winupdate_enabled | bool else 'false' }}"
       when: ansible_facts['os_family'] == "Windows"
       changed_when: false
       failed_when: false
 
-    - name: Read winget orchestrator stdout file (Windows)
+    - name: Read Windows scan bundle JSON (single slurp) (Windows)
       ansible.windows.slurp:
-        src: C:/ProgramData/PatchPilot/winget-ansible-stdout.txt
-      register: winget_slurp
+        src: C:/ProgramData/PatchPilot/ansible-scan-bundle.json
+      register: scan_bundle_slurp
       when: ansible_facts['os_family'] == "Windows"
       failed_when: false
 
-    - name: Build winget_updates fact for parser (Windows)
+    - name: Decode Windows scan bundle (Windows)
       set_fact:
-        winget_updates:
-          stdout: "{{ winget_slurp.content | b64decode }}"
-          stdout_lines: "{{ (winget_slurp.content | b64decode).splitlines() }}"
+        _scan_bundle: "{{ scan_bundle_slurp.content | b64decode | from_json }}"
       when:
         - ansible_facts['os_family'] == "Windows"
-        - winget_slurp.content is defined
-        - (winget_slurp.content | length) > 0
+        - scan_bundle_slurp.content is defined
+        - (scan_bundle_slurp.content | length) > 0
+      ignore_errors: true
 
-    - name: Fallback winget_updates when orchestrator or slurp failed (Windows)
+    - name: Build winget_updates from bundle (Windows)
+      set_fact:
+        winget_updates:
+          stdout: "{{ _scan_bundle.winget | default('') }}"
+          stdout_lines: "{{ (_scan_bundle.winget | default('')).splitlines() }}"
+      when:
+        - ansible_facts['os_family'] == "Windows"
+        - _scan_bundle is defined
+        - _scan_bundle.winget is defined
+        - (_scan_bundle.winget | default('') | length) > 0
+
+    - name: Fallback winget_updates when bundle missing or empty (Windows)
       set_fact:
         winget_updates:
           stdout: "NO_UPDATES"
@@ -295,36 +346,19 @@
         - ansible_facts['os_family'] == "Windows"
         - winget_updates is not defined
 
-    # ── Windows Update check (PSWindowsUpdate) ────────────────────────────────
-    - name: Run Windows Update check via hidden WScript launcher (Windows)
-      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-WinUpdateOrchestrator.ps1'
-      when:
-        - ansible_facts['os_family'] == "Windows"
-        - winupdate_enabled | bool
-      changed_when: false
-      failed_when: false
-
-    - name: Read Windows Update orchestrator stdout file (Windows)
-      ansible.windows.slurp:
-        src: C:/ProgramData/PatchPilot/winupdate-ansible-stdout.txt
-      register: winupdate_slurp
-      when:
-        - ansible_facts['os_family'] == "Windows"
-        - winupdate_enabled | bool
-      failed_when: false
-
-    - name: Build winupdate_updates fact for parser (Windows)
+    - name: Build winupdate_updates from bundle (Windows)
       set_fact:
         winupdate_updates:
-          stdout: "{{ winupdate_slurp.content | b64decode }}"
-          stdout_lines: "{{ (winupdate_slurp.content | b64decode).splitlines() }}"
+          stdout: "{{ _scan_bundle.winupdate | default('') }}"
+          stdout_lines: "{{ (_scan_bundle.winupdate | default('')).splitlines() }}"
       when:
         - ansible_facts['os_family'] == "Windows"
         - winupdate_enabled | bool
-        - winupdate_slurp.content is defined
-        - (winupdate_slurp.content | length) > 0
+        - _scan_bundle is defined
+        - _scan_bundle.winupdate is defined
+        - (_scan_bundle.winupdate | default('') | length) > 0
 
-    - name: Fallback winupdate_updates when orchestrator or slurp failed (Windows)
+    - name: Fallback winupdate_updates when orchestrator or bundle failed (Windows)
       set_fact:
         winupdate_updates:
           stdout: "NO_UPDATES"
@@ -615,60 +649,7 @@
     # credentials) by temporarily swapping its action to run winget upgrade.
     # After the apply completes, restore the original check action.
     - name: Apply winget updates (Windows)
-      win_shell: |
-        $ErrorActionPreference = 'SilentlyContinue'
-        $taskName = "PP-WingetCheck"
-        $outputFile = "C:\ProgramData\PatchPilot\winget-apply.txt"
-        $checkOutputFile = "C:\ProgramData\PatchPilot\winget-check.txt"
-
-        # Verify the task exists
-        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        if (-not $task) {
-          Write-Output "WINGET_TASK_MISSING: $taskName not found."
-          exit 1
-        }
-
-        # Save the original action so we can restore it after apply
-        $originalAction = $task.Actions[0]
-
-        # Swap action to the apply command (CreateNoWindow via PatchPilot-WingetTask.ps1)
-        $wingetScript = "C:\ProgramData\PatchPilot\PatchPilot-WingetTask.ps1"
-        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wingetScript`" Apply"
-        Set-ScheduledTask -TaskName $taskName -Action $applyAction | Out-Null
-
-        # Remove stale output
-        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
-
-        # Run the apply
-        Start-ScheduledTask -TaskName $taskName
-        $timeout = 1800
-        $elapsed = 0
-        while ($elapsed -lt $timeout) {
-          Start-Sleep -Seconds 10
-          $elapsed += 10
-          $state = (Get-ScheduledTask -TaskName $taskName).State
-          if ($state -ne "Running") { break }
-        }
-
-        if ($elapsed -ge $timeout) {
-          Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-          Write-Output "WARNING: Winget apply timed out after 30 minutes."
-        }
-
-        # Restore the check action (same as Enable-PatchPilotSSH registration)
-        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wingetScript`" Check"
-        Set-ScheduledTask -TaskName $taskName -Action $checkAction | Out-Null
-
-        # Read and output the results
-        if (Test-Path $outputFile) {
-          Get-Content $outputFile -Raw
-        } else {
-          Write-Output "No output from winget apply."
-        }
-
-        $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
-        $exitCode = if ($taskInfo) { $taskInfo.LastTaskResult } else { -1 }
-        Write-Output "WINGET_APPLY_EXIT: $exitCode"
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-WingetApply.ps1'
       register: winget_upgrade_result
       when: ansible_facts['os_family'] == "Windows"
       failed_when: false
@@ -689,57 +670,7 @@
 
     # ── Windows: Apply Windows Updates (PSWindowsUpdate) ────────────────────────
     - name: Apply Windows Updates (Windows)
-      win_shell: |
-        $ErrorActionPreference = 'SilentlyContinue'
-        $taskName = "PP-WinUpdate"
-        $outputFile = "C:\ProgramData\PatchPilot\winupdate-apply.txt"
-        $checkOutputFile = "C:\ProgramData\PatchPilot\winupdate-check.txt"
-
-        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        if (-not $task) {
-          Write-Output "WINUPDATE_TASK_MISSING: $taskName not found."
-          exit 1
-        }
-
-        # Swap action to the apply command
-        $applyCmd = "Import-Module PSWindowsUpdate; Install-WindowsUpdate -MicrosoftUpdate -AcceptAll -AutoReboot:`$false -Confirm:`$false 2>&1 | Out-File '$outputFile' -Encoding UTF8"
-        $applyAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$applyCmd`""
-        Set-ScheduledTask -TaskName $taskName -Action $applyAction | Out-Null
-
-        # Remove stale output
-        if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
-
-        # Run the apply
-        Start-ScheduledTask -TaskName $taskName
-        $timeout = 3600
-        $elapsed = 0
-        while ($elapsed -lt $timeout) {
-          Start-Sleep -Seconds 15
-          $elapsed += 15
-          $state = (Get-ScheduledTask -TaskName $taskName).State
-          if ($state -ne "Running") { break }
-        }
-
-        if ($elapsed -ge $timeout) {
-          Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-          Write-Output "WARNING: Windows Update apply timed out after 60 minutes."
-        }
-
-        # Restore the original check action
-        $checkCmd = "Import-Module PSWindowsUpdate; Get-WindowsUpdate -MicrosoftUpdate 2>&1 | Out-File '$checkOutputFile' -Encoding UTF8"
-        $checkAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$checkCmd`""
-        Set-ScheduledTask -TaskName $taskName -Action $checkAction | Out-Null
-
-        # Read output
-        if (Test-Path $outputFile) {
-          Get-Content $outputFile -Raw
-        } else {
-          Write-Output "No output from Windows Update apply."
-        }
-
-        $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
-        $exitCode = if ($taskInfo) { $taskInfo.LastTaskResult } else { -1 }
-        Write-Output "WINUPDATE_APPLY_EXIT: $exitCode"
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-WinUpdateApply.ps1'
       register: winupdate_upgrade_result
       when:
         - ansible_facts['os_family'] == "Windows"
@@ -800,23 +731,7 @@
 
     # ── Windows reboot handling ─────────────────────────────────────────────
     - name: Check if reboot required (Windows)
-      win_shell: |
-        $reboot = $false
-        # Check Windows Update reboot flag
-        $wuKey = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -ErrorAction SilentlyContinue
-        if ($wuKey) { $reboot = $true }
-        # Check Component Based Servicing reboot flag
-        $cbsKey = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -ErrorAction SilentlyContinue
-        if ($cbsKey) { $reboot = $true }
-        # Check if winget output indicated restart needed
-        $applyFile = "C:\ProgramData\PatchPilot\winget-apply.txt"
-        if (Test-Path $applyFile) {
-          $content = Get-Content $applyFile -Raw -ErrorAction SilentlyContinue
-          if ($content -match "Restart the application|restart.*to complete") {
-            $reboot = $true
-          }
-        }
-        if ($reboot) { Write-Output "REBOOT_REQUIRED" } else { Write-Output "NO_REBOOT" }
+      win_command: 'wscript.exe //nologo //B C:\ProgramData\PatchPilot\PatchPilot-AnsibleHiddenLaunch.vbs C:\ProgramData\PatchPilot\PatchPilot-RebootDetect.ps1'
       register: win_reboot_check
       when: ansible_facts['os_family'] == "Windows"
       changed_when: false
