@@ -185,6 +185,19 @@ class AnsibleRunner:
             self._cleanup_files(local_temp)
             return self.inventory_path, []
 
+    @staticmethod
+    def _ansible_check_failure_message(returncode: int, stdout: str, stderr: str, limit: int = 1800) -> str:
+        """Human-readable reason when the check playbook exits non-zero with no parsed hosts."""
+        parts = [f"ansible-playbook exit {returncode}"]
+        tail = (stderr or "").strip() or (stdout or "").strip()
+        if tail:
+            tail = tail[-limit:] if len(tail) > limit else tail
+            one_line = " ".join(tail.splitlines())
+            parts.append(one_line)
+        else:
+            parts.append("no stdout/stderr from ansible-playbook")
+        return " — ".join(parts)
+
     async def run_check(self, limit_hosts: List[str] = None) -> Tuple[bool, Dict]:
         """
         Run the check playbook and return parsed results (non-blocking async subprocess).
@@ -253,7 +266,11 @@ class AnsibleRunner:
             # Save last run output for debugging
             try:
                 with open('/tmp/ansible_last_run.txt', 'w') as f:
+                    f.write("=== STDOUT ===\n")
                     f.write(stdout)
+                    f.write("\n=== STDERR ===\n")
+                    f.write(stderr)
+                    f.write(f"\n=== returncode={process.returncode} ===\n")
             except Exception:
                 pass
 
@@ -267,7 +284,13 @@ class AnsibleRunner:
             logger.debug(f"Hosts: {list(hosts_data.keys())}")
 
             self._cleanup_files(run_temp)
-            return len(hosts_data) > 0 or process.returncode == 0, hosts_data
+            ok = len(hosts_data) > 0 or process.returncode == 0
+            if not ok:
+                err = self._ansible_check_failure_message(
+                    process.returncode, stdout, stderr
+                )
+                return False, {"error": err}
+            return True, hosts_data
 
         except Exception as e:
             logger.error(f"Error in run_check: {type(e).__name__}: {str(e)}", exc_info=True)
