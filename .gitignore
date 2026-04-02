@@ -67,7 +67,8 @@ scripts/claude-context.sh
 #OTHER
 NOTES
 !.env.example
-scripts/push_new_build.sh
+# Track release script; glob above ignores push_new_build* — re-include the canonical file:
+!scripts/push_new_build.sh
 certs/patchpilot-ca.crt
 certs/patchpilot-ca.srl
 certs/patchpilot.crt
