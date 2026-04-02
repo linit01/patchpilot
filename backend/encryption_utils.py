@@ -5,8 +5,8 @@ Handles encryption/decryption of SSH keys and passwords using Fernet (symmetric 
 
 import os
 import base64
-from cryptography.fernet import Fernet, InvalidToken
 import logging
+from cryptography.fernet import Fernet, InvalidToken
 
 logger = logging.getLogger(__name__)
 
@@ -246,23 +246,31 @@ def validate_ssh_key(key_content: str) -> tuple[bool, str]:
 
 
 if __name__ == "__main__":
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     # Test encryption/decryption
     print("Testing encryption utilities...")
-    
+
     test_data = "Test SSH key content or password"
-    
+
     encrypted = encrypt_credential(test_data)
     print(f"Encrypted: {encrypted[:50]}...")
-    
+
     decrypted = decrypt_credential(encrypted)
     assert test_data == decrypted, "Encryption/decryption test failed!"
     print("✓ Encryption round-trip test passed")
-    
-    # Test SSH key validation
-    valid_key = ""  # synthetic test PEM redacted from git history
-    
+
+    # SSH validation: use an ephemeral in-memory key only — never embed real keys in source.
+    _ephemeral = Ed25519PrivateKey.generate()
+    valid_key = _ephemeral.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.OpenSSH,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
+
     is_valid, message = validate_ssh_key(valid_key)
     print(f"SSH key validation: {is_valid} - {message}")
     print(f"Key type: {SSHKeyValidator.get_key_type(valid_key)}")
-    
+
     print("\n✓ All encryption utility tests passed!")
