@@ -400,8 +400,8 @@ async function checkAuthAndInit() {
         .then(d => {
             if (d.version) {
                 const el = document.getElementById('sidebar-app-version');
-                // Strip "-alpha"/"-beta" suffix — the HTML has a separate span for that
-                const ver = d.version.replace(/-(alpha|beta).*$/i, '');
+                // Strip pre-release suffix (alpha/beta, including legacy "alphs" typo).
+                const ver = d.version.replace(/-(alpha|alphs|beta).*$/i, '');
                 if (el) el.textContent = 'v' + ver;
             }
         })

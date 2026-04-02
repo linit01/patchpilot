@@ -112,8 +112,11 @@ def _github_headers() -> dict:
 
 
 def _parse_version(tag: str) -> Optional[Version]:
-    """Parse a version string, stripping leading 'v' if present."""
+    """Parse a version string, stripping leading 'v' and known typo variants."""
     tag = tag.strip().lstrip("v")
+    # Backward compatibility: a recent release used "-alphs" instead of "-alpha".
+    # Normalize only for semantic comparison; keep raw tags elsewhere for pulls.
+    tag = re.sub(r"(?i)-alphs(\b|$)", r"-alpha\1", tag)
     try:
         return Version(tag)
     except InvalidVersion:
@@ -125,8 +128,10 @@ def _is_newer(latest_tag: str, current: str) -> bool:
     latest_v = _parse_version(latest_tag)
     current_v = _parse_version(current)
     if latest_v is None or current_v is None:
-        # Fall back to string compare if parsing fails
-        return latest_tag.lstrip("v") != current.lstrip("v")
+        # Fall back to normalized string compare if parsing fails.
+        latest_norm = re.sub(r"(?i)-alphs(\b|$)", r"-alpha\1", latest_tag.strip().lstrip("v"))
+        current_norm = re.sub(r"(?i)-alphs(\b|$)", r"-alpha\1", current.strip().lstrip("v"))
+        return latest_norm != current_norm
     return latest_v > current_v
 
 
