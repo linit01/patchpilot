@@ -277,9 +277,11 @@ https://download.docker.com/linux/${repo_distro} ${distro_codename} stable" | \
     sudo usermod -aG docker "${USER}"
     warn "User '${USER}' added to 'docker' group."
     warn "Group membership takes effect on next login."
-    warn "For this session, commands will run via sudo where needed."
-    # Re-exec remaining docker commands under newgrp for current session
-    DOCKER_USE_SUDO=true
+    warn "Re-executing installer under new group membership for this session..."
+    # Re-exec the entire script under the docker group so all subsequent
+    # docker calls work without sudo — newgrp re-launches the shell with the
+    # updated group, passing all original arguments through
+    exec sg docker -c "bash \"${BASH_SOURCE[0]}\" $*"
   fi
 }
 
@@ -288,12 +290,10 @@ docker_check_prerequisites() {
   local missing=()
   ! command -v docker &>/dev/null && missing+=("docker") && err "Docker not installed" \
     || ok "Docker: $(docker --version)"
-  if docker compose version &>/dev/null 2>&1 || sudo docker compose version &>/dev/null 2>&1; then
-    [[ "${DOCKER_USE_SUDO}" == "true" ]] && DOCKER_COMPOSE_CMD="sudo docker compose" || DOCKER_COMPOSE_CMD="docker compose"
-    ok "Docker Compose plugin: found"
+  if docker compose version &>/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker compose"; ok "Docker Compose plugin: found"
   elif command -v docker-compose &>/dev/null; then
-    [[ "${DOCKER_USE_SUDO}" == "true" ]] && DOCKER_COMPOSE_CMD="sudo docker-compose" || DOCKER_COMPOSE_CMD="docker-compose"
-    ok "Docker Compose legacy: found"
+    DOCKER_COMPOSE_CMD="docker-compose"; ok "Docker Compose legacy: found"
   else
     missing+=("docker-compose"); err "Docker Compose not installed"
   fi
@@ -385,13 +385,7 @@ docker_show_completion() {
 
 install_docker() {
   cd "$SCRIPT_DIR"
-  DOCKER_USE_SUDO=false
   docker_install_engine
-  # If user was just added to docker group and newgrp isn't active yet,
-  # prefix docker commands with sudo for the remainder of this session
-  if [[ "${DOCKER_USE_SUDO}" == "true" ]]; then
-    DOCKER_COMPOSE_CMD="sudo docker compose"
-  fi
   docker_check_prerequisites
   docker_setup_env
   docker_setup_ansible
