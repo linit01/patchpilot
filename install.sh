@@ -121,13 +121,22 @@ install_web() {
   export PATCHPILOT_WEB_PORT="${WEB_PORT}"
   export PATCHPILOT_DEVELOPER="${DEVELOPER_MODE}"
 
+  # Detect LAN IP for remote-access instructions (server installs)
+  local lan_ip
+  lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -z "${lan_ip}" ]] && lan_ip="<this-host-ip>"
+
   echo ""
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${GREEN}  PatchPilot Web Installer${NC}"
   echo -e "${GREEN}  → http://localhost:${WEB_PORT}${NC}"
+  echo -e "${GREEN}  → http://${lan_ip}:${WEB_PORT}  (remote access)${NC}"
   [[ "${DEVELOPER_MODE}" == "true" ]] && \
     echo -e "${YELLOW}  🔧 Developer mode enabled (Build & Push tab active)${NC}"
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${YELLOW}  ⚠  Port ${WEB_PORT} is open on all interfaces during setup.${NC}"
+  echo -e "${YELLOW}     Complete setup promptly and ensure your firewall${NC}"
+  echo -e "${YELLOW}     restricts access to trusted hosts only.${NC}"
   echo -e "${YELLOW}  Press Ctrl+C to stop${NC}"
   echo ""
 
@@ -137,13 +146,112 @@ install_web() {
   ) &
 
   cd "${web_dir}" && python3 -m uvicorn server:app \
-    --host 127.0.0.1 --port "${WEB_PORT}" --log-level warning
+    --host 0.0.0.0 --port "${WEB_PORT}" --log-level warning
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
 # DOCKER COMPOSE INSTALL
 # ═════════════════════════════════════════════════════════════════════════════
 DOCKER_COMPOSE_CMD=""
+
+docker_install_engine() {
+  step "Checking Docker Engine"
+
+  # ── Detect Docker Desktop (incompatible socket path) ──────────────────────
+  if command -v docker &>/dev/null; then
+    local ctx
+    ctx="$(docker context show 2>/dev/null || true)"
+    if [[ "${ctx}" == "desktop-linux" ]] || \
+       docker info 2>/dev/null | grep -q "Docker Desktop"; then
+      err "Docker Desktop detected — PatchPilot requires Docker Engine."
+      echo ""
+      echo "  Docker Desktop uses a VM-backed socket that is incompatible"
+      echo "  with PatchPilot's compose stack."
+      echo ""
+      echo "  To fix:"
+      echo "    1. Uninstall Docker Desktop"
+      echo "    2. Install Docker Engine:  https://docs.docker.com/engine/install/ubuntu/"
+      echo "    3. Re-run this installer"
+      exit 1
+    fi
+  fi
+
+  # ── Already have Docker Engine + compose plugin → skip ────────────────────
+  if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
+    ok "Docker Engine already installed: $(docker --version)"
+    ok "Docker Compose plugin already installed"
+    return
+  fi
+
+  # ── Only install on Debian/Ubuntu ─────────────────────────────────────────
+  if [[ ! -f /etc/debian_version ]]; then
+    warn "Auto-install only supported on Debian/Ubuntu."
+    warn "Install Docker Engine manually: https://docs.docker.com/engine/install/"
+    return
+  fi
+
+  info "Installing Docker Engine from official Docker apt repository..."
+
+  # Remove stale/distro packages that conflict with official Docker Engine
+  local stale_pkgs=(docker.io docker-doc docker-compose docker-compose-v2
+                    podman-docker containerd runc)
+  for pkg in "${stale_pkgs[@]}"; do
+    dpkg -l "${pkg}" &>/dev/null 2>&1 && \
+      sudo apt-get remove -y "${pkg}" &>/dev/null || true
+  done
+
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq ca-certificates curl gnupg
+
+  # Add official Docker GPG key
+  sudo install -m 0755 -d /etc/apt/keyrings
+  sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    -o /etc/apt/keyrings/docker.asc
+  sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+  # Add Docker apt repository
+  local distro_id distro_codename
+  distro_id="$(. /etc/os-release && echo "${ID}")"
+  distro_codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
+
+  # Linux Mint and other Ubuntu derivatives report their own codename —
+  # map back to the upstream Ubuntu codename via UBUNTU_CODENAME if present
+  local ubuntu_codename
+  ubuntu_codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-}")"
+  [[ -n "${ubuntu_codename}" ]] && distro_codename="${ubuntu_codename}"
+
+  # Debian uses its own repo path; Ubuntu/derivatives use ubuntu
+  local repo_distro="ubuntu"
+  [[ "${distro_id}" == "debian" ]] && repo_distro="debian"
+
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/${repo_distro} ${distro_codename} stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq \
+    docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
+
+  ok "Docker Engine installed: $(docker --version)"
+  ok "Docker Compose plugin installed: $(docker compose version)"
+
+  # ── Enable and start Docker service ───────────────────────────────────────
+  sudo systemctl enable docker --quiet
+  sudo systemctl start docker
+  ok "Docker service enabled and started"
+
+  # ── Add current user to docker group ──────────────────────────────────────
+  if ! groups "${USER}" | grep -q '\bdocker\b'; then
+    sudo usermod -aG docker "${USER}"
+    warn "User '${USER}' added to 'docker' group."
+    warn "Group membership takes effect on next login."
+    warn "For this session, commands will run via sudo where needed."
+    # Re-exec remaining docker commands under newgrp for current session
+    DOCKER_USE_SUDO=true
+  fi
+}
 
 docker_check_prerequisites() {
   step "Checking Docker prerequisites"
@@ -245,6 +353,13 @@ docker_show_completion() {
 
 install_docker() {
   cd "$SCRIPT_DIR"
+  DOCKER_USE_SUDO=false
+  docker_install_engine
+  # If user was just added to docker group and newgrp isn't active yet,
+  # prefix docker commands with sudo for the remainder of this session
+  if [[ "${DOCKER_USE_SUDO}" == "true" ]]; then
+    DOCKER_COMPOSE_CMD="sudo docker compose"
+  fi
   docker_check_prerequisites
   docker_setup_env
   docker_setup_ansible
