@@ -400,9 +400,24 @@ async function checkAuthAndInit() {
         .then(d => {
             if (d.version) {
                 const el = document.getElementById('sidebar-app-version');
-                // Strip pre-release suffix (alpha/beta, including legacy "alphs" typo).
-                const ver = d.version.replace(/-(alpha|alphs|beta).*$/i, '');
+                const channelEl = document.getElementById('sidebar-version-channel');
+                const raw = d.version;
+                // Strip pre-release suffix (alpha/beta/rc, including legacy "alphs" typo).
+                const ver = raw.replace(/-(alpha|alphs|beta|rc).*$/i, '');
                 if (el) el.textContent = 'v' + ver;
+                if (channelEl) {
+                    const m = raw.match(/[-._](alpha|alphs|beta|rc)(?![a-z0-9])/i);
+                    if (m) {
+                        const k = m[1].toLowerCase();
+                        const labels = { alpha: 'ALPHA', alphs: 'ALPHA', beta: 'BETA', rc: 'RC' };
+                        channelEl.textContent = labels[k] || k.toUpperCase();
+                        channelEl.style.display = '';
+                        channelEl.setAttribute('aria-hidden', 'false');
+                    } else {
+                        channelEl.style.display = 'none';
+                        channelEl.setAttribute('aria-hidden', 'true');
+                    }
+                }
             }
         })
         .catch(() => {}); // silently keep the hardcoded fallback

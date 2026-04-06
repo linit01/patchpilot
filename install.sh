@@ -71,13 +71,26 @@ done
 
 export NO_INTERACTIVE
 
+# ── Sudo helper (web installer sets PATCHPILOT_SUDO_PASSFILE → non-TTY sudo -S) ─
+_PP_SUDO_PASS=""
+if [[ -n "${PATCHPILOT_SUDO_PASSFILE:-}" ]] && [[ -f "${PATCHPILOT_SUDO_PASSFILE}" ]]; then
+  IFS= read -r _PP_SUDO_PASS < "${PATCHPILOT_SUDO_PASSFILE}" || true
+fi
+pp_sudo() {
+  if [[ -n "${_PP_SUDO_PASS}" ]]; then
+    printf '%s\n' "${_PP_SUDO_PASS}" | sudo -S -p '' "$@"
+  else
+    sudo "$@"
+  fi
+}
+
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 ensure_curl() {
   if ! command -v curl &>/dev/null; then
     if [[ -f /etc/debian_version ]]; then
       info "Installing curl..."
-      DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq curl
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq curl
     else
       err "curl is required but not installed."; exit 1
     fi
@@ -129,16 +142,16 @@ install_web() {
   if ! command -v python3 &>/dev/null; then
     if [[ -f /etc/debian_version ]]; then
       info "Installing python3 and pip3..."
-      DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq python3 python3-pip
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq python3 python3-pip
     else
       err "python3 is required but not installed."; exit 1
     fi
   elif ! command -v pip3 &>/dev/null; then
     if [[ -f /etc/debian_version ]]; then
       info "Installing pip3..."
-      DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq python3-pip
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq python3-pip
     else
       err "pip3 is required but not installed."; exit 1
     fi
@@ -205,16 +218,28 @@ docker_prime_sudo_for_linux_if_needed() {
   step "Administrator access (sudo)"
   info "Docker is not usable for this account yet (not installed, daemon stopped, or user not in the 'docker' group)."
   info "This installer uses sudo to install or configure Docker Engine and to add you to the 'docker' group."
+
+  # Web installer: password supplied via PATCHPILOT_SUDO_PASSFILE (non-TTY)
+  if [[ -n "${_PP_SUDO_PASS}" ]]; then
+    info "Using the sudo password you entered in the web installer."
+    if ! pp_sudo -v; then
+      err "That sudo password was rejected (wrong password or user not in sudoers)."
+      exit 1
+    fi
+    ok "sudo session ready"
+    return 0
+  fi
+
   info "Enter your password when prompted — sudo keeps it cached for several minutes."
 
   if ! [ -t 0 ] && ! sudo -n true 2>/dev/null; then
-    err "A sudo password needs an interactive terminal. Piped stdin (e.g. curl | bash) cannot prompt."
-    echo "  Download, then run from a terminal, for example:" >&2
+    err "A sudo password needs an interactive terminal, or use the PatchPilot web installer and enter sudo there."
+    echo "  From a shell, download then run, for example:" >&2
     echo "    curl -fsSL https://getpatchpilot.app/install.sh -o install.sh && bash install.sh" >&2
     exit 1
   fi
 
-  sudo -v || { err "sudo is required on Linux until Docker works for this user."; exit 1; }
+  pp_sudo -v || { err "sudo is required on Linux until Docker works for this user."; exit 1; }
   ok "sudo session ready"
 }
 
@@ -251,7 +276,7 @@ docker_ensure_daemon_access() {
       docker_reexec_under_docker_group
     fi
 
-    sudo usermod -aG docker "$USER"
+    pp_sudo usermod -aG docker "$USER"
     warn "Added '${USER}' to the 'docker' group (required for /var/run/docker.sock)."
     warn "Re-running the installer with that group active in this session..."
     docker_reexec_under_docker_group
@@ -315,17 +340,17 @@ docker_install_engine() {
                     podman-docker containerd runc)
   for pkg in "${stale_pkgs[@]}"; do
     dpkg -l "${pkg}" &>/dev/null 2>&1 && \
-      DEBIAN_FRONTEND=noninteractive sudo -E apt-get remove -y "${pkg}" &>/dev/null || true
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get remove -y "${pkg}" &>/dev/null || true
   done
 
-  DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq ca-certificates curl gnupg
+  DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq ca-certificates curl gnupg
 
   # Add official Docker GPG key
-  sudo install -m 0755 -d /etc/apt/keyrings
-  sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  pp_sudo install -m 0755 -d /etc/apt/keyrings
+  pp_sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     -o /etc/apt/keyrings/docker.asc
-  sudo chmod a+r /etc/apt/keyrings/docker.asc
+  pp_sudo chmod a+r /etc/apt/keyrings/docker.asc
 
   # Add Docker apt repository
   local distro_id distro_codename
@@ -342,13 +367,16 @@ docker_install_engine() {
   local repo_distro="ubuntu"
   [[ "${distro_id}" == "debian" ]] && repo_distro="debian"
 
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/${repo_distro} ${distro_codename} stable" | \
-    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  # Cannot pipe into `pp_sudo tee` when sudo uses -S (stdin is the password).
+  local docker_list_tmp
+  docker_list_tmp="$(mktemp)"
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/${repo_distro} ${distro_codename} stable" > "${docker_list_tmp}"
+  pp_sudo cp "${docker_list_tmp}" /etc/apt/sources.list.d/docker.list
+  rm -f "${docker_list_tmp}"
 
-  DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq \
+  DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq \
     docker-ce docker-ce-cli containerd.io \
     docker-buildx-plugin docker-compose-plugin
 
@@ -356,13 +384,13 @@ https://download.docker.com/linux/${repo_distro} ${distro_codename} stable" | \
   ok "Docker Compose plugin installed: $(docker compose version)"
 
   # ── Enable and start Docker service ───────────────────────────────────────
-  sudo systemctl enable docker --quiet
-  sudo systemctl start docker
+  pp_sudo systemctl enable docker --quiet
+  pp_sudo systemctl start docker
   ok "Docker service enabled and started"
 
   # ── Add current user to docker group ──────────────────────────────────────
   if ! groups "${USER}" | grep -q '\bdocker\b'; then
-    sudo usermod -aG docker "${USER}"
+    pp_sudo usermod -aG docker "${USER}"
     warn "User '${USER}' added to 'docker' group."
     warn "Group membership takes effect on next login."
     warn "Re-executing installer under new group membership for this session..."

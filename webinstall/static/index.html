@@ -342,6 +342,11 @@
       <h2>Review & Deploy</h2>
       <p class="subtitle">Everything look right? Hit Deploy to start.</p>
       <div id="summary" style="font-size:13px;line-height:1.8"></div>
+      <div id="docker-sudo-field" class="field hidden" style="margin-top:20px">
+        <label>Linux sudo password</label>
+        <div class="hint">On Linux, Docker setup needs sudo (install Engine, add your user to the <code>docker</code> group). Enter the password for the account running this installer. It is sent only to this server process over your browser connection, used for <code>sudo -S</code>, and is not stored.</div>
+        <input type="password" id="docker_sudo_password" autocomplete="current-password" placeholder="Required on Linux if Docker is not already usable for this user">
+      </div>
     </div>
     <div class="actions" id="deploy-actions">
       <button class="btn btn-secondary" id="back-btn" onclick="prevPage()">← Back</button>
@@ -611,7 +616,10 @@ function showPage(idx) {
   $('k8s-note').classList.toggle('hidden', getMode() !== 'k3s');
   if (pages[idx] === 1) checkCluster();
   if (pages[idx] === 4) loadStorageClasses();
-  if (pages[idx] === 6) buildSummary();
+  if (pages[idx] === 6) {
+    buildSummary();
+    $('docker-sudo-field').classList.toggle('hidden', getMode() !== 'docker');
+  }
 }
 
 function nextPage() {
@@ -750,7 +758,9 @@ async function deploy() {
 
   $('log-panel').classList.remove('hidden');
   $('log-panel').scrollIntoView({behavior:'smooth'});
-  streamOutput('/api/install-stream?mode=' + mode, 'install');
+  const sudoPw = (mode === 'docker') ? ($('docker_sudo_password')?.value || '') : '';
+  streamInstallPost({ mode, sudo_password: sudoPw });
+  if (mode === 'docker' && $('docker_sudo_password')) $('docker_sudo_password').value = '';
 }
 
 // ── Streaming output (shared for install + uninstall) ──────────────────────────
@@ -766,6 +776,100 @@ function addLogLine(outputEl, raw) {
   span.textContent = clean + '\n';
   outputEl.appendChild(span);
   outputEl.scrollTop = outputEl.scrollHeight;
+}
+
+/** POST /api/install-stream (JSON body) — supports sudo_password for Linux Docker. */
+async function streamInstallPost(body) {
+  const logEl = $('log-output');
+  const statusEl = $('log-status');
+  let r;
+  try {
+    r = await fetch('/api/install-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    addLogLine(logEl, '✗ ' + e.message);
+    statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
+    $('fail-section').classList.remove('hidden');
+    $('deploy-btn').disabled = false; $('back-btn').disabled = false;
+    return;
+  }
+  if (!r.ok) {
+    const t = await r.text();
+    addLogLine(logEl, '✗ ' + (t || r.statusText));
+    statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
+    $('fail-section').classList.remove('hidden');
+    $('deploy-btn').disabled = false; $('back-btn').disabled = false;
+    return;
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let stop = false;
+  try {
+    while (!stop) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      for (;;) {
+        const sep = buf.indexOf('\n\n');
+        if (sep < 0) break;
+        const chunk = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          let raw;
+          try { raw = JSON.parse(line.slice(6)); } catch (_) { continue; }
+          stop = dispatchInstallStreamLine(raw, logEl, statusEl);
+          if (stop) { await reader.cancel().catch(() => {}); break; }
+        }
+        if (stop) break;
+      }
+    }
+  } catch (e) {
+    addLogLine(logEl, '✗ ' + e.message);
+    statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Error';
+    $('fail-section').classList.remove('hidden');
+  }
+}
+
+/** Returns true when the install stream should stop. */
+function dispatchInstallStreamLine(raw, logEl, statusEl) {
+  if (raw.startsWith('__CREDENTIALS__')) return false;
+  if (raw.startsWith('__PAUSE_CLEANUP__')) {
+    const cmd = raw.slice('__PAUSE_CLEANUP__'.length).trim();
+    $('cleanup-cmd').textContent = cmd;
+    $('pause-card').classList.add('visible');
+    $('pause-card').scrollIntoView({behavior:'smooth'});
+    addLogLine(logEl, '! ⏸  Installer paused — complete cleanup in the card above, then click Continue');
+    return false;
+  }
+  if (raw.startsWith('__NOTE_CLEANUP__')) return false;
+  if (raw.startsWith('__EXIT__')) {
+    const code = parseInt(raw.replace('__EXIT__', ''), 10);
+    if (code === 0) {
+      statusEl.className = 'badge badge-green'; statusEl.textContent = '✓ Complete';
+      $('success-section').classList.remove('hidden');
+      const url = getMode() === 'docker' ? 'http://localhost:8080'
+        : (getTls() ? `https://${$('hostname').value}` : `http://${$('hostname').value}`);
+      $('success-url').textContent = url; $('success-url').href = url;
+      setTimeout(() => { window.open(url, '_blank'); }, 2000);
+    } else {
+      statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
+      $('fail-section').classList.remove('hidden');
+    }
+    return true;
+  }
+  if (raw.startsWith('__ERROR__')) {
+    addLogLine(logEl, '✗ ' + raw.slice('__ERROR__'.length));
+    statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Error';
+    $('fail-section').classList.remove('hidden');
+    return true;
+  }
+  addLogLine(logEl, raw);
+  return false;
 }
 
 function streamOutput(url, context) {

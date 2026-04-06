@@ -6,9 +6,12 @@ then streams ./install.sh output back to the browser via SSE.
 import asyncio
 import json
 import os
+import platform
+import secrets
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Literal, Optional
 
 import yaml
 from fastapi import FastAPI, HTTPException
@@ -99,6 +102,14 @@ async def validate_cluster():
 # ── Config models ──────────────────────────────────────────────────────────────
 class DockerConfig(BaseModel):
     mode: str = "docker"
+
+
+class InstallStreamRequest(BaseModel):
+    """Docker Compose on Linux may need sudo; password is never logged or stored."""
+
+    mode: Literal["docker", "k3s"]
+    sudo_password: str = ""
+
 
 class K3sConfig(BaseModel):
     mode: str = "k3s"
@@ -223,65 +234,95 @@ async def build_stream(
 
 
 # ── Install stream ─────────────────────────────────────────────────────────────
-@app.get("/api/install-stream")
-async def install_stream(mode: str = "k3s"):
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+async def _install_event_generator(mode: str, sudo_password: str = "") -> AsyncIterator[str]:
     """
-    SSE — spawns install.sh --<mode> --no-interactive and streams output.
-    Special markers emitted by the shell script:
-      __PAUSE_CLEANUP__ <cmd>   → pauses UI, shows cleanup card
-      __NOTE_CLEANUP__ <cmd>    → informational note after uninstall
-      __EXIT__<code>            → install finished
+    SSE chunks — spawns install.sh --<mode> --no-interactive and streams output.
+    For Linux Docker installs, optional sudo_password is written to a root-only
+    temp file; install.sh reads it once (PATCHPILOT_SUDO_PASSFILE) and uses sudo -S.
     """
     if mode not in ("docker", "k3s"):
-        raise HTTPException(status_code=400, detail="mode must be docker or k3s")
+        yield f"data: {json.dumps('__ERROR__invalid mode')}\n\n"
+        yield f"data: {json.dumps('__EXIT__1')}\n\n"
+        return
 
-    # Clean up any stale resume file from a previous run
     RESUME_FILE.unlink(missing_ok=True)
 
+    passfile_path: Optional[Path] = None
+    env = {**os.environ, "TERM": "xterm-256color"}
+    if sudo_password and mode == "docker" and platform.system() == "Linux":
+        tdir = Path(tempfile.gettempdir())
+        passfile_path = tdir / f"patchpilot-sudo-{secrets.token_hex(16)}"
+        passfile_path.write_text(sudo_password + "\n", encoding="utf-8")
+        passfile_path.chmod(0o600)
+        env["PATCHPILOT_SUDO_PASSFILE"] = str(passfile_path)
+
     cmd = [str(INSTALL_SCRIPT), f"--{mode}", "--no-interactive"]
+    proc: Optional[asyncio.subprocess.Process] = None
 
-    async def event_generator():
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=str(REPO_ROOT),
-                env={**os.environ, "TERM": "xterm-256color"},
-            )
-            async for raw_line in proc.stdout:
-                line = raw_line.decode("utf-8", errors="replace").rstrip()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(REPO_ROOT),
+            env=env,
+        )
+        assert proc.stdout is not None
+        async for raw_line in proc.stdout:
+            line = raw_line.decode("utf-8", errors="replace").rstrip()
 
-                # Intercept structured pause marker
-                if line.startswith("__PAUSE_CLEANUP__"):
-                    cmd_str = line[len("__PAUSE_CLEANUP__"):].strip()
-                    yield f"data: {json.dumps('__PAUSE_CLEANUP__' + cmd_str)}\n\n"
-                    continue
+            if line.startswith("__PAUSE_CLEANUP__"):
+                cmd_str = line[len("__PAUSE_CLEANUP__"):].strip()
+                yield f"data: {json.dumps('__PAUSE_CLEANUP__' + cmd_str)}\n\n"
+                continue
 
-                # Intercept post-uninstall cleanup note
-                if line.startswith("__NOTE_CLEANUP__"):
-                    cmd_str = line[len("__NOTE_CLEANUP__"):].strip()
-                    yield f"data: {json.dumps('__NOTE_CLEANUP__' + cmd_str)}\n\n"
-                    continue
+            if line.startswith("__NOTE_CLEANUP__"):
+                cmd_str = line[len("__NOTE_CLEANUP__"):].strip()
+                yield f"data: {json.dumps('__NOTE_CLEANUP__' + cmd_str)}\n\n"
+                continue
 
-                # Intercept credentials for the success summary screen
-                if line.startswith("__CREDENTIALS__"):
-                    payload = line[len("__CREDENTIALS__"):].strip()
-                    yield f"data: {json.dumps('__CREDENTIALS__' + payload)}\n\n"
-                    continue
+            if line.startswith("__CREDENTIALS__"):
+                payload = line[len("__CREDENTIALS__"):].strip()
+                yield f"data: {json.dumps('__CREDENTIALS__' + payload)}\n\n"
+                continue
 
-                yield f"data: {json.dumps(line)}\n\n"
+            yield f"data: {json.dumps(line)}\n\n"
 
-            await proc.wait()
-            yield f"data: {json.dumps('__EXIT__' + str(proc.returncode))}\n\n"
-        except Exception as exc:
-            yield f"data: {json.dumps('__ERROR__' + str(exc))}\n\n"
-            yield f"data: {json.dumps('__EXIT__1')}\n\n"
+        await proc.wait()
+        yield f"data: {json.dumps('__EXIT__' + str(proc.returncode))}\n\n"
+    except Exception as exc:
+        yield f"data: {json.dumps('__ERROR__' + str(exc))}\n\n"
+        yield f"data: {json.dumps('__EXIT__1')}\n\n"
+    finally:
+        if passfile_path is not None:
+            try:
+                passfile_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
+
+@app.get("/api/install-stream")
+async def install_stream_get(mode: str = "k3s"):
+    """SSE without sudo password (CLI / automation). Linux Docker may still prompt if no TTY."""
+    if mode not in ("docker", "k3s"):
+        raise HTTPException(status_code=400, detail="mode must be docker or k3s")
     return StreamingResponse(
-        event_generator(),
+        _install_event_generator(mode, ""),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=_SSE_HEADERS,
+    )
+
+
+@app.post("/api/install-stream")
+async def install_stream_post(req: InstallStreamRequest):
+    """SSE with optional sudo password for Linux Docker (web wizard)."""
+    return StreamingResponse(
+        _install_event_generator(req.mode, req.sudo_password),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
     )
 
 
