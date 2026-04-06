@@ -74,8 +74,8 @@ ensure_curl() {
   if ! command -v curl &>/dev/null; then
     if [[ -f /etc/debian_version ]]; then
       info "Installing curl..."
-      sudo apt-get update -qq
-      sudo apt-get install -y -qq curl
+      DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq curl
     else
       err "curl is required but not installed."; exit 1
     fi
@@ -127,16 +127,16 @@ install_web() {
   if ! command -v python3 &>/dev/null; then
     if [[ -f /etc/debian_version ]]; then
       info "Installing python3 and pip3..."
-      sudo apt-get update -qq
-      sudo apt-get install -y -qq python3 python3-pip
+      DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq python3 python3-pip
     else
       err "python3 is required but not installed."; exit 1
     fi
   elif ! command -v pip3 &>/dev/null; then
     if [[ -f /etc/debian_version ]]; then
       info "Installing pip3..."
-      sudo apt-get update -qq
-      sudo apt-get install -y -qq python3-pip
+      DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq python3-pip
     else
       err "pip3 is required but not installed."; exit 1
     fi
@@ -227,11 +227,11 @@ docker_install_engine() {
                     podman-docker containerd runc)
   for pkg in "${stale_pkgs[@]}"; do
     dpkg -l "${pkg}" &>/dev/null 2>&1 && \
-      sudo apt-get remove -y "${pkg}" &>/dev/null || true
+      DEBIAN_FRONTEND=noninteractive sudo -E apt-get remove -y "${pkg}" &>/dev/null || true
   done
 
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq ca-certificates curl gnupg
+  DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq ca-certificates curl gnupg
 
   # Add official Docker GPG key
   sudo install -m 0755 -d /etc/apt/keyrings
@@ -259,8 +259,8 @@ docker_install_engine() {
 https://download.docker.com/linux/${repo_distro} ${distro_codename} stable" | \
     sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq \
+  DEBIAN_FRONTEND=noninteractive sudo -E apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive sudo -E apt-get install -y -qq \
     docker-ce docker-ce-cli containerd.io \
     docker-buildx-plugin docker-compose-plugin
 
