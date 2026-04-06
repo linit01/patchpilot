@@ -194,6 +194,30 @@ docker_reexec_under_docker_group() {
   exec sg docker -c "bash ${q_script} ${q_args}"
 }
 
+# Linux: prompt for sudo once before Docker Engine/group work so the password
+# is not a surprise after "prerequisites" lines. Skipped if docker info already works.
+docker_prime_sudo_for_linux_if_needed() {
+  [[ "$(uname -s)" == "Linux" ]] || return 0
+  if docker info &>/dev/null; then
+    return 0
+  fi
+
+  step "Administrator access (sudo)"
+  info "Docker is not usable for this account yet (not installed, daemon stopped, or user not in the 'docker' group)."
+  info "This installer uses sudo to install or configure Docker Engine and to add you to the 'docker' group."
+  info "Enter your password when prompted — sudo keeps it cached for several minutes."
+
+  if ! [ -t 0 ] && ! sudo -n true 2>/dev/null; then
+    err "A sudo password needs an interactive terminal. Piped stdin (e.g. curl | bash) cannot prompt."
+    echo "  Download, then run from a terminal, for example:" >&2
+    echo "    curl -fsSL https://getpatchpilot.app/install.sh -o install.sh && bash install.sh" >&2
+    exit 1
+  fi
+
+  sudo -v || { err "sudo is required on Linux until Docker works for this user."; exit 1; }
+  ok "sudo session ready"
+}
+
 docker_ensure_daemon_access() {
   if docker info &>/dev/null; then
     return 0
@@ -447,6 +471,7 @@ docker_show_completion() {
 
 install_docker() {
   cd "$SCRIPT_DIR"
+  docker_prime_sudo_for_linux_if_needed
   docker_install_engine
   docker_check_prerequisites
   docker_setup_env
