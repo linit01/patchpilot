@@ -125,22 +125,24 @@ PatchPilot ships with a single installer that supports multiple deployment modes
 ### Quick Install
 
 ```bash
-# One-line installer (clone or tarball — auto-detected)
+# One-line installer (clone or tarball — auto-detected): bootstrap, Docker Compose, pull images
 curl -fsSL https://getpatchpilot.app/install.sh | bash
 
 # Or clone and run manually
 git clone https://github.com/linit01/patchpilot.git
 cd patchpilot
 ./install.sh              # Web wizard (default)
-./install.sh --docker     # Docker Compose
+./install.sh --docker     # Docker Compose (pull published images)
+./install.sh --docker --developer   # Docker Compose — build images from local source (contributors)
 ./install.sh --k3s        # K3s / Kubernetes
 ```
 
+After the containers are up, open the dashboard and complete **first-run setup** in the browser (`setup.html`).  
 Visit **[getpatchpilot.app](https://getpatchpilot.app)** for screenshots and full details.
 
 ### Docker Compose
 
-The installer generates a Fernet encryption key, writes `.env`, pulls pre-built images from Docker Hub, and starts all services. Accessible at `http://<host-ip>:8080`.
+The installer generates a Fernet encryption key, writes `.env`, **pulls** pre-built images from Docker Hub (or **builds** from source when using `--docker --developer`), and starts all services. Accessible at `http://<host-ip>:8080`. On Linux, use a non-root account that can run Docker (e.g. member of the `docker` group).
 
 ### K3s / Kubernetes
 

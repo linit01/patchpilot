@@ -54,7 +54,8 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       echo "Usage: ./install.sh [--docker | --k3s | --web] [OPTIONS]"
       echo ""
-      echo "  --docker           Install using Docker Compose"
+      echo "  --docker           Install using Docker Compose (pulls published images)"
+      echo "  --docker --developer  Build images from local source (docker-compose.developer.yml)"
       echo "  --k3s              Install on a K3s/Kubernetes cluster"
       echo "  --web              Launch web-based install wizard (http://localhost:9090)"
       echo "  --web --developer  Web wizard + Developer tab (build & push images first)"
@@ -199,10 +200,17 @@ docker_setup_ansible() {
 
 docker_start_services() {
   step "Starting PatchPilot (Docker Compose)"
-  info "Building images..."
-  $DOCKER_COMPOSE_CMD build
+  local -a compose_files=(-f docker-compose.yml)
+  if [[ "${DEVELOPER_MODE}" == "true" ]]; then
+    compose_files+=(-f docker-compose.developer.yml)
+    info "Developer mode: building images from local source..."
+    $DOCKER_COMPOSE_CMD "${compose_files[@]}" build
+  else
+    info "Pulling pre-built images from registry..."
+    $DOCKER_COMPOSE_CMD "${compose_files[@]}" pull
+  fi
   info "Starting services..."
-  $DOCKER_COMPOSE_CMD up -d
+  $DOCKER_COMPOSE_CMD "${compose_files[@]}" up -d
   info "Waiting for backend to be ready..."
   local i=0
   until curl -sf http://localhost:8080/api/auth/check-setup >/dev/null 2>&1; do
@@ -236,6 +244,7 @@ docker_show_completion() {
 }
 
 install_docker() {
+  cd "$SCRIPT_DIR"
   docker_check_prerequisites
   docker_setup_env
   docker_setup_ansible

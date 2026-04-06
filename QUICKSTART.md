@@ -12,7 +12,8 @@ Get PatchPilot running in **under 10 minutes**.
 curl -fsSL https://getpatchpilot.app/install.sh | bash
 ```
 
-This downloads PatchPilot (via git clone or release tarball) and launches the web-based install wizard.
+This downloads PatchPilot (via git clone or release tarball), installs prerequisites, starts **Docker Compose**, **pulls** published images from Docker Hub, and brings up the app. Open the URL shown in the output (by default `http://localhost:8080`) and complete **first-run setup** in the browser (`setup.html` — admin account, backup storage, default SSH key, etc.).  
+For an optional pre-deploy browser wizard instead, run `./install.sh --web` from a cloned copy (see [webinstall/](webinstall/)).
 
 ---
 
@@ -32,6 +33,7 @@ This downloads PatchPilot (via git clone or release tarball) and launches the we
 
 - **Docker** (Docker Desktop on Mac/Windows, Docker Engine on Linux) — must be **running**
 - **Docker Compose** (bundled with Docker Desktop, or install the plugin)
+- **Linux:** your user must be able to use Docker (e.g. member of the `docker` group, or run the installer from an account that already has Docker CLI access — do not run `install.sh` as root)
 
 ### Install
 
@@ -64,9 +66,14 @@ docker compose down
 # Restart
 docker compose restart
 
-# Upgrade (after git pull)
-docker compose up -d --build
+# Upgrade (after git pull) — pull new tags from Docker Hub
+docker compose pull && docker compose up -d
+
+# Contributors building from local source only:
+# docker compose -f docker-compose.yml -f docker-compose.developer.yml up -d --build
 ```
+
+**Developers** building images from a git clone can use `./install.sh --docker --developer` (uses [docker-compose.developer.yml](docker-compose.developer.yml)).
 
 ### Access from other LAN devices
 

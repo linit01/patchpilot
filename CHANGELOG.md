@@ -4,6 +4,19 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.14.21-alpha] — 2026-04-05
+
+### Changed
+- **`install.sh --docker` (Docker Compose path)**: default install now runs `docker compose pull` then `up -d` so normal installs use published images from Docker Hub instead of `compose build`
+- **`./install.sh --docker --developer`**: builds from local source using `docker-compose.developer.yml` (then `up -d`) for contributors who need image builds
+- **`install_docker`**: changes to the repo root (`SCRIPT_DIR`) before invoking Compose so `docker-compose.yml` resolves when the script is run from another working directory
+
+### Documentation
+- **README.md** / **QUICKSTART.md**: describe the getpatchpilot.app one-liner as bootstrap → Docker Compose → image pull → dashboard, with first-run configuration in **`setup.html`**; optional pre-deploy **`./install.sh --web`** / **webinstall/** called out separately
+- **README.md** / **QUICKSTART.md**: Linux Docker access (e.g. `docker` group, non-root installer); manual upgrades document `docker compose pull && docker compose up -d` plus developer/local build commands
+
+---
+
 ## [0.13.14-alpha] — 2026-03-25
 
 ### Added
