@@ -42,6 +42,8 @@ MODE=""
 NO_INTERACTIVE=false
 DEVELOPER_MODE=false
 WEB_PORT=9090
+# Preserved before the parse loop consumes "$@" (used for sg docker re-exec)
+ORIG_INSTALLER_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -184,6 +186,68 @@ install_web() {
 # ═════════════════════════════════════════════════════════════════════════════
 DOCKER_COMPOSE_CMD=""
 
+# Re-run this script with an active 'docker' group (Linux socket ACL)
+docker_reexec_under_docker_group() {
+  local q_script q_args
+  q_script=$(printf '%q' "${BASH_SOURCE[0]}")
+  q_args=$(printf '%q ' "${ORIG_INSTALLER_ARGS[@]}")
+  exec sg docker -c "bash ${q_script} ${q_args}"
+}
+
+docker_ensure_daemon_access() {
+  if docker info &>/dev/null; then
+    return 0
+  fi
+  local out
+  out="$(docker info 2>&1 || true)"
+
+  local is_linux=false
+  [[ "$(uname -s)" == "Linux" ]] && is_linux=true
+
+  local is_perm_denied=false
+  if [[ "$out" == *"permission denied"* ]] || [[ "$out" == *"denied while trying to connect"* ]]; then
+    is_perm_denied=true
+  fi
+
+  # Linux Docker Engine only: root:docker socket → usermod + sg (never on macOS/Windows/Git Bash)
+  if [[ "${is_linux}" == true && "${is_perm_denied}" == true ]]; then
+    local in_group=false
+    id -Gn "$USER" 2>/dev/null | grep -wq docker && in_group=true
+
+    if [[ "${in_group}" == true ]]; then
+      if [[ "${PATCHPILOT_DOCKER_SG_REEXEC:-}" == "1" ]]; then
+        err "Still cannot access Docker at unix:///var/run/docker.sock."
+        echo "  Check:  ls -l /var/run/docker.sock" >&2
+        echo "  Or start a new login session, or:  newgrp docker" >&2
+        echo "  Then re-run this installer with the same options." >&2
+        exit 1
+      fi
+      export PATCHPILOT_DOCKER_SG_REEXEC=1
+      warn "Docker socket permission denied — re-running installer under active 'docker' group..."
+      docker_reexec_under_docker_group
+    fi
+
+    sudo usermod -aG docker "$USER"
+    warn "Added '${USER}' to the 'docker' group (required for /var/run/docker.sock)."
+    warn "Re-running the installer with that group active in this session..."
+    docker_reexec_under_docker_group
+  fi
+
+  # Any OS: same generic error (no usermod/sg/systemd assumptions)
+  err "Cannot reach the Docker daemon."
+  echo "$out" | head -10 >&2
+  if [[ "${is_linux}" == true ]]; then
+    if [[ "$out" == *"Cannot connect"* ]] || [[ "$out" == *"Is the docker daemon running"* ]]; then
+      echo "" >&2
+      echo "  Try:  sudo systemctl start docker" >&2
+    fi
+  elif [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "" >&2
+    echo "  On macOS: start Docker Desktop and wait until Docker is running." >&2
+  fi
+  exit 1
+}
+
 docker_install_engine() {
   step "Checking Docker Engine"
 
@@ -278,10 +342,7 @@ https://download.docker.com/linux/${repo_distro} ${distro_codename} stable" | \
     warn "User '${USER}' added to 'docker' group."
     warn "Group membership takes effect on next login."
     warn "Re-executing installer under new group membership for this session..."
-    # Re-exec the entire script under the docker group so all subsequent
-    # docker calls work without sudo — newgrp re-launches the shell with the
-    # updated group, passing all original arguments through
-    exec sg docker -c "bash \"${BASH_SOURCE[0]}\" $*"
+    docker_reexec_under_docker_group
   fi
 }
 
@@ -298,6 +359,7 @@ docker_check_prerequisites() {
     missing+=("docker-compose"); err "Docker Compose not installed"
   fi
   [[ ${#missing[@]} -gt 0 ]] && { err "Missing: ${missing[*]}"; exit 1; }
+  docker_ensure_daemon_access
   ok "All Docker prerequisites satisfied"
 }
 
