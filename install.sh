@@ -70,6 +70,18 @@ done
 export NO_INTERACTIVE
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
+ensure_curl() {
+  if ! command -v curl &>/dev/null; then
+    if [[ -f /etc/debian_version ]]; then
+      info "Installing curl..."
+      sudo apt-get update -qq
+      sudo apt-get install -y -qq curl
+    else
+      err "curl is required but not installed."; exit 1
+    fi
+  fi
+}
+
 check_not_root() {
   if [[ "$EUID" -eq 0 ]]; then
     err "Please don't run this installer as root."
@@ -110,7 +122,25 @@ install_web() {
   local web_dir="${SCRIPT_DIR}/webinstall"
 
   [[ -d "${web_dir}" ]] || { err "webinstall/ not found"; exit 1; }
-  command -v python3 &>/dev/null || { err "python3 required"; exit 1; }
+
+  # Ensure python3 and pip3 are available — install on Debian/Ubuntu if missing
+  if ! command -v python3 &>/dev/null; then
+    if [[ -f /etc/debian_version ]]; then
+      info "Installing python3 and pip3..."
+      sudo apt-get update -qq
+      sudo apt-get install -y -qq python3 python3-pip
+    else
+      err "python3 is required but not installed."; exit 1
+    fi
+  elif ! command -v pip3 &>/dev/null; then
+    if [[ -f /etc/debian_version ]]; then
+      info "Installing pip3..."
+      sudo apt-get update -qq
+      sudo apt-get install -y -qq python3-pip
+    else
+      err "pip3 is required but not installed."; exit 1
+    fi
+  fi
 
   info "Installing web installer dependencies..."
   pip3 install fastapi "uvicorn[standard]" pyyaml python-multipart \
@@ -401,6 +431,7 @@ install_k3s() {
 # ═════════════════════════════════════════════════════════════════════════════
 main() {
   print_banner
+  ensure_curl
   check_not_root
   select_mode
   case "${MODE}" in
