@@ -288,10 +288,12 @@ docker_check_prerequisites() {
   local missing=()
   ! command -v docker &>/dev/null && missing+=("docker") && err "Docker not installed" \
     || ok "Docker: $(docker --version)"
-  if docker compose version &>/dev/null 2>&1; then
-    DOCKER_COMPOSE_CMD="docker compose"; ok "Docker Compose plugin: found"
+  if docker compose version &>/dev/null 2>&1 || sudo docker compose version &>/dev/null 2>&1; then
+    [[ "${DOCKER_USE_SUDO}" == "true" ]] && DOCKER_COMPOSE_CMD="sudo docker compose" || DOCKER_COMPOSE_CMD="docker compose"
+    ok "Docker Compose plugin: found"
   elif command -v docker-compose &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"; ok "Docker Compose legacy: found"
+    [[ "${DOCKER_USE_SUDO}" == "true" ]] && DOCKER_COMPOSE_CMD="sudo docker-compose" || DOCKER_COMPOSE_CMD="docker-compose"
+    ok "Docker Compose legacy: found"
   else
     missing+=("docker-compose"); err "Docker Compose not installed"
   fi
