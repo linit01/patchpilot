@@ -139,18 +139,25 @@
   <div id="page-0" class="page">
     <div class="card">
       <h2>Welcome to PatchPilot</h2>
-      <p class="subtitle">Choose your deployment type. The wizard collects everything needed and launches the installer.</p>
+      <p class="subtitle">Choose <strong>Kubernetes</strong> (deploy into <em>your</em> existing cluster) or <strong>Docker Compose</strong> (single host with Docker). That is <em>where PatchPilot runs</em> — not the same as picking Linux vs. Windows.</p>
+      <p class="subtitle" style="margin-top:12px;font-size:13px;color:var(--muted);line-height:1.55">
+        <strong style="color:var(--text)">Docker Compose</strong> — on this machine with Docker. Typical on <strong>Linux</strong>, <strong>macOS</strong>, or <strong>Windows</strong> (Docker Desktop / Engine).<br><br>
+        <strong style="color:var(--text)">Kubernetes</strong> — PatchPilot <strong>only deploys into a cluster you already have</strong>. Installing and operating Kubernetes (e.g. k3s), networking, storage, and TLS are <strong>your responsibility</strong>. This wizard generates config and applies manifests via <code>kubectl</code> from your workstation (documented for <strong>macOS</strong> and <strong>Linux</strong> — see <a href="https://github.com/linit01/patchpilot/blob/main/QUICKSTART.md" target="_blank" rel="noopener">QUICKSTART</a>).
+      </p>
       <div class="field">
-        <label>Deployment type</label>
+        <label>How do you want to deploy?</label>
         <div class="toggle-group">
-          <input type="radio" name="mode" id="mode-k3s" value="k3s" checked>
-          <label for="mode-k3s">☸ K3s / Kubernetes</label>
-          <input type="radio" name="mode" id="mode-docker" value="docker">
+          <input type="radio" name="mode" id="mode-docker" value="docker" checked>
           <label for="mode-docker">🐳 Docker Compose</label>
+          <input type="radio" name="mode" id="mode-k3s" value="k3s">
+          <label for="mode-k3s">☸ Kubernetes</label>
         </div>
       </div>
       <div id="docker-note" class="hidden" style="color:var(--muted);font-size:13px;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
-        Docker Compose installs PatchPilot on this machine. No further configuration needed — images are built and services started automatically.
+        Docker Compose installs PatchPilot on this machine with Docker. Pre-built images are pulled and services start automatically (typical for homelab / single host).
+      </div>
+      <div id="k8s-note" class="hidden" style="color:var(--muted);font-size:13px;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
+        <strong style="color:var(--text)">Existing cluster required.</strong> PatchPilot does not create or bootstrap Kubernetes for you — only deploys into a cluster that is already installed, reachable from this machine, and configured for <code>kubectl</code>.
       </div>
     </div>
     <div class="actions"><span></span><button class="btn btn-primary" onclick="nextPage()">Continue →</button></div>
@@ -159,8 +166,8 @@
   <!-- Page 1: Cluster -->
   <div id="page-1" class="page hidden">
     <div class="card">
-      <h2>Kubernetes Cluster</h2>
-      <p class="subtitle">Confirm your cluster is reachable and set the namespace.</p>
+      <h2>Kubernetes cluster</h2>
+      <p class="subtitle">This step assumes <strong>you</strong> already installed and configured the cluster. PatchPilot only deploys into it — confirm <code>kubectl</code> can reach the cluster and choose a namespace.</p>
       <div id="cluster-status" class="cluster-status"><div class="spinner"></div><span>Checking cluster…</span></div>
       <div class="field">
         <label>Kubernetes namespace</label>
@@ -601,6 +608,7 @@ function showPage(idx) {
   currentPage = idx;
   renderSteps();
   $('docker-note').classList.toggle('hidden', getMode() !== 'docker');
+  $('k8s-note').classList.toggle('hidden', getMode() !== 'k3s');
   if (pages[idx] === 1) checkCluster();
   if (pages[idx] === 4) loadStorageClasses();
   if (pages[idx] === 6) buildSummary();
@@ -634,6 +642,7 @@ function validateCurrent() {
 // ── Toggles ────────────────────────────────────────────────────────────────────
 document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => {
   $('docker-note').classList.toggle('hidden', getMode() !== 'docker');
+  $('k8s-note').classList.toggle('hidden', getMode() !== 'k3s');
   renderSteps();
 }));
 document.querySelectorAll('input[name=tls]').forEach(r => r.addEventListener('change', () => {
