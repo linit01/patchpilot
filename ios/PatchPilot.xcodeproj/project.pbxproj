@@ -60,7 +60,7 @@
 		814B978EDA12471FF75B4510 /* WebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketService.swift; sourceTree = "<group>"; };
 		8EBD198A4B31C0DD70F977F8 /* PatchHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatchHistory.swift; sourceTree = "<group>"; };
 		911AC18582D733F678D84409 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		9FD6A64E0610CDEAFBC85DA6 /* PatchPilot.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PatchPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9FD6A64E0610CDEAFBC85DA6 /* PatchPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PatchPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1970F280A8865ABFD5C2BA7 /* HostRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRow.swift; sourceTree = "<group>"; };
 		A72A3DD62A57E2AE3E7DECC4 /* Schedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Schedule.swift; sourceTree = "<group>"; };
 		A73B5124673141E176CC5A2A /* ServerConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigView.swift; sourceTree = "<group>"; };
@@ -253,10 +253,9 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1500;
+				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					95042DB4590DD2739E9AB992 = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -398,7 +397,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = TRAHG99N36;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PatchPilot/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -486,7 +485,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = TRAHG99N36;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PatchPilot/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
