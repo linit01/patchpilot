@@ -763,6 +763,13 @@ async function deploy() {
   if (mode === 'docker' && $('docker_sudo_password')) $('docker_sudo_password').value = '';
 }
 
+/** Docker dashboard URL: same host you used to open this wizard (e.g. 10.0.1.111:9090 → :8080). */
+function dockerDashboardUrl() {
+  const h = window.location.hostname;
+  if (h && h !== 'localhost' && h !== '127.0.0.1') return `http://${h}:8080`;
+  return 'http://localhost:8080';
+}
+
 // ── Streaming output (shared for install + uninstall) ──────────────────────────
 function addLogLine(outputEl, raw) {
   const clean = raw.replace(/\x1b\[[0-9;]*m/g, '');
@@ -852,7 +859,7 @@ function dispatchInstallStreamLine(raw, logEl, statusEl) {
     if (code === 0) {
       statusEl.className = 'badge badge-green'; statusEl.textContent = '✓ Complete';
       $('success-section').classList.remove('hidden');
-      const url = getMode() === 'docker' ? 'http://localhost:8080'
+      const url = getMode() === 'docker' ? dockerDashboardUrl()
         : (getTls() ? `https://${$('hostname').value}` : `http://${$('hostname').value}`);
       $('success-url').textContent = url; $('success-url').href = url;
       setTimeout(() => { window.open(url, '_blank'); }, 2000);
@@ -908,7 +915,7 @@ function streamOutput(url, context) {
         if (code === 0) {
           statusEl.className = 'badge badge-green'; statusEl.textContent = '✓ Complete';
           $('success-section').classList.remove('hidden');
-          const url = getMode() === 'docker' ? 'http://localhost:8080'
+          const url = getMode() === 'docker' ? dockerDashboardUrl()
             : (getTls() ? `https://${$('hostname').value}` : `http://${$('hostname').value}`);
           $('success-url').textContent = url; $('success-url').href = url;
           // Auto-open the deployed URL after a brief pause so the user can

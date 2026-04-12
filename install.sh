@@ -479,19 +479,54 @@ docker_start_services() {
   curl -sf http://localhost:8080/ >/dev/null 2>&1 && ok "Frontend healthy" \
     || warn "Frontend still starting — check: ${DOCKER_COMPOSE_CMD} logs frontend"
   sleep 1 && (
-    open http://localhost:8080 2>/dev/null || \
-    xdg-open http://localhost:8080 2>/dev/null || true
+    local _oh
+    _oh="$(docker_access_host)"
+    open "http://${_oh}:8080" 2>/dev/null || \
+    xdg-open "http://${_oh}:8080" 2>/dev/null || true
   ) &
 }
 
+# Host printed in Docker completion URLs — LAN IP when obvious, else localhost.
+# Override with PATCHPILOT_ACCESS_HOST=10.0.1.111 if detection is wrong on your box.
+docker_access_host() {
+  if [[ -n "${PATCHPILOT_ACCESS_HOST:-}" ]]; then
+    echo "${PATCHPILOT_ACCESS_HOST}"
+    return
+  fi
+  local ip cand
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    cand="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+    [[ -n "$cand" && "$cand" != "127.0.0.1" ]] && echo "$cand" && return
+    echo "localhost"
+    return
+  fi
+  # Linux: pick first non-loopback, non-docker0-style address from "hostname -I"
+  for ip in $(hostname -I 2>/dev/null); do
+    [[ "$ip" =~ ^127\. ]] && continue
+    [[ "$ip" =~ ^169\.254\. ]] && continue
+    [[ "$ip" =~ ^172\.17\. ]] && continue
+    echo "$ip"
+    return
+  done
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -n "$ip" && "$ip" != "127.0.0.1" ]] && echo "$ip" && return
+  echo "localhost"
+}
+
 docker_show_completion() {
+  local host
+  host="$(docker_access_host)"
   echo ""
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo -e "${GREEN}🎉  PatchPilot v${PP_FILE_VERSION} ready (Docker)!${NC}"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
-  echo -e "${BLUE}📊 Dashboard:${NC}  http://localhost:8080"
-  echo -e "${BLUE}🔌 API:${NC}        http://localhost:8000"
+  echo -e "${BLUE}📊 Dashboard:${NC}  http://${host}:8080"
+  echo -e "${BLUE}🔌 API:${NC}        http://${host}:8000"
+  if [[ "$host" != "localhost" && "$host" != "127.0.0.1" ]]; then
+    echo ""
+    echo -e "${CYAN}  On this machine:${NC} http://localhost:8080"
+  fi
   echo ""
   echo -e "${PURPLE}Commands:${NC}  ${DOCKER_COMPOSE_CMD} [logs -f | down | restart]"
   echo ""

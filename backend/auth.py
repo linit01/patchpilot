@@ -78,7 +78,13 @@ async def get_current_user(request: Request, pool: asyncpg.Pool = Depends(get_db
     Extract and validate session from cookie.
     Returns the user dict if authenticated, None otherwise.
     """
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    # Check Bearer token first (mobile app), then fall back to cookie (web)
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return None
 
@@ -227,6 +233,7 @@ async def login(login_req: LoginRequest, request: Request, response: Response,
 
     return {
         "message": "Login successful",
+        "token": token,
         "user": {
             "id": str(user['id']),
             "username": user['username'],
@@ -240,7 +247,13 @@ async def login(login_req: LoginRequest, request: Request, response: Response,
 async def logout(request: Request, response: Response,
                  pool: asyncpg.Pool = Depends(get_db_pool)):
     """Destroy session and clear cookie"""
-    token = request.cookies.get(SESSION_COOKIE_NAME)
+    # Check Bearer token first (mobile app), then cookie (web)
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.cookies.get(SESSION_COOKIE_NAME)
 
     if token:
         async with pool.acquire() as conn:
