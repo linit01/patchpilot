@@ -36,9 +36,22 @@ VERSION_CLEAN="${VERSION#v}"
 
 # Check if COMMIT input is provided
 if [ -z "$2" ]; then
+    # Non-interactive (approved via env var): commit message is required as $2
+    if [ "${PATCHPILOT_RELEASE_APPROVED}" = "1" ]; then
+        echo "❌  Commit message required when using PATCHPILOT_RELEASE_APPROVED=1"
+        echo "    Usage: PATCHPILOT_RELEASE_APPROVED=1 ./scripts/push_new_build.sh <version> \"<message>\""
+        echo "    Example: PATCHPILOT_RELEASE_APPROVED=1 ./scripts/push_new_build.sh v0.16.8-beta \"add macOS system update label exclusions\""
+        exit 1
+    fi
     read -p "Enter the commit message: " COMMIT
 else
     COMMIT=$2
+fi
+
+# Guard: commit message must not be empty
+if [ -z "$COMMIT" ]; then
+    echo "❌  Commit message cannot be empty. Describe what changed in this release."
+    exit 1
 fi
 
 # ── Update VERSION file ──────────────────────────────────────────────────────
