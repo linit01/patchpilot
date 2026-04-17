@@ -11,6 +11,8 @@ struct HostDetailView: View {
     @State private var isChecking = false
     @State private var showPatchSheet = false
     @State private var errorMessage: String?
+    @State private var packageError: String?
+    @State private var packagesLoaded = false
 
     var body: some View {
         ScrollView {
@@ -127,10 +129,26 @@ struct HostDetailView: View {
                     .cornerRadius(8)
             }
 
-            if packages.isEmpty {
+            if !packagesLoaded {
                 HStack {
                     ProgressView().scaleEffect(0.7)
                     Text("Loading packages...")
+                        .font(.caption)
+                        .foregroundColor(Theme.textMuted)
+                }
+            } else if let err = packageError {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(Theme.amber)
+                    Text(err)
+                        .font(.caption)
+                        .foregroundColor(Theme.amber)
+                }
+            } else if packages.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(Theme.green)
+                    Text("No pending packages found")
                         .font(.caption)
                         .foregroundColor(Theme.textMuted)
                 }
@@ -230,14 +248,21 @@ struct HostDetailView: View {
     // MARK: - Data Loading
 
     private func loadDetails() async {
+        // Load independently so a history failure doesn't block packages
+        async let pkgTask: [Package] = hostService.fetchPackages(hostname: host.hostname)
+        async let historyTask: [PatchHistoryRecord] = patchService.fetchHostHistory(hostId: host.id)
+
         do {
-            async let pkgs: [Package] = hostService.fetchPackages(hostname: host.hostname)
-            async let history: [PatchHistoryRecord] = patchService.fetchHostHistory(hostId: host.id)
-            let (p, h) = try await (pkgs, history)
-            packages = p
-            hostHistory = h
+            packages = try await pkgTask
         } catch {
-            errorMessage = error.localizedDescription
+            packageError = error.localizedDescription
+        }
+        packagesLoaded = true
+
+        do {
+            hostHistory = try await historyTask
+        } catch {
+            // History failure is non-critical, suppress
         }
     }
 
