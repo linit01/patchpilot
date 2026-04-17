@@ -23,8 +23,8 @@ struct HostDetailView: View {
                     actionsSection
                 }
 
-                // Pending Packages
-                if !packages.isEmpty {
+                // Pending Packages — always shown once load completes
+                if !packages.isEmpty || host.status == .updatesAvailable {
                     packagesSection
                 }
 
@@ -41,7 +41,7 @@ struct HostDetailView: View {
         .task { await loadDetails() }
         .sheet(isPresented: $showPatchSheet) {
             PatchConfirmSheet(
-                hostnames: [host.hostname],
+                allHosts: [host],
                 onDismiss: { showPatchSheet = false }
             )
         }
@@ -112,31 +112,74 @@ struct HostDetailView: View {
     // MARK: - Packages
 
     private var packagesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Pending Updates (\(packages.count))")
-                .font(.headline)
-                .foregroundColor(Theme.textPrimary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Pending Updates")
+                    .font(.headline)
+                    .foregroundColor(Theme.textPrimary)
+                Spacer()
+                Text("\(packages.count) package\(packages.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundColor(Theme.amber)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Theme.amber.opacity(0.15))
+                    .cornerRadius(8)
+            }
 
-            ForEach(packages) { pkg in
+            if packages.isEmpty {
                 HStack {
-                    Text(pkg.name)
-                        .font(.subheadline)
-                        .foregroundColor(Theme.textPrimary)
-                    Spacer()
-                    VStack(alignment: .trailing) {
-                        if let avail = pkg.availableVersion {
-                            Text(avail)
-                                .font(.caption)
-                                .foregroundColor(Theme.green)
+                    ProgressView().scaleEffect(0.7)
+                    Text("Loading packages...")
+                        .font(.caption)
+                        .foregroundColor(Theme.textMuted)
+                }
+            } else {
+                ForEach(packages) { pkg in
+                    VStack(spacing: 0) {
+                        HStack(alignment: .top, spacing: 8) {
+                            // Package name
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(pkg.name)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(Theme.textPrimary)
+                                if let type = pkg.updateType {
+                                    Text(type)
+                                        .font(.caption2)
+                                        .foregroundColor(Theme.textMuted)
+                                }
+                            }
+
+                            Spacer()
+
+                            // Version: current → available
+                            HStack(spacing: 4) {
+                                if let current = pkg.currentVersion {
+                                    Text(current)
+                                        .font(.caption)
+                                        .foregroundColor(Theme.textMuted)
+                                }
+                                if pkg.currentVersion != nil && pkg.availableVersion != nil {
+                                    Image(systemName: "arrow.right")
+                                        .font(.caption2)
+                                        .foregroundColor(Theme.textMuted)
+                                }
+                                if let avail = pkg.availableVersion {
+                                    Text(avail)
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .foregroundColor(Theme.green)
+                                }
+                            }
                         }
-                        if let current = pkg.currentVersion {
-                            Text(current)
-                                .font(.caption2)
-                                .foregroundColor(Theme.textMuted)
-                        }
+                        .padding(.vertical, 6)
+
+                        Divider()
+                            .background(Theme.border)
+                            .opacity(pkg.id == packages.last?.id ? 0 : 1)
                     }
                 }
-                .padding(.vertical, 2)
             }
         }
         .padding()

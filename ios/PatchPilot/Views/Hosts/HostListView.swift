@@ -41,10 +41,7 @@ struct HostListView: View {
                 if authService.currentUser?.role.canWrite == true && !hostService.hosts.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Patch All") {
-                            selectedHosts = Set(hostService.hosts.filter { $0.status == .updatesAvailable }.map(\.hostname))
-                            if !selectedHosts.isEmpty {
-                                showPatchSheet = true
-                            }
+                            showPatchSheet = true
                         }
                         .foregroundColor(Theme.cyan)
                     }
@@ -66,7 +63,7 @@ struct HostListView: View {
             }
             .sheet(isPresented: $showPatchSheet) {
                 PatchConfirmSheet(
-                    hostnames: Array(selectedHosts),
+                    allHosts: hostService.hosts,
                     onDismiss: { showPatchSheet = false }
                 )
             }
