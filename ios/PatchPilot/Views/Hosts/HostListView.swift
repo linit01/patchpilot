@@ -61,6 +61,11 @@ struct HostListView: View {
                     errorMessage = error.localizedDescription
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                Task {
+                    try? await hostService.fetchHosts()
+                }
+            }
             .sheet(isPresented: $showPatchSheet) {
                 PatchConfirmSheet(
                     allHosts: hostService.hosts,

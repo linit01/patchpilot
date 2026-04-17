@@ -36,17 +36,30 @@ struct PatchConfirmSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(step == .select ? "Cancel" : "Back") {
-                        if step == .select { onDismiss() }
-                        else if step == .confirm { step = .select }
+                    Button(backButtonLabel) {
+                        switch step {
+                        case .select:          onDismiss()
+                        case .confirm:         step = .select
+                        case .patching:        onDismiss()   // only reachable when complete
+                        }
                     }
                     .foregroundColor(Theme.textSecondary)
-                    .disabled(step == .patching)
+                    .disabled(step == .patching && !wsService.patchComplete)
                 }
             }
         }
         .presentationDetents([.large])
+        .interactiveDismissDisabled(step == .patching && !wsService.patchComplete)
         .onAppear { preselectHosts() }
+    }
+
+    private var backButtonLabel: String {
+        switch step {
+        case .select:                                    return "Cancel"
+        case .confirm:                                   return "Back"
+        case .patching where wsService.patchComplete:   return "Close"
+        case .patching:                                 return "Back"
+        }
     }
 
     private var navigationTitle: String {

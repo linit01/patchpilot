@@ -47,16 +47,19 @@ enum HostStatus: String, Codable {
 }
 
 struct Package: Codable, Identifiable {
-    var id: String { "\(hostId ?? "")-\(name)" }
+    var id: String { "\(hostId ?? "")-\(packageName)" }
     let hostId: String?
-    let name: String
+    let packageName: String       // API returns "package_name", not "name"
     let currentVersion: String?
     let availableVersion: String?
     let updateType: String?
 
+    // Convenience alias so views can use .name
+    var name: String { packageName }
+
     enum CodingKeys: String, CodingKey {
-        case name
         case hostId = "host_id"
+        case packageName = "package_name"
         case currentVersion = "current_version"
         case availableVersion = "available_version"
         case updateType = "update_type"
