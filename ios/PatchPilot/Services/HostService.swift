@@ -36,8 +36,13 @@ class HostService: ObservableObject {
             let hostnames: [String]
             let become_password: String?
         }
+        struct PatchResponse: Decodable {
+            let message: String
+            let status: String
+            let hosts: [String]
+        }
         let request = PatchRequest(hostnames: hostnames, become_password: becomePassword)
-        let _: [String: String] = try await api.post("/api/patch", body: request)
+        let _: PatchResponse = try await api.post("/api/patch", body: request)
     }
 
     func getPatchStatus() async throws -> [String: Any] {
