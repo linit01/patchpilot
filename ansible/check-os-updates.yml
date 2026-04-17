@@ -250,8 +250,7 @@
             done
           fi
           if ! $skip_block; then
-            filtered="${filtered}${line}
-"
+            filtered="${filtered}${line}"$'\n'
           fi
         done <<< "$RAW"
 
