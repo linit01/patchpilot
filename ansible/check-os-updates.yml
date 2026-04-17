@@ -223,7 +223,44 @@
       failed_when: false
 
     - name: Check for macOS system updates
-      shell: /usr/sbin/softwareupdate -l
+      shell: |
+        EXCLUDED="{{ macos_system_excluded_labels }}"
+        RAW=$(/usr/sbin/softwareupdate -l 2>&1)
+
+        if [ -z "$EXCLUDED" ]; then
+          printf '%s\n' "$RAW"
+          exit 0
+        fi
+
+        # Filter out excluded label blocks (prefix match, same logic as apply phase)
+        filtered=""
+        skip_block=false
+        while IFS= read -r line; do
+          if [[ "$line" =~ ^\*[[:space:]]Label:[[:space:]] ]]; then
+            label="${line#\* Label: }"
+            skip_block=false
+            IFS=',' read -ra excl_arr <<< "$EXCLUDED"
+            for excl in "${excl_arr[@]}"; do
+              excl_trim="${excl#"${excl%%[![:space:]]*}"}"
+              excl_trim="${excl_trim%"${excl_trim##*[![:space:]]}"}"
+              if [[ "$label" == "$excl_trim"* ]]; then
+                skip_block=true
+                break
+              fi
+            done
+          fi
+          if ! $skip_block; then
+            filtered="${filtered}${line}
+"
+          fi
+        done <<< "$RAW"
+
+        # If all labels were excluded, report no updates so status shows Up to date
+        if ! echo "$filtered" | grep -q '^\* Label:'; then
+          echo "No new software available."
+        else
+          printf '%s' "$filtered"
+        fi
       register: macos_updates
       when: ansible_facts['os_family'] == "Darwin"
       changed_when: false

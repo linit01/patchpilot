@@ -247,7 +247,7 @@ class AnsibleRunner:
                         _rows = await _conn.fetch(
                             "SELECT key, value FROM settings WHERE key IN "
                             "('mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds', "
-                            "'winget_excluded_ids', 'winupdate_enabled')"
+                            "'winget_excluded_ids', 'winupdate_enabled', 'macos_system_excluded_labels')"
                         )
                         for _r in _rows:
                             if _r['value'] is not None:
