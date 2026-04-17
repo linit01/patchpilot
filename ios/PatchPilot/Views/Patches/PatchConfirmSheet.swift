@@ -44,21 +44,19 @@ struct PatchConfirmSheet: View {
                         }
                     }
                     .foregroundColor(Theme.textSecondary)
-                    .disabled(step == .patching && !wsService.patchComplete)
                 }
             }
         }
         .presentationDetents([.large])
-        .interactiveDismissDisabled(step == .patching && !wsService.patchComplete)
+        .interactiveDismissDisabled(false)
         .onAppear { preselectHosts() }
     }
 
     private var backButtonLabel: String {
         switch step {
-        case .select:                                    return "Cancel"
-        case .confirm:                                   return "Back"
-        case .patching where wsService.patchComplete:   return "Close"
-        case .patching:                                 return "Back"
+        case .select:   return "Cancel"
+        case .confirm:  return "Back"
+        case .patching: return "Close"
         }
     }
 
@@ -250,7 +248,12 @@ struct PatchConfirmSheet: View {
                     Text("Patching Complete").foregroundColor(Theme.green)
                 } else {
                     ProgressView()
-                    Text("Patching in progress...").foregroundColor(Theme.amber)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Patching in progress...").foregroundColor(Theme.amber)
+                        Text("Safe to close — patch continues on server")
+                            .font(.caption2)
+                            .foregroundColor(Theme.textMuted)
+                    }
                 }
                 Spacer()
             }

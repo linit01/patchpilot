@@ -1188,19 +1188,28 @@ async function showHostDetails(hostname) {
         if (packages.length === 0) {
             packagesList.innerHTML = '<p>No pending updates</p>';
         } else {
-            packagesList.innerHTML = packages.map(pkg => `
+            packagesList.innerHTML = packages.map(pkg => {
+                const showId = pkg.package_id && (pkg.update_type === 'mas' || pkg.update_type === 'winget');
+                const idHtml = showId ? `
+                    <div class="package-exclusion-id" title="Use this ID in General Settings exclusion list">
+                        <span class="package-exclusion-label">ID:</span>
+                        <code class="package-exclusion-value">${pkg.package_id}</code>
+                        <button class="copy-id-btn" onclick="navigator.clipboard.writeText('${pkg.package_id}').then(() => { this.textContent='✓'; setTimeout(()=>this.textContent='Copy',1200) })" title="Copy to clipboard">Copy</button>
+                    </div>` : '';
+                return `
                 <div class="package-item">
                     <div>
                         <div class="package-name">${pkg.package_name}</div>
                         <div class="package-version">
                             ${pkg.current_version || 'N/A'} → ${pkg.available_version || 'N/A'}
                         </div>
+                        ${idHtml}
                     </div>
                     <span class="status-badge status-updates-available">
                         ${pkg.update_type || 'update'}
                     </span>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
         }
         
         loading.style.display = 'none';
@@ -1703,15 +1712,21 @@ async function showPackagesModal() {
             return;
         }
         
-        tbody.innerHTML = allPackages.map(p => `
+        tbody.innerHTML = allPackages.map(p => {
+            const showId = p.package_id && (p.update_type === 'mas' || p.update_type === 'winget');
+            const idCell = showId
+                ? `<code style="font-size:11px;color:var(--text-secondary);background:var(--bg-card-inner,#1a1a1a);padding:2px 5px;border-radius:4px;cursor:pointer" title="Click to copy exclusion ID" onclick="navigator.clipboard.writeText('${p.package_id}').then(()=>{ this.style.color='var(--green)'; setTimeout(()=>this.style.color='var(--text-secondary)',1200) })">${p.package_id}</code>`
+                : '<span style="color:var(--text-muted)">—</span>';
+            return `
             <tr>
                 <td><span style="font-family:monospace;font-size:12px;color:var(--text-muted)">${p.hostname}</span></td>
                 <td><strong style="color:var(--text-primary)">${p.package_name}</strong></td>
                 <td style="font-family:monospace;font-size:11px;color:var(--text-muted)">${p.current_version || '—'}</td>
                 <td style="font-family:monospace;font-size:11px;color:var(--cyan)">${p.available_version || '—'}</td>
                 <td><span class="status-badge status-updates-available">${p.update_type || 'update'}</span></td>
-            </tr>
-        `).join('');
+                <td>${idCell}</td>
+            </tr>`;
+        }).join('');
         
         content.style.display = 'block';
     } catch (err) {

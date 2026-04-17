@@ -98,22 +98,24 @@ class DatabaseClient:
         async with self.pool.acquire() as conn:
             await conn.execute(query, host_id)
 
-    async def upsert_package(self, host_id: str, package_name: str, 
-                            current_version: str, available_version: str, 
-                            update_type: str = "apt") -> Optional[Dict]:
-        """Insert or update a package"""
+    async def upsert_package(self, host_id: str, package_name: str,
+                            current_version: str, available_version: str,
+                            update_type: str = "apt",
+                            package_id: str = None) -> Optional[Dict]:
+        """Insert or update a package. package_id stores MAS numeric ID or winget Package.Id."""
         query = """
-            INSERT INTO packages (host_id, package_name, current_version, available_version, update_type)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO packages (host_id, package_name, current_version, available_version, update_type, package_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (host_id, package_name)
             DO UPDATE SET
                 current_version = EXCLUDED.current_version,
                 available_version = EXCLUDED.available_version,
-                update_type = EXCLUDED.update_type
+                update_type = EXCLUDED.update_type,
+                package_id = EXCLUDED.package_id
             RETURNING *
         """
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, host_id, package_name, current_version, available_version, update_type)
+            row = await conn.fetchrow(query, host_id, package_name, current_version, available_version, update_type, package_id)
             return dict(row) if row else None
 
     async def insert_package(self, host_id: str, package_name: str,

@@ -78,13 +78,26 @@ class WebSocketService: ObservableObject {
     // MARK: - Message Handling
 
     private func handleMessage(_ text: String) {
-        messages.append(text)
-
-        // Check for completion signals
-        let lower = text.lowercased()
-        if lower.contains("patch complete") || lower.contains("all hosts patched") ||
-           lower.contains("patching finished") || lower.contains("\"status\":\"complete\"") {
+        // Check for JSON completion signal {"type":"complete",...} before appending
+        if let data = text.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let type_ = json["type"] as? String,
+           type_ == "complete" {
+            // Append the human-readable message if present
+            if let msg = json["message"] as? String {
+                messages.append("✓ \(msg)")
+            }
             patchComplete = true
+            return
+        }
+
+        // Plain text output from Ansible — extract message field if JSON, else show raw
+        if let data = text.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let msg = json["message"] as? String {
+            messages.append(msg)
+        } else {
+            messages.append(text)
         }
     }
 

@@ -317,6 +317,17 @@ async def startup_event():
     except Exception as e:
         print(f"[STARTUP] Email column migration note: {e}")
     
+    # ── STEP 10: Add package_id column for MAS/winget exclusion IDs ─────────
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                ALTER TABLE packages
+                ADD COLUMN IF NOT EXISTS package_id VARCHAR(255)
+            """)
+        print("[STARTUP] packages.package_id column ensured")
+    except Exception as e:
+        print(f"[STARTUP] packages.package_id migration note: {e}")
+
     # Start background task for periodic checks
     asyncio.create_task(periodic_ansible_check())
     print("[STARTUP] periodic_ansible_check loop launched")
@@ -1011,7 +1022,8 @@ async def run_ansible_check_task(limit_hosts: list = None):
                             package_name=package.get("package_name", ""),
                             current_version=package.get("current_version", ""),
                             available_version=package.get("available_version", ""),
-                            update_type=package.get("update_type", "apt")
+                            update_type=package.get("update_type", "apt"),
+                            package_id=package.get("package_id")
                         )
             
             print(f"Updated host: {hostname} - Status: {data.get('status')} - Updates: {data.get('total_updates')}")

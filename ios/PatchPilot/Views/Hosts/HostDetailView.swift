@@ -155,40 +155,69 @@ struct HostDetailView: View {
             } else {
                 ForEach(packages) { pkg in
                     VStack(spacing: 0) {
-                        HStack(alignment: .top, spacing: 8) {
-                            // Package name
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(pkg.name)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(Theme.textPrimary)
-                                if let type = pkg.updateType {
-                                    Text(type)
-                                        .font(.caption2)
-                                        .foregroundColor(Theme.textMuted)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .top, spacing: 8) {
+                                // Package name + type
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(pkg.name)
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                        .foregroundColor(Theme.textPrimary)
+                                    if let type = pkg.updateType {
+                                        Text(type)
+                                            .font(.caption2)
+                                            .foregroundColor(Theme.textMuted)
+                                    }
+                                }
+
+                                Spacer()
+
+                                // Version: current → available
+                                HStack(spacing: 4) {
+                                    if let current = pkg.currentVersion {
+                                        Text(current)
+                                            .font(.caption)
+                                            .foregroundColor(Theme.textMuted)
+                                    }
+                                    if pkg.currentVersion != nil && pkg.availableVersion != nil {
+                                        Image(systemName: "arrow.right")
+                                            .font(.caption2)
+                                            .foregroundColor(Theme.textMuted)
+                                    }
+                                    if let avail = pkg.availableVersion {
+                                        Text(avail)
+                                            .font(.caption)
+                                            .fontWeight(.semibold)
+                                            .foregroundColor(Theme.green)
+                                    }
                                 }
                             }
 
-                            Spacer()
-
-                            // Version: current → available
-                            HStack(spacing: 4) {
-                                if let current = pkg.currentVersion {
-                                    Text(current)
-                                        .font(.caption)
-                                        .foregroundColor(Theme.textMuted)
-                                }
-                                if pkg.currentVersion != nil && pkg.availableVersion != nil {
-                                    Image(systemName: "arrow.right")
+                            // Exclusion ID row — shown for mas/winget when a package_id is known
+                            if let pid = pkg.packageId,
+                               let type = pkg.updateType,
+                               (type == "mas" || type == "winget") {
+                                HStack(spacing: 6) {
+                                    Image(systemName: type == "mas" ? "bag.fill" : "shippingbox.fill")
                                         .font(.caption2)
                                         .foregroundColor(Theme.textMuted)
+                                    Text("ID: \(pid)")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundColor(Theme.textSecondary)
+                                    Spacer()
+                                    Button {
+                                        UIPasteboard.general.string = pid
+                                    } label: {
+                                        Image(systemName: "doc.on.doc")
+                                            .font(.caption2)
+                                            .foregroundColor(Theme.cyan)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                if let avail = pkg.availableVersion {
-                                    Text(avail)
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundColor(Theme.green)
-                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Theme.bgCardInner)
+                                .cornerRadius(6)
                             }
                         }
                         .padding(.vertical, 6)

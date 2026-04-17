@@ -747,7 +747,8 @@ input[type="checkbox"] {
     margin-bottom: 8px;
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    gap: 12px;
 }
 
 .package-name {
@@ -760,6 +761,48 @@ input[type="checkbox"] {
     font-size: 12px;
     color: var(--text-muted);
     font-family: 'JetBrains Mono', monospace;
+}
+
+.package-exclusion-id {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 4px 8px;
+    background: var(--bg-card, #111);
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+.package-exclusion-label {
+    color: var(--text-muted);
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.package-exclusion-value {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-secondary);
+    font-size: 11px;
+    flex: 1;
+    word-break: break-all;
+}
+
+.copy-id-btn {
+    background: none;
+    border: 1px solid var(--border-light);
+    color: var(--cyan);
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s;
+}
+
+.copy-id-btn:hover {
+    background: var(--cyan);
+    color: #000;
 }
 
 .form-group {

@@ -970,13 +970,14 @@ class AnsibleRunner:
                             })
                         else:
                             # App Store (mas) format: "1234567890 AppName (1.0 -> 2.0)"
-                            mas_match = re.search(r'^\d+\s+(.+?)\s+\(([\d\.]+)\s+->\s+([\d\.]+)\)', package_data)
-                            if mas_match:
+                            mas_id_match = re.search(r'^(\d+)\s+(.+?)\s+\(([\d\.]+)\s+->\s+([\d\.]+)\)', package_data)
+                            if mas_id_match:
                                 hosts_data[hostname]['update_details'].append({
-                                    'package_name': mas_match.group(1),
-                                    'current_version': mas_match.group(2),
-                                    'available_version': mas_match.group(3),
-                                    'update_type': 'mas'
+                                    'package_name': mas_id_match.group(2),
+                                    'current_version': mas_id_match.group(3),
+                                    'available_version': mas_id_match.group(4),
+                                    'update_type': 'mas',
+                                    'package_id': mas_id_match.group(1)  # numeric MAS ID for exclusion
                                 })
                             else:
                                 # Winget format: "AppName (Package.Id) 1.0.0 -> 2.0.0"
@@ -993,7 +994,8 @@ class AnsibleRunner:
                                         'package_name': pkg_name,
                                         'current_version': winget_ver.group(1),
                                         'available_version': winget_ver.group(2),
-                                        'update_type': 'winget'
+                                        'update_type': 'winget',
+                                        'package_id': winget_id.group(1) if winget_id else None  # Package.Id for exclusion
                                     })
                                 else:
                                     # Windows Update (PSWindowsUpdate) format:

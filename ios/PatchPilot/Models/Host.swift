@@ -53,6 +53,7 @@ struct Package: Codable, Identifiable {
     let currentVersion: String?
     let availableVersion: String?
     let updateType: String?
+    let packageId: String?        // MAS numeric ID or winget Package.Id for exclusion config
 
     // Convenience alias so views can use .name
     var name: String { packageName }
@@ -63,5 +64,6 @@ struct Package: Codable, Identifiable {
         case currentVersion = "current_version"
         case availableVersion = "available_version"
         case updateType = "update_type"
+        case packageId = "package_id"
     }
 }
