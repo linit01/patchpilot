@@ -609,6 +609,11 @@ async def ensure_settings_table(pool):
                  'daemon often hands off to the GUI notification manager and hangs. When '
                  'false, PatchPilot still detects available system updates but skips '
                  'installing them. Users install via System Settings instead.'),
+                ('macos_system_excluded_labels', os.getenv('MACOS_SYSTEM_EXCLUDED_LABELS', ''),
+                 'Comma-separated softwareupdate label prefixes to skip during macOS system '
+                 'update patching (e.g. "Command Line Tools for Xcode"). Prefix matching is '
+                 'used so "Command Line Tools for Xcode" excludes any version. The full label '
+                 'is shown in the Pending Packages list — copy it and trim the version suffix.'),
                 # ── macOS / App Store (mas) settings ──────────────────────────
                 ('mas_enabled',          os.getenv('MAS_ENABLED', 'false'),
                  'Enable App Store (mas) updates on macOS hosts. Defaults to false — '

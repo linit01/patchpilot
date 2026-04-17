@@ -1,7 +1,7 @@
 # PatchPilot — Project Summary
 
-**Version:** 0.12.4-alpha
-**Status:** Active development — commercial licensing active, trial available
+**Version:** 0.16.8-beta
+**Status:** Beta — commercial licensing active, trial available, iOS app in TestFlight
 **Website:** [getpatchpilot.app](https://getpatchpilot.app)
 
 ---
@@ -22,7 +22,8 @@ PatchPilot is a self-hosted patch management dashboard for Linux and macOS syste
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | HTML5 · Vanilla JS · WebSocket API |
+| Web Frontend | HTML5 · Vanilla JS · WebSocket API |
+| iOS App | SwiftUI · Swift Charts · URLSessionWebSocketTask · Keychain |
 | Backend | Python 3.11 · FastAPI · Uvicorn |
 | Database | PostgreSQL 15 (asyncpg) |
 | Remote execution | Ansible (inside backend container) |
@@ -31,11 +32,14 @@ PatchPilot is a self-hosted patch management dashboard for Linux and macOS syste
 | Container runtime | Docker / containerd (k3s) |
 | Ingress (k3s) | Traefik v3 |
 | TLS (k3s) | cert-manager + Let's Encrypt |
-| CI/CD | GitHub Actions · Docker Hub (multi-arch: amd64 + arm64) |
+| CI/CD | GitHub Actions · Docker Hub (multi-arch: amd64 + arm64) · Xcode Cloud (TestFlight) |
 
 ## Key Features
 
-- **Multi-platform** — Debian/Ubuntu (`apt`), RHEL/CentOS (`dnf`/`yum`), macOS (`brew` + `softwareupdate` + `mas`)
+- **Multi-platform** — Debian/Ubuntu (`apt`), RHEL/CentOS (`dnf`/`yum`), macOS (`brew` + `softwareupdate` + `mas`), Windows (`winget` + PSWindowsUpdate)
+- **Native iOS app** — SwiftUI app at `patchpilot/ios/`; dashboard, host list, patch operations with real-time WebSocket progress; Bearer token auth + Keychain storage; TestFlight distribution
+- **Package exclusion IDs** — MAS numeric IDs, winget `Package.Id`, and macOS `softwareupdate` labels shown in Pending Packages with one-click copy; paste directly into Settings exclusion fields
+- **macOS system update per-label exclusions** — `macos_system_excluded_labels` setting skips specific `softwareupdate` items by prefix while still applying others; patching loop installs each label individually
 - **Multi-user RBAC** — Full Admin (app owner, sees all), Admin (own resources only), Viewer (read-only); resource ownership tracked per user
 - **Encrypted credentials** — SSH keys and sudo passwords encrypted with Fernet (AES-256) before PostgreSQL storage
 - **Saved SSH Keys Library** — store, reuse, upload, set defaults; auto-assigned to new hosts; per-user scoping
@@ -76,6 +80,15 @@ patchpilot/
 │   ├── settings.html           # Settings (hosts, keys, schedules, backup, updates)
 │   ├── app.js                  # Dashboard logic + WebSocket client
 │   └── styles.css
+├── ios/
+│   ├── project.yml             # XcodeGen project definition
+│   └── PatchPilot/
+│       ├── App/                # @main entry, TabView root, ContentView auth gate
+│       ├── Models/             # Host, Package, DashboardStats, PatchHistory, User
+│       ├── Services/           # APIClient, AuthService, HostService, PatchService, WebSocketService
+│       ├── Views/              # Dashboard, Hosts, Patches, Settings screens
+│       ├── Components/         # StatusBadge, RebootBadge, FlowLegend
+│       └── Utilities/          # Theme.swift, KeychainHelper.swift
 ├── k8s/
 │   ├── install-config.yaml     # ← Edit before k3s install
 │   ├── install-k3s.sh          # K3s installer

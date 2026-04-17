@@ -645,6 +645,44 @@
                 <h2 style="font-size: 20px; font-weight: 600; margin: 32px 0 20px;">🍎 macOS / App Store</h2>
 
                 <div class="form-group">
+                    <label>Excluded macOS System Update Labels
+                        <span style="color:var(--text-muted);font-weight:400;font-size:12px;">
+                            (skip specific softwareupdate items)
+                        </span>
+                    </label>
+
+                    <!-- Tag pill display -->
+                    <div id="macos-sys-excluded-pills" style="
+                        display:flex;flex-wrap:wrap;gap:6px;
+                        min-height:38px;padding:6px 8px;
+                        background:var(--bg-input,#1a1a2e);
+                        border:1px solid var(--border);border-radius:6px;
+                        align-items:center;
+                    "></div>
+
+                    <!-- Add new label row -->
+                    <div style="display:flex;gap:8px;margin-top:8px;">
+                        <input type="text" id="macos-sys-excluded-add-label"
+                               placeholder="Label prefix  e.g. Command Line Tools for Xcode"
+                               style="flex:1;font-family:monospace;color:var(--text-primary,#e0e0e0);">
+                        <button type="button" class="btn btn-secondary"
+                                onclick="macosSysExcludedAddCurrent()"
+                                style="white-space:nowrap;padding:6px 14px;">+ Add</button>
+                    </div>
+
+                    <!-- hidden field used by saveMasSettings() -->
+                    <input type="hidden" id="macos-sys-excluded-labels">
+
+                    <div class="help-text">
+                        Prefix match — <code>Command Line Tools for Xcode</code> skips any version
+                        (e.g. <code>Command Line Tools for Xcode-26.4</code>).
+                        The full label appears as the <strong>Exclusion ID</strong> in the Pending
+                        Packages list — copy it and trim the trailing <code>-version</code> suffix.
+                        Only takes effect when macOS system updates are enabled above.
+                    </div>
+                </div>
+
+                <div class="form-group">
                     <label>Enable App Store Updates (mas)</label>
                     <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
@@ -2804,6 +2842,9 @@
                     updateOriginsWarning();
                 }
                 // macOS / mas settings
+                if (settings.macos_system_excluded_labels !== undefined) {
+                    macosSysExcludedRenderPills(settings.macos_system_excluded_labels.value || '');
+                }
                 if (settings.mas_enabled !== undefined) {
                     document.getElementById('mas-enabled').checked = settings.mas_enabled.value === 'true';
                 }
@@ -2828,6 +2869,53 @@
                 console.error('Failed to load settings:', e);
             }
         }
+
+        // ── macOS System Update Excluded Labels pill UI ───────────────────────
+        function macosSysExcludedGetLabels() {
+            return (document.getElementById('macos-sys-excluded-labels').value || '')
+                .split(',').map(s => s.trim()).filter(Boolean);
+        }
+        function macosSysExcludedSetLabels(labels) {
+            document.getElementById('macos-sys-excluded-labels').value = labels.join(',');
+        }
+        function macosSysExcludedRenderPills(csv) {
+            const container = document.getElementById('macos-sys-excluded-pills');
+            const labels = csv.split(',').map(s => s.trim()).filter(Boolean);
+            macosSysExcludedSetLabels(labels);
+            if (!labels.length) {
+                container.innerHTML = '<span style="color:var(--text-muted);font-size:12px;font-style:italic;">No labels excluded — all macOS system updates will be installed</span>';
+                return;
+            }
+            container.innerHTML = labels.map(lbl => `
+                <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
+                      background:var(--bg-card,#111);border:1px solid var(--border);border-radius:999px;
+                      font-size:12px;font-family:monospace;color:var(--text-primary);">
+                    ${lbl}
+                    <button type="button" onclick="macosSysExcludedRemove(this)"
+                            data-label="${lbl}"
+                            style="background:none;border:none;color:var(--text-muted);cursor:pointer;
+                                   padding:0;font-size:14px;line-height:1;" title="Remove">×</button>
+                </span>`).join('');
+        }
+        function macosSysExcludedRemove(btn) {
+            const lbl = btn.dataset.label;
+            const updated = macosSysExcludedGetLabels().filter(l => l !== lbl);
+            macosSysExcludedRenderPills(updated.join(','));
+        }
+        function macosSysExcludedAddCurrent() {
+            const input = document.getElementById('macos-sys-excluded-add-label');
+            const val = input.value.trim();
+            if (!val) return;
+            const existing = macosSysExcludedGetLabels();
+            if (!existing.includes(val)) {
+                existing.push(val);
+                macosSysExcludedRenderPills(existing.join(','));
+            }
+            input.value = '';
+        }
+        document.getElementById('macos-sys-excluded-add-label').addEventListener('keydown', e => {
+            if (e.key === 'Enter') { e.preventDefault(); macosSysExcludedAddCurrent(); }
+        });
 
         // ── MAS Excluded IDs pill UI ──────────────────────────────────────────
         const MAS_KNOWN_APPS = {
@@ -2931,10 +3019,11 @@
         // ─────────────────────────────────────────────────────────────────────
 
         async function saveMasSettings() {
-            const masEnabled       = document.getElementById('mas-enabled').checked;
-            const excludedIds      = document.getElementById('mas-excluded-ids').value.trim();
-            const perAppTimeout    = document.getElementById('mas-per-app-timeout').value.trim() || '600';
-            const timeoutSeconds   = document.getElementById('mas-timeout-seconds').value.trim() || '7200';
+            const masEnabled              = document.getElementById('mas-enabled').checked;
+            const excludedIds             = document.getElementById('mas-excluded-ids').value.trim();
+            const macosSysExcludedLabels  = document.getElementById('macos-sys-excluded-labels').value.trim();
+            const perAppTimeout           = document.getElementById('mas-per-app-timeout').value.trim() || '600';
+            const timeoutSeconds          = document.getElementById('mas-timeout-seconds').value.trim() || '7200';
 
             const perApp = parseInt(perAppTimeout, 10);
             if (isNaN(perApp) || perApp < 60) {
@@ -2949,10 +3038,11 @@
 
             try {
                 const pairs = [
-                    ['mas_enabled',         masEnabled ? 'true' : 'false'],
-                    ['mas_excluded_ids',    excludedIds],
-                    ['mas_per_app_timeout', String(perApp)],
-                    ['mas_timeout_seconds', String(total)],
+                    ['macos_system_excluded_labels', macosSysExcludedLabels],
+                    ['mas_enabled',                  masEnabled ? 'true' : 'false'],
+                    ['mas_excluded_ids',             excludedIds],
+                    ['mas_per_app_timeout',          String(perApp)],
+                    ['mas_timeout_seconds',          String(total)],
                 ];
                 for (const [key, value] of pairs) {
                     const res = await fetch(`/api/settings/app/${key}`, {

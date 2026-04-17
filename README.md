@@ -6,7 +6,7 @@
 
 **Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**
 
-![Version](https://img.shields.io/badge/version-0.12.4--alpha-blue)
+![Version](https://img.shields.io/badge/version-0.16.8--beta-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-blue)
 
 ---
@@ -29,12 +29,18 @@
 ## Features
 
 ### Core Functionality
-- **Multi-Platform Host Support** — Debian/Ubuntu (`apt`), RHEL/CentOS (`dnf`/`yum`), macOS (`brew` + `softwareupdate` + Mac App Store via `mas`)
+- **Multi-Platform Host Support** — Debian/Ubuntu (`apt`), RHEL/CentOS (`dnf`/`yum`), macOS (`brew` + `softwareupdate` + Mac App Store via `mas`), Windows (`winget` + PSWindowsUpdate)
 - **Real-Time Patching Progress** — WebSocket streaming of live Ansible task output, per-task timestamps
 - **Background Checks** — Configurable interval (default 5 min), with countdown timer in the UI
 - **Single-Host Checks** — Fast targeted scan (~30 s) via `/api/check/{hostname}` — auto-triggered on host creation
 - **Scheduled Patching** — Time-based patch windows with encrypted sudo-password storage
 - **In-App Updates** — Automatic update checking with one-click upgrades for both Docker Compose and Kubernetes deployments
+- **Native iOS App** — SwiftUI app at `patchpilot/ios/`; dashboard, host list, patch operations with real-time WebSocket progress, Bearer token auth, Keychain storage; distribute via TestFlight
+
+### Package Exclusions
+- **MAS exclusions** — App Store numeric IDs displayed in Pending Packages with copy button; add to Settings → macOS to skip during patching
+- **Winget exclusions** — `Package.Id` displayed in Pending Packages with copy button; add to Settings → Windows to skip
+- **macOS system update exclusions** — `softwareupdate` label prefixes shown as Exclusion ID; add to Settings → macOS to skip specific items (e.g. `Command Line Tools for Xcode`) while still applying others
 
 ### Security & Authentication
 - **Multi-User RBAC** — Three-tier role model: Full Admin (app owner, sees/manages all), Admin (own resources only), Viewer (read-only across all resources)

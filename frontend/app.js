@@ -1189,7 +1189,7 @@ async function showHostDetails(hostname) {
             packagesList.innerHTML = '<p>No pending updates</p>';
         } else {
             packagesList.innerHTML = packages.map(pkg => {
-                const showId = pkg.package_id && (pkg.update_type === 'mas' || pkg.update_type === 'winget');
+                const showId = pkg.package_id && (pkg.update_type === 'mas' || pkg.update_type === 'winget' || pkg.update_type === 'macos-system');
                 const idHtml = showId ? `
                     <div class="package-exclusion-id" title="Use this ID in General Settings exclusion list">
                         <span class="package-exclusion-label">ID:</span>
@@ -1713,7 +1713,7 @@ async function showPackagesModal() {
         }
         
         tbody.innerHTML = allPackages.map(p => {
-            const showId = p.package_id && (p.update_type === 'mas' || p.update_type === 'winget');
+            const showId = p.package_id && (p.update_type === 'mas' || p.update_type === 'winget' || p.update_type === 'macos-system');
             const idCell = showId
                 ? `<code style="font-size:11px;color:var(--text-secondary);background:var(--bg-card-inner,#1a1a1a);padding:2px 5px;border-radius:4px;cursor:pointer" title="Click to copy exclusion ID" onclick="navigator.clipboard.writeText('${p.package_id}').then(()=>{ this.style.color='var(--green)'; setTimeout(()=>this.style.color='var(--text-secondary)',1200) })">${p.package_id}</code>`
                 : '<span style="color:var(--text-muted)">—</span>';

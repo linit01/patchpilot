@@ -4,6 +4,66 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.16.8-beta] — 2026-04-17
+
+### Added
+- **macOS system update per-label exclusions**: new `macos_system_excluded_labels` setting (Settings → macOS / App Store) accepts comma-separated `softwareupdate` label prefixes to skip during patching — e.g. `Command Line Tools for Xcode` excludes any version via prefix match
+- **Exclusion ID shown for all package types**: `macos-system` packages now show their full `softwareupdate` label (e.g. `Command Line Tools for Xcode-26.4`) as the **Exclusion ID** in the Pending Packages panel and global packages modal, with a copy button — paste into the exclusion field, trim the trailing `-version` suffix to match future versions
+- **Filtered per-label patching**: `ansible/check-os-updates.yml` replaces the blunt `softwareupdate -iaR --agree-to-license` with a shell loop that installs each available label individually, skipping any that match an excluded prefix; output reports installed/skipped counts
+
+### Changed
+- **Release channel: alpha → beta** — version suffix changes from `-alpha` to `-beta`; sidebar version badge now shows **BETA** instead of ALPHA
+- **`macos_system_excluded_labels` playbook var** added to `check-os-updates.yml` vars section, sourced from `MACOS_SYSTEM_EXCLUDED_LABELS` env var (default empty = no exclusions)
+
+### Fixed
+- `package_id` was not being passed through from `ansible_runner.py` parse results to `db.upsert_package()` — wired the `package_id` field in the `app.py` upsert call so MAS/winget/macOS-system IDs are actually persisted
+
+---
+
+## [0.16.7-alpha] — 2026-04-17
+
+### Added
+- **Package exclusion IDs visible in Pending Packages**: MAS numeric App Store IDs and winget `Package.Id` values are now stored in the `packages` table (`package_id` column, auto-migrated on startup) and displayed in:
+  - **Web UI** host detail panel — `ID: <value>` row with a **Copy** button for each `mas`/`winget` package that has an ID
+  - **Web UI** global Pending Packages modal — new **Exclusion ID** column (clickable to copy, flashes green)
+  - **iOS** host detail packages list — tappable ID row with copy-to-clipboard; icon differs by type (bag for MAS, box for winget)
+- **`packages.package_id` DB column**: `ALTER TABLE packages ADD COLUMN IF NOT EXISTS package_id VARCHAR(255)` migration runs at backend startup (step 10)
+
+### Changed
+- `backend/database.py` `upsert_package()` accepts and stores `package_id` as 6th parameter
+- `backend/ansible_runner.py` MAS parser captures numeric App Store ID from `1234567890 AppName (ver -> ver)` format as `package_id`; winget parser captures dotted `Package.Id` as `package_id`
+- `ios/PatchPilot/Models/Host.swift` `Package` struct gains `packageId: String?` field (decoded from `package_id`)
+
+---
+
+## [0.16.0-alpha] – [0.16.6-alpha] — 2026-04-07 – 2026-04-16
+
+### Added — Native iOS App (SwiftUI)
+- **iOS app at `patchpilot/ios/`** — native SwiftUI app within the existing monorepo; connects to the existing FastAPI backend over HTTP/HTTPS
+- **Backend: Bearer token auth** — `backend/auth.py` `get_current_user()` now checks `Authorization: Bearer <token>` header before falling back to cookie; login response returns `token` in JSON body for Keychain storage
+- **`APIClient.swift`** — `URLSession` wrapper with automatic `Authorization: Bearer` header injection; clears token on 401
+- **`KeychainHelper.swift`** — secure Keychain storage for `session_token` and `server_url`
+- **`AuthService.swift`** — login/logout, session validation via `/api/auth/me` (`MeResponse` envelope)
+- **`WebSocketService.swift`** — `URLSessionWebSocketTask` for real-time Ansible output at `/ws/patch-progress?token=<token>`; detects `{"type":"complete"}` JSON completion signal
+- **`HostService.swift` / `PatchService.swift`** — host CRUD, check, patch (multi-host `PatchResponse` struct)
+- **Dashboard** — stats cards, Swift Charts stacked bar for patch activity with wrapping `FlowLegend` component and per-OS color coding
+- **Host List** — searchable/filterable list with status badges; "Patch All" opens 3-step sheet (select → confirm → live progress); refreshes on app foreground via `UIApplication.didBecomeActiveNotification`
+- **Host Detail** — independent async loading for packages and history; `package_id` copy button for exclusion IDs; shows `packageError` inline
+- **Patch Confirm Sheet** — 3-step (host select with checkboxes → sudo password → WebSocket live terminal); always dismissible; "Safe to close" note during patching
+- **Settings** — server URL config, user profile, logout
+- **`XcodeGen` project.yml** — generates `PatchPilot.xcodeproj`; custom `Info.plist` with `NSAllowsArbitraryLoads: true` for HTTP dev access
+- **App icon** — 1024×1024 center-cropped from `frontend/patchpilot-icon.jpeg`
+- **TestFlight Internal** — distributed via Xcode Cloud; Internal Only (no App Store review required)
+
+### Fixed (iOS)
+- Login "data couldn't be read" — `/api/auth/me` envelope (`{authenticated, user}`) decoded via `MeResponse` wrapper; `token` made optional in `LoginResponse`
+- Packages spinning forever — `Package.CodingKeys` fixed (`packageName = "package_name"`); independent `async let` loading so history failure doesn't block packages
+- Back button broken — `WebSocketService.handleMessage()` now parses JSON `{"type":"complete"}` instead of scanning plain text; `PatchConfirmSheet` `interactiveDismissDisabled` removed
+- Multi-host patch decode error — `HostService.patchHosts()` uses `PatchResponse` struct (not `[String:String]`)
+- Package count stale — added `onReceive(UIApplication.didBecomeActiveNotification)` to refresh on foreground
+
+---
+
 ## [0.14.21-alpha] — 2026-04-05
 
 ### Changed

@@ -603,18 +603,22 @@ class AnsibleRunner:
             # is a valid intentional value (user cleared all exclusions) and
             # must override the env/default rather than being skipped.
             _mas_excluded_from_db = None
+            _macos_sys_excluded_from_db = None
             try:
                 if self.db_client and self.db_client.pool:
                     async with self.db_client.pool.acquire() as _conn:
                         _rows = await _conn.fetch(
                             "SELECT key, value FROM settings WHERE key IN "
-                            "('macos_system_updates_enabled', "
+                            "('macos_system_updates_enabled', 'macos_system_excluded_labels', "
                             "'mas_enabled', 'mas_excluded_ids', 'mas_per_app_timeout', 'mas_timeout_seconds', "
                             "'winupdate_enabled')"
                         )
                         for _r in _rows:
                             if _r['key'] == 'macos_system_updates_enabled' and _r['value']:
                                 env['MACOS_SYSTEM_UPDATES_ENABLED'] = _r['value']
+                            elif _r['key'] == 'macos_system_excluded_labels' and _r['value'] is not None:
+                                # Empty string = user intentionally cleared all exclusions
+                                _macos_sys_excluded_from_db = _r['value']
                             elif _r['key'] == 'mas_enabled' and _r['value']:
                                 env['MAS_ENABLED'] = _r['value']
                             elif _r['key'] == 'mas_excluded_ids' and _r['value'] is not None:
@@ -641,6 +645,11 @@ class AnsibleRunner:
                 env['MAS_PER_APP_TIMEOUT'] = os.getenv('MAS_PER_APP_TIMEOUT', '600')
             if os.getenv('MAS_TIMEOUT_SECONDS') and 'MAS_TIMEOUT_SECONDS' not in env:
                 env['MAS_TIMEOUT_SECONDS'] = os.getenv('MAS_TIMEOUT_SECONDS', '7200')
+            # macOS system update label exclusions (empty string = no exclusions)
+            if _macos_sys_excluded_from_db is not None:
+                env['MACOS_SYSTEM_EXCLUDED_LABELS'] = _macos_sys_excluded_from_db
+            elif os.getenv('MACOS_SYSTEM_EXCLUDED_LABELS') and 'MACOS_SYSTEM_EXCLUDED_LABELS' not in env:
+                env['MACOS_SYSTEM_EXCLUDED_LABELS'] = os.getenv('MACOS_SYSTEM_EXCLUDED_LABELS', '')
 
             # ── Windows / winget settings ──────────────────────────────────
             _winget_excluded_from_db = None
@@ -962,11 +971,17 @@ class AnsibleRunner:
                         # or "   Title: macOS Sequoia 15.3, Version: 15.3, Size: 7331569K"
                         macos_match = re.search(r'\*\s+Label:\s+(.+?)-[\w\.]+', package_data)
                         if macos_match:
+                            # Full label (e.g. "Command Line Tools for Xcode-26.4") is
+                            # stored as package_id so users can paste it into the
+                            # macOS System Update Exclusions field in Settings.
+                            full_label_match = re.search(r'\*\s+Label:\s+(.+)', package_data)
+                            full_label = full_label_match.group(1).strip() if full_label_match else None
                             hosts_data[hostname]['update_details'].append({
                                 'package_name': macos_match.group(1).strip(),
                                 'current_version': 'installed',
                                 'available_version': 'update available',
-                                'update_type': 'macos-system'
+                                'update_type': 'macos-system',
+                                'package_id': full_label  # full softwareupdate label for exclusion
                             })
                         else:
                             # App Store (mas) format: "1234567890 AppName (1.0 -> 2.0)"

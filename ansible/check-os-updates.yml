@@ -11,6 +11,10 @@
     # the CLI hangs indefinitely.  Default false = detect & report only.
     macos_system_updates_enabled: "{{ lookup('env', 'MACOS_SYSTEM_UPDATES_ENABLED') | default('false', true) | lower == 'true' }}"
 
+    # Comma-separated softwareupdate label prefixes to skip (prefix match).
+    # e.g. "Command Line Tools for Xcode" excludes any version of CLT.
+    macos_system_excluded_labels: "{{ lookup('env', 'MACOS_SYSTEM_EXCLUDED_LABELS') | default('', true) }}"
+
     # mas_enabled: must be explicitly true to run App Store updates.
     # mas in headless SSH requires an active GUI login + App Store auth on
     # the target Mac. Confirm `mas outdated` works interactively first.
@@ -558,8 +562,50 @@
       failed_when: false
       tags: ['never', 'apply-updates']
 
-    - name: Apply macOS system updates (non-control nodes — install + reboot)
-      shell: /usr/sbin/softwareupdate -iaR --agree-to-license
+    - name: Apply macOS system updates (non-control nodes — per-label with exclusions)
+      shell: |
+        set -euo pipefail
+        EXCLUDED="{{ macos_system_excluded_labels }}"
+
+        # Collect all available softwareupdate labels
+        LABELS=$(/usr/sbin/softwareupdate -l 2>&1 | awk '/^\* Label:/{sub(/^\* Label: /, ""); print}')
+
+        if [ -z "$LABELS" ]; then
+          echo "No macOS system updates available"
+          exit 0
+        fi
+
+        installed_count=0
+        skipped_count=0
+
+        while IFS= read -r label; do
+          [ -z "$label" ] && continue
+
+          should_exclude=false
+          if [ -n "$EXCLUDED" ]; then
+            IFS=',' read -ra EXCL_LIST <<< "$EXCLUDED"
+            for excl in "${EXCL_LIST[@]}"; do
+              excl_trim=$(echo "$excl" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              [ -z "$excl_trim" ] && continue
+              # Prefix match: "Command Line Tools for Xcode" matches "Command Line Tools for Xcode-26.4"
+              if [[ "$label" == "$excl_trim"* ]]; then
+                should_exclude=true
+                break
+              fi
+            done
+          fi
+
+          if [ "$should_exclude" = true ]; then
+            echo "SKIP [excluded]: $label"
+            skipped_count=$((skipped_count + 1))
+          else
+            echo "Installing: $label"
+            /usr/sbin/softwareupdate -i "$label" --agree-to-license || true
+            installed_count=$((installed_count + 1))
+          fi
+        done <<< "$LABELS"
+
+        echo "macOS system updates complete: $installed_count installed, $skipped_count skipped"
       become: yes
       when:
         - ansible_facts['os_family'] == "Darwin"

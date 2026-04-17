@@ -193,12 +193,12 @@ struct HostDetailView: View {
                                 }
                             }
 
-                            // Exclusion ID row — shown for mas/winget when a package_id is known
+                            // Exclusion ID row — shown for mas/winget/macos-system when a package_id is known
                             if let pid = pkg.packageId,
                                let type = pkg.updateType,
-                               (type == "mas" || type == "winget") {
+                               (type == "mas" || type == "winget" || type == "macos-system") {
                                 HStack(spacing: 6) {
-                                    Image(systemName: type == "mas" ? "bag.fill" : "shippingbox.fill")
+                                    Image(systemName: type == "mas" ? "bag.fill" : type == "macos-system" ? "apple.logo" : "shippingbox.fill")
                                         .font(.caption2)
                                         .foregroundColor(Theme.textMuted)
                                     Text("ID: \(pid)")
