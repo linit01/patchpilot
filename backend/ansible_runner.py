@@ -104,7 +104,7 @@ class AnsibleRunner:
 
                 is_control = host.get('is_control_node', False)
                 host_vars = {
-                    'ansible_host': host.get('ip_address') or hostname,
+                    'ansible_host': hostname,
                     'ansible_user': host.get('ssh_user', 'root'),
                     'ansible_port': host.get('ssh_port', 22),
                     'allow_auto_reboot': host.get('allow_auto_reboot', False),
