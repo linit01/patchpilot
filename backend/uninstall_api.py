@@ -491,16 +491,23 @@ def _docker_cleanup_background(dk: list[str], project: str, own_id: str | None) 
             completed.append(f"{step}: none found")
 
     # -- 3. Remove volumes not held open by the backend ---------------------
+    # The backups volume is RETAINED for post-uninstall recovery — parity with
+    # the K3s path where the backups PV uses reclaimPolicy: Retain. This is
+    # what makes "save the .env recovery copy into /backups" work as a single
+    # strategy across both deployment modes.
     step = "Remove project volumes"
+    backups_vol = f"{project}_backups"
     rc, vols_out, _ = _run(
         dk + ["volume", "ls", "-q",
               "--filter", f"label=com.docker.compose.project={project}"],
         timeout=15,
     )
     all_vols = [v for v in vols_out.splitlines() if v] if rc == 0 else []
+    retained_vols  = [v for v in all_vols if v == backups_vol]
+    candidate_vols = [v for v in all_vols if v != backups_vol]
     remaining_vols: list[str] = []
     removed_vols:   list[str] = []
-    for vol in all_vols:
+    for vol in candidate_vols:
         rc, _, _ = _run(dk + ["volume", "rm", vol], timeout=15)
         if rc == 0:
             removed_vols.append(vol)
@@ -510,7 +517,9 @@ def _docker_cleanup_background(dk: list[str], project: str, own_id: str | None) 
         completed.append(f"{step}: {', '.join(removed_vols)}")
     if remaining_vols:
         completed.append(f"{step}: deferred to janitor (in use): {', '.join(remaining_vols)}")
-    if not removed_vols and not remaining_vols:
+    if retained_vols:
+        completed.append(f"{step}: retained for recovery: {', '.join(retained_vols)}")
+    if not removed_vols and not remaining_vols and not retained_vols:
         completed.append(f"{step}: none found")
 
     # -- 4. Remove project network ------------------------------------------
@@ -621,7 +630,8 @@ async def get_uninstall_status(user: dict = Depends(require_full_admin)):
         automated = [
             "Revoke all active login sessions",
             f"Stop and remove all containers in Compose project '{project}' (except this backend — it exits after responding)",
-            f"Remove named volumes: {project}_postgres_data, {project}_backups",
+            f"Remove named volume: {project}_postgres_data",
+            f"RETAIN named volume: {project}_backups (so backup archives survive — parity with K3s)",
             f"Remove Compose network: {project}_{project}",
             f"Remove built backend image (tagged {project}-backend / patchpilot-backend)",
             "Prune dangling build cache",
@@ -630,12 +640,17 @@ async def get_uninstall_status(user: dict = Depends(require_full_admin)):
             "# The installation directory is NOT removed — delete it yourself when ready:",
             "# rm -rf /path/to/patchpilot",
             "",
+            f"# To remove backup archives too (this is destructive — only after you've copied any .tgz you want off-host):",
+            f"# docker volume rm {project}_backups",
+            "",
             "# Optional: remove Docker itself",
             "# sudo apt-get remove --purge docker-ce docker-ce-cli containerd.io docker-compose-plugin",
         ]
         desc = (
             f"Docker Compose installation detected (project: {project}). "
-            "All containers, volumes, images, and build cache will be removed automatically. "
+            f"Containers, the postgres volume, images, and build cache are removed automatically. "
+            f"The {project}_backups volume is RETAINED so backup archives survive uninstall — "
+            "remove it manually with `docker volume rm` only after you've copied off any archives you want to keep. "
             "The installation directory is left in place."
         )
         can_auto = True
@@ -688,9 +703,12 @@ async def get_uninstall_status(user: dict = Depends(require_full_admin)):
             "# Could not determine install type.",
             "# Add PATCHPILOT_INSTALL_MODE=docker (or k3s) to your .env and restart.",
             "",
-            "# Docker manual uninstall:",
-            "cd /path/to/patchpilot && docker compose down --volumes --remove-orphans",
+            "# Docker manual uninstall (preserves backup archives — parity with K3s Retain):",
+            "cd /path/to/patchpilot && docker compose down --remove-orphans",
+            "docker volume rm patchpilot_postgres_data 2>/dev/null || true",
             "docker rmi $(docker images --filter 'reference=patchpilot*' -q) 2>/dev/null || true",
+            "# To remove backup archives too (destructive — copy off any .tgz first):",
+            "# docker volume rm patchpilot_backups",
             "",
             "# K3s manual uninstall:",
             "cd /path/to/patchpilot && ./k8s/install-k3s.sh --uninstall",

@@ -226,6 +226,26 @@ async def resume():
     return {"status": "ok"}
 
 
+# ── Self-shutdown ─────────────────────────────────────────────────────────────
+@app.post("/api/shutdown")
+async def shutdown():
+    """
+    Browser asks the wizard to close itself after a successful install.
+
+    We schedule a SIGINT to ourselves a moment after responding, which uvicorn
+    handles as a graceful shutdown — same as the user pressing Ctrl+C in the
+    terminal where they ran `./install.sh --web`.
+    """
+    import signal
+
+    async def _stop() -> None:
+        await asyncio.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    asyncio.create_task(_stop())
+    return {"status": "stopping"}
+
+
 # ── Build & Push stream (developer mode only) ──────────────────────────────────
 @app.get("/api/build-stream")
 async def build_stream(

@@ -395,6 +395,18 @@
         <h2>PatchPilot Deployed!</h2>
         <p>Your instance is ready.</p>
         <a id="success-url" href="#" target="_blank" class="url-chip"></a>
+        <div id="shutdown-countdown" style="margin-top:18px;padding:12px;background:rgba(0,0,0,0.15);border-radius:6px;font-size:13px;color:var(--text)">
+          <div style="margin-bottom:10px">
+            This wizard will close itself in <strong id="shutdown-countdown-num">30</strong>s. After that, port 9090 is released and you can close this tab.
+          </div>
+          <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+            <button class="btn btn-primary" type="button" onclick="closeWizardNow()" style="padding:6px 14px;font-size:13px">Close Now</button>
+            <button class="btn btn-secondary" type="button" onclick="cancelWizardCountdown()" style="padding:6px 14px;font-size:13px">Keep Open</button>
+          </div>
+        </div>
+        <div id="shutdown-done" class="hidden" style="margin-top:18px;padding:12px;background:rgba(0,0,0,0.15);border-radius:6px;font-size:13px;color:var(--muted)">
+          Wizard closed. You can close this browser tab — open the dashboard URL above to log in.
+        </div>
       </div>
     </div>
     <div id="fail-section" class="hidden">
@@ -623,6 +635,52 @@ async function checkDockerStatus() {
   }
 
   updateContinueGate();
+}
+
+// ── Wizard self-shutdown after successful install ──────────────────────────
+let SHUTDOWN_TIMER_ID = null;
+let SHUTDOWN_REMAINING = 30;
+
+function startWizardShutdown() {
+  // Idempotent — bail if already running or if the success card was hidden.
+  if (SHUTDOWN_TIMER_ID !== null) return;
+  const numEl = $('shutdown-countdown-num');
+  if (!numEl) return;
+  SHUTDOWN_REMAINING = 30;
+  numEl.textContent = String(SHUTDOWN_REMAINING);
+  SHUTDOWN_TIMER_ID = setInterval(() => {
+    SHUTDOWN_REMAINING -= 1;
+    numEl.textContent = String(Math.max(0, SHUTDOWN_REMAINING));
+    if (SHUTDOWN_REMAINING <= 0) closeWizardNow();
+  }, 1000);
+}
+
+function cancelWizardCountdown() {
+  if (SHUTDOWN_TIMER_ID !== null) {
+    clearInterval(SHUTDOWN_TIMER_ID);
+    SHUTDOWN_TIMER_ID = null;
+  }
+  const box = $('shutdown-countdown');
+  if (box) box.classList.add('hidden');
+}
+
+async function closeWizardNow() {
+  if (SHUTDOWN_TIMER_ID !== null) {
+    clearInterval(SHUTDOWN_TIMER_ID);
+    SHUTDOWN_TIMER_ID = null;
+  }
+  // Hide the countdown card and show the "closed" message immediately —
+  // /api/shutdown will tear down the server right after responding so any
+  // later UI update has to happen now.
+  const box = $('shutdown-countdown');
+  if (box) box.classList.add('hidden');
+  const done = $('shutdown-done');
+  if (done) done.classList.remove('hidden');
+  try {
+    await fetch('/api/shutdown', { method: 'POST' });
+  } catch (e) {
+    // Server may have died before responding — that's the desired outcome.
+  }
 }
 
 // Disable Continue on the welcome page when Docker mode is chosen but Docker
@@ -976,6 +1034,7 @@ function dispatchInstallStreamLine(raw, logEl, statusEl) {
         : (getTls() ? `https://${$('hostname').value}` : `http://${$('hostname').value}`);
       $('success-url').textContent = url; $('success-url').href = url;
       setTimeout(() => { window.open(url, '_blank'); }, 2000);
+      startWizardShutdown();
     } else {
       statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
       $('fail-section').classList.remove('hidden');
@@ -1034,6 +1093,7 @@ function streamOutput(url, context) {
           // Auto-open the deployed URL after a brief pause so the user can
           // see the success banner before the new tab/window opens.
           setTimeout(() => { window.open(url, '_blank'); }, 2000);
+          startWizardShutdown();
         } else {
           statusEl.className = 'badge badge-red'; statusEl.textContent = '✗ Failed';
           $('fail-section').classList.remove('hidden');
