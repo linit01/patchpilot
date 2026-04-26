@@ -135,32 +135,41 @@ select_mode() {
 install_web() {
   step "Starting PatchPilot Web Installer"
   local web_dir="${SCRIPT_DIR}/webinstall"
+  local venv_dir="${web_dir}/.venv"
+  local req_file="${web_dir}/requirements.txt"
 
   [[ -d "${web_dir}" ]] || { err "webinstall/ not found"; exit 1; }
+  [[ -f "${req_file}" ]] || { err "webinstall/requirements.txt not found"; exit 1; }
 
-  # Ensure python3 and pip3 are available — install on Debian/Ubuntu if missing
+  # Ensure python3 is available — install on Debian/Ubuntu if missing
   if ! command -v python3 &>/dev/null; then
     if [[ -f /etc/debian_version ]]; then
-      info "Installing python3 and pip3..."
+      info "Installing python3..."
       DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq python3 python3-pip
+      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq python3 python3-venv
     else
       err "python3 is required but not installed."; exit 1
     fi
-  elif ! command -v pip3 &>/dev/null; then
-    if [[ -f /etc/debian_version ]]; then
-      info "Installing pip3..."
-      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq python3-pip
-    else
-      err "pip3 is required but not installed."; exit 1
-    fi
   fi
 
-  info "Installing web installer dependencies..."
-  pip3 install fastapi "uvicorn[standard]" pyyaml python-multipart \
-    --quiet --break-system-packages 2>/dev/null || \
-  pip3 install --user fastapi "uvicorn[standard]" pyyaml python-multipart --quiet
+  # Debian/Ubuntu split python3-venv into its own package — install if missing
+  if [[ -f /etc/debian_version ]] && ! python3 -c "import venv" &>/dev/null; then
+    info "Installing python3-venv..."
+    DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive pp_sudo -E apt-get install -y -qq python3-venv
+  fi
+
+  # Isolated venv — avoids PEP 668 conflicts on Debian/macOS-Homebrew and
+  # the package-skew problems caused by installing into system site-packages.
+  if [[ ! -x "${venv_dir}/bin/python" ]]; then
+    info "Creating Python virtualenv at ${venv_dir}..."
+    rm -rf "${venv_dir}"
+    python3 -m venv "${venv_dir}"
+  fi
+
+  info "Installing web installer dependencies into venv..."
+  "${venv_dir}/bin/pip" install --quiet --upgrade pip
+  "${venv_dir}/bin/pip" install --quiet -r "${req_file}"
 
   export PATCHPILOT_ROOT="${SCRIPT_DIR}"
   export PATCHPILOT_WEB_PORT="${WEB_PORT}"
@@ -190,7 +199,7 @@ install_web() {
     xdg-open "http://localhost:${WEB_PORT}" 2>/dev/null || true
   ) &
 
-  cd "${web_dir}" && python3 -m uvicorn server:app \
+  cd "${web_dir}" && "${venv_dir}/bin/python" -m uvicorn server:app \
     --host 0.0.0.0 --port "${WEB_PORT}" --log-level warning
 }
 
