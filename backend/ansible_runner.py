@@ -89,8 +89,9 @@ class AnsibleRunner:
                         'ansible_ssh_common_args': (
                             '-o StrictHostKeyChecking=no '
                             '-o UserKnownHostsFile=/dev/null '
-                            '-o ControlMaster=no '
-                            '-o ControlPersist=no'
+                            '-o ControlMaster=auto '
+                            '-o ControlPath=/tmp/ansible-cm-%C '
+                            '-o ControlPersist=60s'
                         )
                     }
                 }
@@ -228,7 +229,7 @@ class AnsibleRunner:
                 "-i", inventory_path,
                 self.playbook_path,
                 "-v",
-                "--forks", "5",
+                "--forks", "10",
                 "--timeout", "10"
             ]
             if limit_hosts:
@@ -240,6 +241,7 @@ class AnsibleRunner:
             check_env['PYTHONUNBUFFERED'] = '1'
             check_env['ANSIBLE_FORCE_COLOR'] = '0'
             check_env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
+            check_env['ANSIBLE_PIPELINING'] = 'true'
             check_env['PATCHPILOT_APP_VERSION'] = _patchpilot_app_version()
             try:
                 if self.db_client and self.db_client.pool:
@@ -594,6 +596,7 @@ class AnsibleRunner:
             env['PYTHONUNBUFFERED'] = '1'
             env['ANSIBLE_FORCE_COLOR'] = '0'
             env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
+            env['ANSIBLE_PIPELINING'] = 'true'
             env['PATCHPILOT_APP_VERSION'] = _patchpilot_app_version()
 
             # ── macOS / App Store settings ────────────────────────────────
