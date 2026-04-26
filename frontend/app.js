@@ -256,6 +256,11 @@ function handlePatchProgress(data) {
                 loadHosts(); // Refresh
             }, 3000);
             break;
+        case 'hosts_refreshed':
+            // Quiet refresh fired by run_ansible_check_task — no toast or modal,
+            // just re-pull the host list so the dashboard reflects the latest scan.
+            loadHosts();
+            return;
         case 'error':
             message = `[${timestamp}] ❌ ${data.message}`;
             msgClass += ' msg-error';

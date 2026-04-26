@@ -1073,6 +1073,15 @@ async def run_ansible_check_task(limit_hosts: list = None):
 
     print(f"[{datetime.now()}] Ansible check completed")
 
+    # Notify connected UIs so the host list refreshes without waiting for the next
+    # 2-minute polling tick. Quiet event — frontend just calls loadHosts() and
+    # does not display a toast. Manual /api/check, periodic check, and post-patch
+    # check all funnel through this function so a single hook covers them all.
+    try:
+        await manager.broadcast({"type": "hosts_refreshed"})
+    except Exception as e:
+        print(f"[WARN] hosts_refreshed broadcast failed: {e}")
+
 
 # Background task to run ansible patch
 async def run_ansible_patch_task(hostnames: List[str], become_password: Optional[str] = None):
@@ -1485,6 +1494,30 @@ def _extract_packages_updated(output: str, hostname: str) -> list:
                 if key not in seen:
                     seen.add(key)
                     packages.append(f"{pkg} ({new_ver})")
+
+    # Strategy 5: macOS softwareupdate output -- the Apply macOS system updates
+    # task prints "Installing: <label>" for each label it installs. Labels look
+    # like "Command Line Tools for Xcode-15.3" or "macOS Sonoma 14.4.1-23E224".
+    # Skip "SKIP [excluded]:" lines (user-excluded labels did not install).
+    if not packages:
+        _su_lines = []
+        for line in output.splitlines():
+            json_m = _re.search(r'=>\s*(\{.*)', line)
+            if json_m:
+                try:
+                    data = _json.loads(json_m.group(1))
+                    _su_lines.extend(data.get('stdout_lines', []))
+                except Exception:
+                    pass
+
+        for s in _su_lines:
+            s = s.strip()
+            su_m = _re.match(r'^Installing:\s+(.+)$', s)
+            if su_m:
+                label = su_m.group(1).strip()
+                if label and label not in seen:
+                    seen.add(label)
+                    packages.append(label)
 
     return packages
 

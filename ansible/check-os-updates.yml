@@ -596,6 +596,10 @@
       when: ansible_facts['os_family'] == "Darwin"
       register: brew_upgrade_result
       failed_when: false
+      # Without this, every shell run reports `changed:` even when brew installed
+      # nothing — which made `_detect_hosts_actually_patched` falsely flag the host
+      # as patched and recorded an empty packages_updated list in patch_history.
+      changed_when: "'==> Upgrading' in (brew_upgrade_result.stdout | default(''))"
       tags: ['never', 'apply-updates']
 
     - name: Apply macOS system updates (non-control nodes — per-label with exclusions)
@@ -648,6 +652,9 @@
         - macos_system_updates_enabled | bool
         - not (is_control_node | default(false) | bool)
       register: macos_upgrade_result
+      # Only "changed" when at least one Installing line was emitted by the script —
+      # avoids false-positive patched flag when every label was excluded or none existed.
+      changed_when: "'Installing: ' in (macos_upgrade_result.stdout | default(''))"
       tags: ['never', 'apply-updates']
 
     - name: Skip macOS system updates (disabled in settings)
