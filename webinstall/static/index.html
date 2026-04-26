@@ -155,6 +155,12 @@
       </div>
       <div id="docker-note" class="hidden" style="color:var(--muted);font-size:13px;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
         Docker Compose installs PatchPilot on this machine with Docker. Pre-built images are pulled and services start automatically (typical for homelab / single host).
+        <div id="docker-status-box" style="margin-top:12px;padding:10px 12px;border-radius:6px;border:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(0,0,0,0.15)">
+          <span id="docker-status-icon" style="font-size:18px;flex-shrink:0;line-height:1">⏳</span>
+          <span id="docker-status-text" style="flex:1;min-width:200px;color:var(--text)">Checking Docker on this machine…</span>
+          <a id="docker-install-link" href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noopener" class="btn btn-secondary hidden" style="text-decoration:none;padding:6px 12px;font-size:13px">Download Docker Desktop</a>
+          <button id="docker-recheck-btn" type="button" onclick="checkDockerStatus()" class="btn btn-secondary hidden" style="padding:6px 12px;font-size:13px">Recheck</button>
+        </div>
       </div>
       <div id="k8s-note" class="hidden" style="color:var(--muted);font-size:13px;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">
         <strong style="color:var(--text)">Existing cluster required.</strong> PatchPilot does not create or bootstrap Kubernetes for you — only deploys into a cluster that is already installed, reachable from this machine, and configured for <code>kubectl</code>.
@@ -343,9 +349,9 @@
       <p class="subtitle">Everything look right? Hit Deploy to start.</p>
       <div id="summary" style="font-size:13px;line-height:1.8"></div>
       <div id="docker-sudo-field" class="field hidden" style="margin-top:20px">
-        <label>Linux sudo password</label>
-        <div class="hint">On Linux, Docker setup needs sudo (install Engine, add your user to the <code>docker</code> group). Enter the password for the account running this installer. It is sent only to this server process over your browser connection, used for <code>sudo -S</code>, and is not stored.</div>
-        <input type="password" id="docker_sudo_password" autocomplete="current-password" placeholder="Required on Linux if Docker is not already usable for this user">
+        <label>Login password for this Linux server</label>
+        <div class="hint">Docker setup on Linux needs admin access — to install Docker Engine and add your account to the <code>docker</code> group. Enter the same password you use to log in to this machine (the one <code>sudo</code> would ask for at the terminal). It is sent only to this server over your browser connection, used once, and never stored.</div>
+        <input type="password" id="docker_sudo_password" autocomplete="current-password" placeholder="Your login password (leave blank if Docker is already usable here)">
       </div>
     </div>
     <div class="actions" id="deploy-actions">
@@ -546,9 +552,110 @@
 </div><!-- /view-dev -->
 
 <script>
-// ── Server info (developer mode, version) ──────────────────────────────────────
+// ── Server info (developer mode, version, platform) ───────────────────────────
 let DEVELOPER_MODE = false;
 let PP_VERSION = '';
+let SERVER_PLATFORM = '';   // "Linux" | "Darwin" | "Windows"
+let DOCKER_STATUS = null;   // {installed, running, version, platform} or null
+
+// ── Docker readiness check (page-0 mode-selection) ─────────────────────────────
+async function checkDockerStatus() {
+  const box = $('docker-status-box');
+  const icon = $('docker-status-icon');
+  const text = $('docker-status-text');
+  const installBtn = $('docker-install-link');
+  const recheckBtn = $('docker-recheck-btn');
+  if (!box) return;
+
+  // Loading state
+  icon.textContent = '⏳';
+  text.textContent = 'Checking Docker on this machine…';
+  installBtn.classList.add('hidden');
+  recheckBtn.classList.add('hidden');
+  box.style.borderColor = 'var(--border)';
+  box.style.background = 'rgba(0,0,0,0.15)';
+
+  try {
+    const r = await fetch('/api/docker-status');
+    DOCKER_STATUS = await r.json();
+  } catch (e) {
+    DOCKER_STATUS = null;
+    icon.textContent = '✗';
+    text.textContent = 'Could not check Docker status (server error). Refresh the page and try again.';
+    box.style.borderColor = 'var(--red)';
+    recheckBtn.classList.remove('hidden');
+    updateContinueGate();
+    return;
+  }
+
+  const s = DOCKER_STATUS;
+  if (s.installed && s.running) {
+    icon.textContent = '✓';
+    text.innerHTML = '<strong>Docker is ready.</strong> ' + (s.version ? '<span style="color:var(--muted)">' + s.version + '</span>' : '') + ' You can continue.';
+    box.style.borderColor = 'var(--green)';
+    box.style.background = 'rgba(63,185,80,0.10)';
+  } else if (s.installed && !s.running) {
+    icon.textContent = '⚠';
+    if (s.platform === 'Darwin') {
+      text.innerHTML = '<strong>Docker Desktop is installed but not running.</strong> Open the Docker Desktop app from Applications, wait until the whale icon stops animating, then click Recheck.';
+    } else if (s.platform === 'Linux') {
+      text.innerHTML = '<strong>Docker is installed but the daemon is not reachable.</strong> Try <code>sudo systemctl start docker</code>, or make sure your account is in the <code>docker</code> group, then click Recheck.';
+    } else {
+      text.innerHTML = '<strong>Docker is installed but not running.</strong> Start Docker, then click Recheck.';
+    }
+    box.style.borderColor = 'var(--yellow)';
+    box.style.background = 'rgba(210,153,34,0.12)';
+    recheckBtn.classList.remove('hidden');
+  } else {
+    icon.textContent = '✗';
+    if (s.platform === 'Darwin') {
+      text.innerHTML = '<strong>Docker is not installed on this Mac.</strong> Install <strong>Docker Desktop</strong> (the official free Mac app from Docker Inc.) using the button below, run the installer, start Docker Desktop from Applications, then click Recheck here.';
+      installBtn.classList.remove('hidden');
+    } else if (s.platform === 'Linux') {
+      text.innerHTML = '<strong>Docker is not installed.</strong> On Debian/Ubuntu, the PatchPilot installer can install Docker Engine for you when you continue. On other distributions, install Docker first, then click Recheck.';
+    } else {
+      text.innerHTML = '<strong>Docker is not installed.</strong> Install Docker Desktop and start it, then click Recheck.';
+      installBtn.classList.remove('hidden');
+    }
+    box.style.borderColor = 'var(--red)';
+    box.style.background = 'rgba(248,81,73,0.10)';
+    recheckBtn.classList.remove('hidden');
+  }
+
+  updateContinueGate();
+}
+
+// Disable Continue on the welcome page when Docker mode is chosen but Docker
+// isn't ready. Linux is exempt because install.sh can install Docker Engine
+// for the user on Debian/Ubuntu.
+function updateContinueGate() {
+  if (currentPage !== 0) return;
+  const continueBtn = document.querySelector('#page-0 .btn-primary');
+  if (!continueBtn) return;
+
+  const mode = getMode();
+  const s = DOCKER_STATUS;
+
+  if (mode !== 'docker' || !s) {
+    continueBtn.disabled = false;
+    continueBtn.title = '';
+    return;
+  }
+  if (s.platform === 'Linux') {
+    continueBtn.disabled = false;
+    continueBtn.title = '';
+    return;
+  }
+  if (!s.running) {
+    continueBtn.disabled = true;
+    continueBtn.title = s.installed
+      ? 'Start Docker Desktop and click Recheck before continuing'
+      : 'Install Docker Desktop and click Recheck before continuing';
+  } else {
+    continueBtn.disabled = false;
+    continueBtn.title = '';
+  }
+}
 
 async function loadServerInfo() {
   try {
@@ -556,6 +663,7 @@ async function loadServerInfo() {
     const d = await r.json();
     PP_VERSION = d.version || '';
     DEVELOPER_MODE = d.developer || false;
+    SERVER_PLATFORM = d.platform || '';
 
     // Populate version into all UI elements
     if (PP_VERSION) {
@@ -614,11 +722,15 @@ function showPage(idx) {
   renderSteps();
   $('docker-note').classList.toggle('hidden', getMode() !== 'docker');
   $('k8s-note').classList.toggle('hidden', getMode() !== 'k3s');
+  if (pages[idx] === 0) updateContinueGate();
   if (pages[idx] === 1) checkCluster();
   if (pages[idx] === 4) loadStorageClasses();
   if (pages[idx] === 6) {
     buildSummary();
-    $('docker-sudo-field').classList.toggle('hidden', getMode() !== 'docker');
+    // Only Linux Docker installs need a sudo password — Mac/Windows use Docker
+    // Desktop or Colima which don't require sudo for setup.
+    const needsSudo = (getMode() === 'docker') && (SERVER_PLATFORM === 'Linux');
+    $('docker-sudo-field').classList.toggle('hidden', !needsSudo);
   }
 }
 
@@ -652,6 +764,7 @@ document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('c
   $('docker-note').classList.toggle('hidden', getMode() !== 'docker');
   $('k8s-note').classList.toggle('hidden', getMode() !== 'k3s');
   renderSteps();
+  updateContinueGate();
 }));
 document.querySelectorAll('input[name=tls]').forEach(r => r.addEventListener('change', () => {
   $('tls-fields').style.display = getTls() ? '' : 'none';
@@ -1091,7 +1204,12 @@ async function startBuild() {
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
-loadServerInfo().then(() => showPage(0));
+loadServerInfo().then(() => {
+  showPage(0);
+  // Kick off the Docker check after the welcome page is mounted so the status
+  // panel inside #docker-note is in the DOM.
+  checkDockerStatus();
+});
 </script>
 </body>
 </html>

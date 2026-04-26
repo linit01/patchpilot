@@ -58,6 +58,51 @@ async def info():
         "developer": DEVELOPER_MODE,
         "version":   PP_VERSION,
         "repo_root": str(REPO_ROOT),
+        "platform":  platform.system(),  # "Linux" | "Darwin" | "Windows"
+    }
+
+
+# ── Docker readiness check ─────────────────────────────────────────────────────
+# Used by the wizard's mode-selection page to give a live "is Docker available?"
+# status next to the Docker Compose option, so a user picking that mode is told
+# upfront they need Docker Desktop running rather than failing at deploy time.
+@app.get("/api/docker-status")
+async def docker_status():
+    """
+    Probes the local host for Docker.
+
+    Returns:
+      installed: true if `docker` is on PATH
+      running:   true if `docker info` succeeds (daemon reachable)
+      version:   `docker --version` output, or null
+      platform:  same as /api/info
+    """
+    installed = False
+    running = False
+    version: Optional[str] = None
+
+    try:
+        r = subprocess.run(["docker", "--version"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            installed = True
+            version = r.stdout.strip() or None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    if installed:
+        try:
+            r = subprocess.run(["docker", "info"],
+                               capture_output=True, text=True, timeout=5)
+            running = (r.returncode == 0)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return {
+        "installed": installed,
+        "running":   running,
+        "version":   version,
+        "platform":  platform.system(),
     }
 
 
