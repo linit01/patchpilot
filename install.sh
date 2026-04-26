@@ -300,15 +300,19 @@ docker_ensure_daemon_access() {
 docker_install_engine() {
   step "Checking Docker Engine"
 
-  # ── Detect Docker Desktop (incompatible socket path) ──────────────────────
-  if command -v docker &>/dev/null; then
+  # ── Detect Docker Desktop on Linux (incompatible socket path) ─────────────
+  # Linux only: Docker Desktop's VM-backed socket conflicts with the compose
+  # stack which expects the standard /var/run/docker.sock from Docker Engine.
+  # On macOS/Windows, Docker Desktop is the standard way to run Docker and
+  # works correctly with this stack — don't reject it there.
+  if [[ "$(uname -s)" == "Linux" ]] && command -v docker &>/dev/null; then
     local ctx
     ctx="$(docker context show 2>/dev/null || true)"
     if [[ "${ctx}" == "desktop-linux" ]] || \
        docker info 2>/dev/null | grep -q "Docker Desktop"; then
-      err "Docker Desktop detected — PatchPilot requires Docker Engine."
+      err "Docker Desktop detected — PatchPilot requires Docker Engine on Linux."
       echo ""
-      echo "  Docker Desktop uses a VM-backed socket that is incompatible"
+      echo "  Docker Desktop on Linux uses a VM-backed socket that is incompatible"
       echo "  with PatchPilot's compose stack."
       echo ""
       echo "  To fix:"
@@ -326,10 +330,19 @@ docker_install_engine() {
     return
   fi
 
-  # ── Only install on Debian/Ubuntu ─────────────────────────────────────────
+  # ── Only auto-install on Debian/Ubuntu ────────────────────────────────────
   if [[ ! -f /etc/debian_version ]]; then
-    warn "Auto-install only supported on Debian/Ubuntu."
-    warn "Install Docker Engine manually: https://docs.docker.com/engine/install/"
+    case "$(uname -s)" in
+      Darwin)
+        warn "Docker is required but not installed."
+        warn "Install Docker Desktop for Mac: https://docs.docker.com/desktop/install/mac-install/"
+        warn "(Colima also works: https://github.com/abiosoft/colima)"
+        ;;
+      *)
+        warn "Auto-install only supported on Debian/Ubuntu."
+        warn "Install Docker Engine manually: https://docs.docker.com/engine/install/"
+        ;;
+    esac
     return
   fi
 
