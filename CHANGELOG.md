@@ -4,6 +4,15 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.16.13-beta] — 2026-04-26
+
+### Fixed
+- **macOS patches no longer record empty package lists**: `Apply Homebrew updates` and `Apply macOS system updates` tasks now use `changed_when` so Ansible only flags the host as `changed:` when an actual upgrade happened. Previously, every shell run reported `changed:` (Ansible's default for the `shell` module), which made `_detect_hosts_actually_patched` falsely mark the host as patched and stamp `patch_history` with `pkgs=0` even when nothing was installed
+- **softwareupdate labels now appear in patch history**: new Strategy 5 in `_extract_packages_updated` parses `Installing: <label>` lines from the macOS system updates task, so installed labels (e.g. `Command Line Tools for Xcode-15.3`) are stored in `patch_history.packages_updated`
+- **UI now refreshes after every check**: `run_ansible_check_task` broadcasts a quiet `hosts_refreshed` WebSocket event when it completes; frontend handler re-pulls the host list without showing a toast/modal. Previously, periodic and manual checks updated the DB but never notified connected UIs, so the dashboard kept showing stale `updates-available` badges until the next 2-minute auto-refresh tick
+
+---
+
 ## [0.16.8-beta] — 2026-04-17
 
 ### Added
