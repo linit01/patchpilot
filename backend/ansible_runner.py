@@ -352,12 +352,29 @@ class AnsibleRunner:
         pkg_count = 0
         download_size = ''
         packages_to_upgrade = []
-        
+
+        # Brew/diagnostic markers — surface lines from the macOS Apply Homebrew
+        # updates task. Without this, brew stdout/stderr lines (PP_DIAG markers,
+        # ==> Upgrading, sudo prompt failures, cask uninstaller errors) match
+        # nothing in the apt-only branches below and get silently dropped,
+        # making cask-sudo failures undebuggable from the UI log.
+        _brew_markers = (
+            'PP_DIAG_BECOME_PASS', 'PP_DIAG_ASKPASS_READY',
+            '==> Upgrading', '==> Uninstalling', '==> Downloading',
+            'sudo: a terminal', 'a password is required',
+            'sudo: no askpass', 'Failure while executing',
+        )
+
         for sline in stdout_lines:
             s = sline.strip()
             if not s:
                 continue
-            
+
+            # Brew short-circuit: emit the line and move on, before apt patterns run.
+            if any(k in s for k in _brew_markers):
+                await progress_callback(f"🍺 [{hostname}] {s}")
+                continue
+
             # Skip noise: "Reading database ... X%" progress lines
             if s.startswith('(Reading database'):
                 continue
@@ -473,6 +490,13 @@ class AnsibleRunner:
             for sline in stderr_lines:
                 s = sline.strip()
                 if not s:
+                    continue
+                # Same brew short-circuit as the stdout loop above — sudo's
+                # "a terminal is required" / "a password is required" land on
+                # stderr, and we need them visible in the UI to diagnose
+                # cask-uninstaller sudo failures.
+                if any(k in s for k in _brew_markers):
+                    await progress_callback(f"🍺 [{hostname}] {s}")
                     continue
                 if s.startswith('Running kernel'):
                     await progress_callback(f"🐧 [{hostname}] {s}")
@@ -760,6 +784,18 @@ class AnsibleRunner:
                     # Format: "msg": "START [id] name | DONE [id] name | SUMMARY: ..."
                     elif any(k in line_clean for k in ('START [', 'DONE [', 'SKIP [', 'TIMEOUT [', 'ERROR [', 'SUMMARY:', 'No App Store')):
                         await progress_callback(f"🍎 {line_clean}")
+                    # Brew/diagnostic result lines emitted by the "Show Homebrew
+                    # update results" debug task (joined with ' | ') and any raw
+                    # brew lines that slipped past _send_parsed_task_output.
+                    # Mirrors the App Store keyword matcher above so cask-sudo
+                    # failures surface in the UI log instead of vanishing.
+                    elif any(k in line_clean for k in (
+                        'PP_DIAG_BECOME_PASS', 'PP_DIAG_ASKPASS_READY',
+                        '==> Upgrading', '==> Uninstalling',
+                        'sudo: a terminal', 'a password is required',
+                        'Failure while executing',
+                    )):
+                        await progress_callback(f"🍺 {line_clean}")
 
             # Wait for process to complete
             logger.debug(f"Patch output: {line_count} lines read")

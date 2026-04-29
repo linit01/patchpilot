@@ -648,7 +648,12 @@
     # cracking the playbook open.
     - name: Show Homebrew update results
       debug:
-        msg: "{{ (brew_upgrade_result.stdout_lines | default([])) + (brew_upgrade_result.stderr_lines | default([])) }}"
+        # Single-string msg (vs a list) so the runner's keyword matcher and
+        # the brew-aware branch in _send_parsed_task_output can pick it up —
+        # a list msg renders as multi-line YAML and gets silently dropped by
+        # the line-by-line streamer. Mirrors the Show App Store update results
+        # join(' | ') pattern that's been working.
+        msg: "{{ ((brew_upgrade_result.stdout_lines | default([])) + (brew_upgrade_result.stderr_lines | default([]))) | join(' | ') }}"
       when:
         - ansible_facts['os_family'] == "Darwin"
         - brew_upgrade_result is defined
