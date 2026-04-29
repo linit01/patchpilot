@@ -609,19 +609,17 @@
       # up and brew runs exactly as before — formula upgrades and casks that
       # don't need sudo continue to work without any password.
       shell: |
-        # Diagnostic: report the byte length of PP_BECOME_PASS so we can tell
-        # at a glance whether the operator-supplied sudo password reached the
-        # task env via ansible_become_password. Length-only — never the value.
-        echo "PP_BECOME_PASS_LEN=${#PP_BECOME_PASS}"
         if [ -n "${PP_BECOME_PASS:-}" ]; then
+          echo "PP_DIAG_BECOME_PASS=set"
           ASKPASS_SCRIPT="$(mktemp -t pp-askpass.XXXXXX)"
           chmod 700 "$ASKPASS_SCRIPT"
           printf '#!/bin/sh\nprintf "%%s\\n" "$PP_BECOME_PASS"\n' > "$ASKPASS_SCRIPT"
           export SUDO_ASKPASS="$ASKPASS_SCRIPT"
           trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
-          echo "PP_ASKPASS_READY=1"
+          echo "PP_DIAG_ASKPASS_READY=1"
         else
-          echo "PP_ASKPASS_READY=0 (no password supplied — cask sudo will not work)"
+          echo "PP_DIAG_BECOME_PASS=empty"
+          echo "PP_DIAG_ASKPASS_READY=0"
         fi
         HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 \
         {{ brew_bin_path }} upgrade
@@ -650,7 +648,7 @@
     # cracking the playbook open.
     - name: Show Homebrew update results
       debug:
-        msg: "{{ brew_upgrade_result.stdout_lines | default([]) + brew_upgrade_result.stderr_lines | default([]) }}"
+        msg: "{{ (brew_upgrade_result.stdout_lines | default([])) + (brew_upgrade_result.stderr_lines | default([])) }}"
       when:
         - ansible_facts['os_family'] == "Darwin"
         - brew_upgrade_result is defined
