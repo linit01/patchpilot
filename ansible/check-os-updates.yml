@@ -609,32 +609,53 @@
       # up and brew runs exactly as before — formula upgrades and casks that
       # don't need sudo continue to work without any password.
       #
-      # v0.17.13-beta diagnostic: the askpass helper also writes md5 of
-      # PP_BECOME_PASS (as the helper sees it at invocation time) to a
-      # 0600-mode side file at $ASKPASS_SCRIPT.seen, and the brew shell
-      # surfaces signature lines (length + md5) at three points so we can
-      # locate where the value diverges from what the operator typed:
-      #   PP_DIAG_BECOME_PASS_LEN                — bytes the brew shell sees
-      #   PP_DIAG_BECOME_PASS_MD5                — md5 of the env var
-      #   PP_DIAG_BECOME_PASS_HELPER_DIRECT_MD5  — md5 of helper output when
-      #                                            invoked from the brew shell
-      #   PP_DIAG_BECOME_PASS_HELPER_VIA_SUDO_MD5 — md5 the helper observed
-      #                                             when sudo invoked it
-      # Operator computes their expected md5 once on the host and compares.
-      # The password itself is never echoed. The .seen file is rm'd by trap.
-      # NB: do NOT put quotes (single or double) inside the shell: | block's
-      # comments — Ansible's split_args counts those quotes as real tokens
-      # and trips on the "unbalanced quotes" guard. Long explanations live
-      # here at the YAML-comment level instead. Em-dashes are also banned
-      # inside the shell block (broke v0.17.10-beta).
+      # v0.17.15-beta: file-based password transfer instead of env-based.
+      # Background: v0.17.13-beta diagnostics confirmed Hypothesis C3 — macOS
+      # sudo strips the env when invoking the SUDO_ASKPASS helper (the
+      # askpass helper runs pre-auth and gets a sanitized minimal env, by
+      # design; Defaults env_keep += "PP_BECOME_PASS" only affects the
+      # post-auth target command, not the askpass invocation, so adding it
+      # to /etc/sudoers.d/patchpilot did not work). Switching to a temp
+      # password file with the path baked into the helper script removes
+      # the env dependency entirely.
+      #
+      # Mechanism:
+      #   1. Write PP_BECOME_PASS to a 0600 tempfile in TMPDIR.
+      #   2. Generate the askpass helper with that tempfile path interpolated
+      #      INTO the helper at write time, so the helper does:
+      #          #!/bin/sh
+      #          cat "/var/folders/.../pp-pass.XXXXXX"
+      #      No env_var lookup, so sudo's env sanitization is irrelevant.
+      #   3. Trap rm's both files on exit. Brief on-disk presence under
+      #      TMPDIR (mode 0600, owner-only) is the documented trade-off.
+      #
+      # Diagnostic markers retained: PP_DIAG_BECOME_PASS=set/empty,
+      # PP_DIAG_ASKPASS_READY=0/1, and the four md5/length signatures from
+      # v0.17.13-beta so we can verify the helper-via-sudo md5 now matches
+      # the brew-shell md5 (proving the file path works). Once verified
+      # in the field, the redundant signatures (DIRECT_MD5,
+      # HELPER_VIA_SUDO_MD5, .seen file machinery) can be dropped in a
+      # follow-up release.
+      #
+      # NB for shell-block content: do NOT put quotes (single or double)
+      # inside `# ...` comments inside the `shell: |` block — Ansible's
+      # split_args counts those quote chars as real quote tokens (it does
+      # not honor shell # comment semantics) and trips on the
+      # unbalanced-quotes guard. Long explanations live here at the
+      # YAML-comment level instead. Em-dashes inside the shell block
+      # also broke v0.17.10-beta — keep ASCII hyphen-minus only inside
+      # `shell: |`.
       shell: |
         if [ -n "${PP_BECOME_PASS:-}" ]; then
           echo "PP_DIAG_BECOME_PASS=set"
+          PP_PASS_FILE="$(mktemp -t pp-pass.XXXXXX)"
+          chmod 600 "$PP_PASS_FILE"
+          printf '%s\n' "$PP_BECOME_PASS" > "$PP_PASS_FILE"
           ASKPASS_SCRIPT="$(mktemp -t pp-askpass.XXXXXX)"
           chmod 700 "$ASKPASS_SCRIPT"
-          printf '#!/bin/sh\nprintf "%%s" "$PP_BECOME_PASS" | md5 > "$0.seen" 2>/dev/null\nchmod 600 "$0.seen" 2>/dev/null\nprintf "%%s\\n" "$PP_BECOME_PASS"\n' > "$ASKPASS_SCRIPT"
+          printf '#!/bin/sh\nprintf "%%s" "$(cat "%s")" | md5 > "$0.seen" 2>/dev/null\nchmod 600 "$0.seen" 2>/dev/null\ncat "%s"\n' "$PP_PASS_FILE" "$PP_PASS_FILE" > "$ASKPASS_SCRIPT"
           export SUDO_ASKPASS="$ASKPASS_SCRIPT"
-          trap 'rm -f "$ASKPASS_SCRIPT" "$ASKPASS_SCRIPT.seen"' EXIT
+          trap 'rm -f "$ASKPASS_SCRIPT" "$ASKPASS_SCRIPT.seen" "$PP_PASS_FILE"' EXIT
           echo "PP_DIAG_ASKPASS_READY=1"
           echo "PP_DIAG_BECOME_PASS_LEN=$(printf "%s" "$PP_BECOME_PASS" | wc -c | tr -d ' ')"
           echo "PP_DIAG_BECOME_PASS_MD5=$(printf "%s" "$PP_BECOME_PASS" | md5)"
