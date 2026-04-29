@@ -608,51 +608,45 @@
       # If no password was supplied (PP_BECOME_PASS empty), no helper is set
       # up and brew runs exactly as before — formula upgrades and casks that
       # don't need sudo continue to work without any password.
+      #
+      # v0.17.13-beta diagnostic: the askpass helper also writes md5 of
+      # PP_BECOME_PASS (as the helper sees it at invocation time) to a
+      # 0600-mode side file at $ASKPASS_SCRIPT.seen, and the brew shell
+      # surfaces signature lines (length + md5) at three points so we can
+      # locate where the value diverges from what the operator typed:
+      #   PP_DIAG_BECOME_PASS_LEN                — bytes the brew shell sees
+      #   PP_DIAG_BECOME_PASS_MD5                — md5 of the env var
+      #   PP_DIAG_BECOME_PASS_HELPER_DIRECT_MD5  — md5 of helper output when
+      #                                            invoked from the brew shell
+      #   PP_DIAG_BECOME_PASS_HELPER_VIA_SUDO_MD5 — md5 the helper observed
+      #                                             when sudo invoked it
+      # Operator computes their expected md5 once on the host and compares.
+      # The password itself is never echoed. The .seen file is rm'd by trap.
+      # NB: do NOT put quotes (single or double) inside the shell: | block's
+      # comments — Ansible's split_args counts those quotes as real tokens
+      # and trips on the "unbalanced quotes" guard. Long explanations live
+      # here at the YAML-comment level instead. Em-dashes are also banned
+      # inside the shell block (broke v0.17.10-beta).
       shell: |
         if [ -n "${PP_BECOME_PASS:-}" ]; then
           echo "PP_DIAG_BECOME_PASS=set"
           ASKPASS_SCRIPT="$(mktemp -t pp-askpass.XXXXXX)"
           chmod 700 "$ASKPASS_SCRIPT"
-          # v0.17.13-beta — helper writes md5 of PP_BECOME_PASS (as it sees it
-          # at invocation time) to "$0.seen" before printing the password.
-          # Lets us distinguish "env stripped by sudo" from "env intact" by
-          # comparing the helper-via-sudo md5 to the brew-shell md5 below.
           printf '#!/bin/sh\nprintf "%%s" "$PP_BECOME_PASS" | md5 > "$0.seen" 2>/dev/null\nchmod 600 "$0.seen" 2>/dev/null\nprintf "%%s\\n" "$PP_BECOME_PASS"\n' > "$ASKPASS_SCRIPT"
           export SUDO_ASKPASS="$ASKPASS_SCRIPT"
           trap 'rm -f "$ASKPASS_SCRIPT" "$ASKPASS_SCRIPT.seen"' EXIT
           echo "PP_DIAG_ASKPASS_READY=1"
-          # v0.17.13-beta — password signature diagnostics. Length and md5
-          # at multiple points in the password's path so we can locate where
-          # the value diverges from what the operator typed at the PP dialog.
-          # Operator computes their expected md5 once on the host:
-          #   printf "%s" 'their-pp-dialog-password' | md5
-          # and compares to the values surfaced here. The password itself is
-          # never echoed.
           echo "PP_DIAG_BECOME_PASS_LEN=$(printf "%s" "$PP_BECOME_PASS" | wc -c | tr -d ' ')"
           echo "PP_DIAG_BECOME_PASS_MD5=$(printf "%s" "$PP_BECOME_PASS" | md5)"
-          # Self-test: invoke the helper from the brew shell and md5 its
-          # output (sans trailing newline). If this matches the operator's
-          # expected md5, the helper script + env_var pipeline is intact
-          # AS SEEN BY A NORMAL CHILD PROCESS. The helper-via-sudo md5 below
-          # tells us whether sudo's invocation context preserves that env.
           PP_HELPER_DIRECT_OUT="$("$ASKPASS_SCRIPT" 2>/dev/null | tr -d '\n')"
           echo "PP_DIAG_BECOME_PASS_HELPER_DIRECT_MD5=$(printf "%s" "$PP_HELPER_DIRECT_OUT" | md5)"
           unset PP_HELPER_DIRECT_OUT
-          # The helper's own self-recorded md5 will appear AFTER brew runs,
-          # below — written by the helper to $ASKPASS_SCRIPT.seen on each
-          # sudo-driven invocation, then echoed by us once brew exits.
         else
           echo "PP_DIAG_BECOME_PASS=empty"
           echo "PP_DIAG_ASKPASS_READY=0"
         fi
         HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 \
         {{ brew_bin_path }} upgrade
-        # After brew runs, surface the md5 the helper observed when sudo
-        # invoked it. Differs from PP_DIAG_BECOME_PASS_MD5 above iff sudo's
-        # askpass invocation transforms the env (Hypothesis C3 — env_reset
-        # stripping PP_BECOME_PASS). Missing if sudo never invoked the
-        # helper (e.g., brew didn't reach a privileged step). The trap above
-        # rm's the .seen file when this script exits.
         if [ -n "${ASKPASS_SCRIPT:-}" ] && [ -f "$ASKPASS_SCRIPT.seen" ]; then
           echo "PP_DIAG_BECOME_PASS_HELPER_VIA_SUDO_MD5=$(cat "$ASKPASS_SCRIPT.seen")"
         else
