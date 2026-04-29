@@ -484,10 +484,11 @@
                         <button class="btn btn-secondary" onclick="openImportModal()">↓ Import</button>
                         <button class="btn btn-secondary" onclick="exportHosts()">↑ Export</button>
                         <button class="btn btn-primary" onclick="openAddWindowsHostModal()">+ Add Windows Host</button>
+                        <button class="btn btn-primary" onclick="openAddMacosHostModal()">+ Add macOS Host</button>
                         <button class="btn btn-primary" onclick="openAddHostModal()">+ Add Host</button>
                     </div>
                 </div>
-                
+
                 <div id="host-list" class="host-list">
                     <!-- Hosts will be loaded here -->
                     <div class="empty-state">
@@ -496,6 +497,7 @@
                         <p>Add your first host to start managing patches</p>
                         <div style="display: flex; gap: 10px; justify-content: center;">
                             <button class="btn btn-primary" onclick="openAddWindowsHostModal()">+ Add Windows Host</button>
+                            <button class="btn btn-primary" onclick="openAddMacosHostModal()">+ Add macOS Host</button>
                             <button class="btn btn-primary" onclick="openAddHostModal()">+ Add Host</button>
                         </div>
                     </div>
@@ -645,6 +647,25 @@
                 <h2 style="font-size: 20px; font-weight: 600; margin: 32px 0 20px;">🍎 macOS / App Store</h2>
 
                 <div class="form-group">
+                    <label>Enable macOS System Updates</label>
+                    <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;">
+                            <input type="checkbox" id="macos-sys-updates-enabled" style="width:16px;height:16px;">
+                            <span>Install macOS system (OS) updates via <code>softwareupdate</code> during patch runs</span>
+                        </label>
+                    </div>
+                    <div class="help-text">
+                        <strong>Off by default.</strong>
+                        <code>softwareupdate</code> over SSH is unreliable on newer macOS — the
+                        daemon often hands off to the GUI notification manager and hangs. When off,
+                        PatchPilot still detects available system updates but skips installing them
+                        (users install via System Settings instead).
+                        Requires NOPASSWD sudoers entry for <code>/usr/sbin/softwareupdate</code>
+                        (and <code>/sbin/reboot</code>, <code>/sbin/shutdown</code> for auto-reboot).
+                    </div>
+                </div>
+
+                <div class="form-group">
                     <label>Excluded macOS System Update Labels
                         <span style="color:var(--text-muted);font-weight:400;font-size:12px;">
                             (skip specific softwareupdate items)
@@ -678,7 +699,7 @@
                         (e.g. <code>Command Line Tools for Xcode-26.4</code>).
                         The full label appears as the <strong>Exclusion ID</strong> in the Pending
                         Packages list — copy it and trim the trailing <code>-version</code> suffix.
-                        Only takes effect when macOS system updates are enabled above.
+                        Only takes effect when <strong>Enable macOS System Updates</strong> is on above.
                     </div>
                 </div>
 
@@ -1275,6 +1296,68 @@
             </div>
             
             <form id="host-form" onsubmit="saveHost(event)">
+                <!-- macOS Setup Instructions (shown only for Add macOS Host) -->
+                <div id="macos-setup-section" style="display: none; margin-bottom: 20px;">
+                    <div style="
+                        background: rgba(0, 192, 239, 0.08);
+                        border: 1px solid rgba(0, 192, 239, 0.25);
+                        border-radius: 8px;
+                        padding: 16px;
+                    ">
+                        <h3 style="margin: 0 0 10px 0; font-size: 15px; color: var(--cyan, #00c0ef);">
+                            🍎 Step 1: Run this on the macOS host (Terminal)
+                        </h3>
+                        <div style="position: relative;">
+                            <pre id="macos-setup-cmd" style="
+                                background: var(--bg-input, #1a1a2e);
+                                border: 1px solid var(--border);
+                                border-radius: 6px;
+                                padding: 12px 40px 12px 12px;
+                                font-family: monospace;
+                                font-size: 13px;
+                                white-space: pre-wrap;
+                                word-break: break-all;
+                                color: var(--green-bright, #4caf50);
+                                margin: 0;
+                                line-height: 1.5;
+                            ">Loading...</pre>
+                            <button type="button" onclick="copyMacosCmd()" style="
+                                position: absolute;
+                                top: 8px;
+                                right: 8px;
+                                background: rgba(255,255,255,0.1);
+                                border: 1px solid var(--border);
+                                border-radius: 4px;
+                                color: var(--text-muted);
+                                cursor: pointer;
+                                padding: 4px 8px;
+                                font-size: 12px;
+                            " title="Copy to clipboard">📋 Copy</button>
+                        </div>
+                        <p style="margin: 10px 0 0 0; font-size: 12px; color: var(--text-muted);">
+                            Run as your own user (not <code>sudo</code>). Enables Remote Login, authorizes the
+                            PatchPilot SSH key, writes <code>/etc/sudoers.d/patchpilot</code> with the
+                            <code>NOPASSWD: SETENV:</code> entries needed for headless mas / softwareupdate /
+                            reboot, and installs <code>coreutils</code> for the per-app timeout binary.
+                            You'll be prompted once for your sudo password.
+                        </p>
+                        <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                            <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Need to generate an SSH key first?</summary>
+                            <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                                <p style="margin: 0 0 8px 0;">Run this on the <strong>PatchPilot server</strong> (or wherever you manage keys):</p>
+                                <pre style="margin: 0 0 8px 0; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 4px; font-size: 12px; white-space: pre-wrap;">ssh-keygen -t ed25519 -C "patchpilot"</pre>
+                                <p style="margin: 0; font-size: 12px; color: var(--text-muted);">
+                                    Add the <strong>private key</strong> to PatchPilot via Settings → SSH Keys.
+                                    The setup script above automatically installs the <strong>public key</strong> on the macOS host.
+                                </p>
+                            </div>
+                        </details>
+                    </div>
+                    <h3 style="margin: 20px 0 10px 0; font-size: 15px; color: var(--cyan, #00c0ef);">
+                        Step 2: Add the host details
+                    </h3>
+                </div>
+
                 <!-- Windows Setup Instructions (shown only for Add Windows Host) -->
                 <div id="windows-setup-section" style="display: none; margin-bottom: 20px;">
                     <div style="
@@ -1694,6 +1777,7 @@
             document.getElementById('host-form').reset();
             document.getElementById('hostname').disabled = false;
             document.getElementById('windows-setup-section').style.display = 'none';
+            document.getElementById('macos-setup-section').style.display = 'none';
             const savedUser = document.getElementById('default-ssh-user').value;
             const savedPort = document.getElementById('default-ssh-port').value;
             if (savedUser) document.getElementById('ssh-user').value = savedUser;
@@ -1701,6 +1785,32 @@
             document.getElementById('host-modal').classList.add('active');
             populateAuthDropdown();
             toggleAuthFields();
+        }
+
+        async function openAddMacosHostModal() {
+            currentEditHostId = null;
+            _isWindowsAddMode = false;
+            window._patchpilot_detected_os = 'Darwin';
+            document.getElementById('modal-title').textContent = 'Add macOS Host';
+            document.getElementById('host-form').reset();
+            document.getElementById('hostname').disabled = false;
+            // Default SSH user blank — operators run the setup as their own account; let them fill it in.
+            document.getElementById('ssh-user').value = '';
+            document.getElementById('ssh-port').value = '22';
+            document.getElementById('windows-setup-section').style.display = 'none';
+            document.getElementById('macos-setup-section').style.display = 'block';
+            document.getElementById('host-modal').classList.add('active');
+            populateAuthDropdown();
+            toggleAuthFields();
+
+            const cmdEl = document.getElementById('macos-setup-cmd');
+            try {
+                const baseUrl = document.getElementById('app-base-url').value.trim().replace(/\/+$/, '')
+                             || window.location.origin;
+                cmdEl.textContent = `curl -fsSL ${baseUrl}/api/settings/macos-agent | bash`;
+            } catch (e) {
+                cmdEl.textContent = 'Error loading setup command: ' + e.message;
+            }
         }
 
         async function openAddWindowsHostModal() {
@@ -1713,6 +1823,7 @@
             document.getElementById('ssh-user').value = 'patchpilot';
             document.getElementById('ssh-port').value = '22';
             document.getElementById('windows-setup-section').style.display = 'block';
+            document.getElementById('macos-setup-section').style.display = 'none';
             document.getElementById('host-modal').classList.add('active');
             populateAuthDropdown();
             toggleAuthFields();
@@ -1728,8 +1839,11 @@
             }
         }
 
-        function copyWindowsCmd() {
-            const cmdEl = document.getElementById('windows-setup-cmd');
+        function copyMacosCmd() { copySetupCmd('macos-setup-cmd'); }
+        function copyWindowsCmd() { copySetupCmd('windows-setup-cmd'); }
+
+        function copySetupCmd(elementId) {
+            const cmdEl = document.getElementById(elementId);
             const text = cmdEl.textContent;
             const btn = cmdEl.parentElement.querySelector('button');
             const orig = btn.innerHTML;
@@ -2842,6 +2956,9 @@
                     updateOriginsWarning();
                 }
                 // macOS / mas settings
+                if (settings.macos_system_updates_enabled !== undefined) {
+                    document.getElementById('macos-sys-updates-enabled').checked = settings.macos_system_updates_enabled.value === 'true';
+                }
                 if (settings.macos_system_excluded_labels !== undefined) {
                     macosSysExcludedRenderPills(settings.macos_system_excluded_labels.value || '');
                 }
@@ -3019,6 +3136,7 @@
         // ─────────────────────────────────────────────────────────────────────
 
         async function saveMasSettings() {
+            const macosSysUpdatesEnabled  = document.getElementById('macos-sys-updates-enabled').checked;
             const masEnabled              = document.getElementById('mas-enabled').checked;
             const excludedIds             = document.getElementById('mas-excluded-ids').value.trim();
             const macosSysExcludedLabels  = document.getElementById('macos-sys-excluded-labels').value.trim();
@@ -3038,6 +3156,7 @@
 
             try {
                 const pairs = [
+                    ['macos_system_updates_enabled', macosSysUpdatesEnabled ? 'true' : 'false'],
                     ['macos_system_excluded_labels', macosSysExcludedLabels],
                     ['mas_enabled',                  masEnabled ? 'true' : 'false'],
                     ['mas_excluded_ids',             excludedIds],

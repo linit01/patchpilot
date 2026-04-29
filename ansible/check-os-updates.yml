@@ -590,9 +590,27 @@
       tags: ['never', 'apply-updates']
 
     - name: Apply Homebrew updates (macOS)
+      # If the operator supplied a become_password via PatchPilot, prime the
+      # sudo timestamp before running brew. Homebrew refuses to run as root, so
+      # we cannot use Ansible's `become: yes` — but brew internally shells out
+      # to its own `sudo -u root -E -- ...` for cask uninstallers (multipass,
+      # docker, etc.). On a non-TTY SSH session those inner sudos can't prompt
+      # and fail with "sudo: a password is required". A `sudo -S -v` here reads
+      # the password from stdin and refreshes the per-session sudo timestamp;
+      # subsequent sudo calls from brew within the same shell invocation pick
+      # up that fresh credential without prompting.
+      #
+      # If no password was supplied (PP_BECOME_PASS empty), the prelude is a
+      # no-op and brew runs exactly as it did before — formula upgrades and
+      # casks that don't need sudo continue to work without any password.
       shell: |
+        if [ -n "${PP_BECOME_PASS:-}" ]; then
+          printf '%s\n' "$PP_BECOME_PASS" | sudo -S -v 2>/dev/null || true
+        fi
         HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 \
         {{ brew_bin_path }} upgrade
+      environment:
+        PP_BECOME_PASS: "{{ ansible_become_password | default('') }}"
       when: ansible_facts['os_family'] == "Darwin"
       register: brew_upgrade_result
       failed_when: false
@@ -600,6 +618,14 @@
       # nothing — which made `_detect_hosts_actually_patched` falsely flag the host
       # as patched and recorded an empty packages_updated list in patch_history.
       changed_when: "'==> Upgrading' in (brew_upgrade_result.stdout | default(''))"
+      # Note on secrecy: PP_BECOME_PASS is set via `environment:` and consumed
+      # by `printf | sudo -S -v` then thrown away. Ansible's default-verbosity
+      # output does NOT echo `environment:` values, and the shell deliberately
+      # never prints the password (sudo -S reads stdin, stderr → /dev/null).
+      # We do NOT use `no_log: true` because it hides ALL task output including
+      # brew's stdout — making "did multipass actually upgrade?" unanswerable.
+      # If you crank Ansible to -vvv (PATCHPILOT_DEBUG_VERBOSE), env values get
+      # logged; that's a known trade-off for the debug path.
       tags: ['never', 'apply-updates']
 
     - name: Apply macOS system updates (non-control nodes — per-label with exclusions)
@@ -772,8 +798,21 @@
         - mas_bin_path is defined
         - mas_bin_path | default('') != ""
         - mas_enabled | bool
+      # mas internally shells out to sudo for system-installed apps (anything
+      # under /Applications owned by another admin — most App Store apps).
+      # Without become, mas hits "sudo: a password is required" and silently
+      # errors. Requires NOPASSWD sudoers entry for the mas binary, e.g.:
+      #   <user> ALL=(ALL) NOPASSWD: /opt/homebrew/bin/mas   # Apple Silicon
+      #   <user> ALL=(ALL) NOPASSWD: /usr/local/bin/mas      # Intel
+      become: yes
       register: mas_upgrade_result
-      failed_when: false
+      # Promote per-app errors (errored=N where N>0) to a real task failure so
+      # PLAY RECAP turns red instead of _detect_hosts_actually_patched falsely
+      # flagging the host as patched. timedout/skipped remain non-fatal.
+      failed_when: >-
+        mas_upgrade_result.stdout is defined
+        and 'errored=' in mas_upgrade_result.stdout
+        and 'errored=0' not in mas_upgrade_result.stdout
       async: "{{ mas_timeout_seconds }}"
       poll: 30
       tags: ['never', 'apply-updates']

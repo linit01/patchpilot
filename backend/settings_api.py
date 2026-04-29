@@ -1526,3 +1526,97 @@ $scriptContent = @'
 Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
 '''
     return Response(content=wrapper, media_type="text/plain; charset=utf-8")
+
+
+@public_router.get("/macos-agent", include_in_schema=False)
+async def macos_agent_script(pool: asyncpg.Pool = Depends(get_db_pool)):
+    """
+    Serve a bash bootstrap script that downloads and runs
+    Enable-PatchPilotSSH.sh with the default SSH public key pre-injected.
+
+    Mirrors /windows-agent for the macOS path. No authentication required —
+    only the public key is exposed.
+
+    Usage on macOS (Terminal):
+        curl -fsSL http://<patchpilot>/api/settings/macos-agent | bash
+    """
+    # 1. Get the default SSH private key and derive the public key
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE LIMIT 1"
+            )
+        if not row:
+            raise HTTPException(status_code=404,
+                detail="No default SSH key configured. Add one in Settings > SSH Keys.")
+
+        decrypted_private = decrypt_credential(row['ssh_key_encrypted'])
+
+        key_obj = None
+        for key_class in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
+            try:
+                key_obj = key_class.from_private_key(io.StringIO(decrypted_private))
+                break
+            except Exception:
+                continue
+
+        if not key_obj:
+            raise HTTPException(status_code=500, detail="Could not parse the default SSH key")
+
+        pub_key = f"{key_obj.get_name()} {key_obj.get_base64()} patchpilot"
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to derive public key: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to derive public key: {e}")
+
+    # 2. Read the setup script from disk
+    script_paths = [
+        '/scripts/macos/Enable-PatchPilotSSH.sh',
+        '/ansible/scripts/macos/Enable-PatchPilotSSH.sh',
+        '/ansible-src/scripts/macos/Enable-PatchPilotSSH.sh',
+        os.path.join(os.path.dirname(__file__), '..', 'scripts', 'macos', 'Enable-PatchPilotSSH.sh'),
+    ]
+    sh_script = None
+    for sp in script_paths:
+        try:
+            with open(sp, 'r', encoding='utf-8') as f:
+                sh_script = f.read()
+            break
+        except FileNotFoundError:
+            continue
+
+    if not sh_script:
+        raise HTTPException(status_code=500,
+            detail="Enable-PatchPilotSSH.sh not found in image. Reinstall PatchPilot.")
+
+    # 3. Quoting strategy: embed the script via a heredoc with a quoted sentinel
+    # so the inner $vars / backticks are not expanded by the outer shell. The
+    # public key is passed as a separate variable and quoted on the script call,
+    # which keeps the heredoc content fully verbatim.
+    if "PATCHPILOT_SCRIPT_EOF" in sh_script:
+        raise HTTPException(status_code=500,
+            detail="Setup script contains the heredoc sentinel. File a bug.")
+
+    # Defensive: reject a public key with a double-quote so the bootstrap can
+    # safely interpolate it into a double-quoted string.
+    if '"' in pub_key or '\n' in pub_key:
+        raise HTTPException(status_code=500,
+            detail="Derived public key contains an unsafe character.")
+
+    bootstrap = f'''#!/usr/bin/env bash
+# PatchPilot macOS Agent Setup
+# Run as your own user (not sudo). You will be prompted once for sudo.
+set -euo pipefail
+
+PUB_KEY="{pub_key}"
+TMPSCRIPT="$(mktemp -t patchpilot-setup.XXXXXX)"
+trap 'rm -f "$TMPSCRIPT"' EXIT
+
+cat > "$TMPSCRIPT" <<'PATCHPILOT_SCRIPT_EOF'
+{sh_script}
+PATCHPILOT_SCRIPT_EOF
+
+bash "$TMPSCRIPT" --public-key "$PUB_KEY"
+'''
+    return Response(content=bootstrap, media_type="text/plain; charset=utf-8")

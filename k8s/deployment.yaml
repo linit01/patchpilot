@@ -197,11 +197,17 @@ spec:
         image: busybox:1.36
         command: ['sh', '-c',
           'until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done']
-      # Seed ansible playbooks from the backend image into the shared PVC
+      # Seed ansible playbooks from the backend image into the shared PVC.
+      # cp -rf (not -rn) so playbook updates from new images actually replace
+      # the older versions sitting in the Retain'd PVC across upgrades.
+      # PatchPilot owns this directory exclusively — operators are not expected
+      # to hand-edit /ansible/ contents, so always-overwrite is the correct
+      # behavior. Without this, every release after the first ships with stale
+      # playbooks even though the backend image is current.
       - name: seed-ansible
         image: linit01/patchpilot:backend-0.17.7-beta
         imagePullPolicy: Always
-        command: ['sh', '-c', 'cp -rn /ansible-src/. /ansible/ && echo "Ansible seeded"']
+        command: ['sh', '-c', 'cp -rf /ansible-src/. /ansible/ && echo "Ansible seeded"']
         volumeMounts:
         - name: ansible-data
           mountPath: /ansible
