@@ -600,42 +600,25 @@
       # SUDO_ASKPASS sidesteps both: when sudo finds no TTY, it spawns the
       # askpass program to fetch the password, fresh each call.
       #
-      # We write the askpass helper to a temp file (mode 0700, owner-only),
-      # have it print PP_BECOME_PASS from the env on demand, and clean it up
-      # via trap on exit. The helper inherits the env of the brew shell, so
-      # the password never lands on disk in a readable form.
+      # File-based password transfer (v0.17.15-beta), not env-based: macOS
+      # sudo strips the env when invoking the askpass helper (askpass runs
+      # pre-auth and gets a sanitized minimal env by design; sudoers
+      # Defaults env_keep applies only to the post-auth target command, not
+      # the askpass invocation — verified empirically in v0.17.13/.14-beta
+      # via md5 signatures showing the helper saw md5(empty_string) for
+      # PP_BECOME_PASS even with env_keep += PP_BECOME_PASS active in
+      # `sudo -ll` output). The helper instead reads from a 0600 mktemp
+      # password file whose path is interpolated INTO the helper at write
+      # time (no env lookup); both files are rm'd by trap on exit. Brief
+      # on-disk presence of the password under TMPDIR (mode 0600,
+      # owner-only) is the documented trade-off. See
+      # memory/project_brew_cask_manual.md for the full diagnosis history.
       #
       # If no password was supplied (PP_BECOME_PASS empty), no helper is set
       # up and brew runs exactly as before — formula upgrades and casks that
-      # don't need sudo continue to work without any password.
-      #
-      # v0.17.15-beta: file-based password transfer instead of env-based.
-      # Background: v0.17.13-beta diagnostics confirmed Hypothesis C3 — macOS
-      # sudo strips the env when invoking the SUDO_ASKPASS helper (the
-      # askpass helper runs pre-auth and gets a sanitized minimal env, by
-      # design; Defaults env_keep += "PP_BECOME_PASS" only affects the
-      # post-auth target command, not the askpass invocation, so adding it
-      # to /etc/sudoers.d/patchpilot did not work). Switching to a temp
-      # password file with the path baked into the helper script removes
-      # the env dependency entirely.
-      #
-      # Mechanism:
-      #   1. Write PP_BECOME_PASS to a 0600 tempfile in TMPDIR.
-      #   2. Generate the askpass helper with that tempfile path interpolated
-      #      INTO the helper at write time, so the helper does:
-      #          #!/bin/sh
-      #          cat "/var/folders/.../pp-pass.XXXXXX"
-      #      No env_var lookup, so sudo's env sanitization is irrelevant.
-      #   3. Trap rm's both files on exit. Brief on-disk presence under
-      #      TMPDIR (mode 0600, owner-only) is the documented trade-off.
-      #
-      # Diagnostic markers retained: PP_DIAG_BECOME_PASS=set/empty,
-      # PP_DIAG_ASKPASS_READY=0/1, and the four md5/length signatures from
-      # v0.17.13-beta so we can verify the helper-via-sudo md5 now matches
-      # the brew-shell md5 (proving the file path works). Once verified
-      # in the field, the redundant signatures (DIRECT_MD5,
-      # HELPER_VIA_SUDO_MD5, .seen file machinery) can be dropped in a
-      # follow-up release.
+      # don't need sudo continue to work without any password. The
+      # PP_DIAG_BECOME_PASS=set/empty and PP_DIAG_ASKPASS_READY=0/1 markers
+      # let operators see at a glance which path the run took.
       #
       # NB for shell-block content: do NOT put quotes (single or double)
       # inside `# ...` comments inside the `shell: |` block — Ansible's
@@ -653,26 +636,16 @@
           printf '%s\n' "$PP_BECOME_PASS" > "$PP_PASS_FILE"
           ASKPASS_SCRIPT="$(mktemp -t pp-askpass.XXXXXX)"
           chmod 700 "$ASKPASS_SCRIPT"
-          printf '#!/bin/sh\nprintf "%%s" "$(cat "%s")" | md5 > "$0.seen" 2>/dev/null\nchmod 600 "$0.seen" 2>/dev/null\ncat "%s"\n' "$PP_PASS_FILE" "$PP_PASS_FILE" > "$ASKPASS_SCRIPT"
+          printf '#!/bin/sh\ncat "%s"\n' "$PP_PASS_FILE" > "$ASKPASS_SCRIPT"
           export SUDO_ASKPASS="$ASKPASS_SCRIPT"
-          trap 'rm -f "$ASKPASS_SCRIPT" "$ASKPASS_SCRIPT.seen" "$PP_PASS_FILE"' EXIT
+          trap 'rm -f "$ASKPASS_SCRIPT" "$PP_PASS_FILE"' EXIT
           echo "PP_DIAG_ASKPASS_READY=1"
-          echo "PP_DIAG_BECOME_PASS_LEN=$(printf "%s" "$PP_BECOME_PASS" | wc -c | tr -d ' ')"
-          echo "PP_DIAG_BECOME_PASS_MD5=$(printf "%s" "$PP_BECOME_PASS" | md5)"
-          PP_HELPER_DIRECT_OUT="$("$ASKPASS_SCRIPT" 2>/dev/null | tr -d '\n')"
-          echo "PP_DIAG_BECOME_PASS_HELPER_DIRECT_MD5=$(printf "%s" "$PP_HELPER_DIRECT_OUT" | md5)"
-          unset PP_HELPER_DIRECT_OUT
         else
           echo "PP_DIAG_BECOME_PASS=empty"
           echo "PP_DIAG_ASKPASS_READY=0"
         fi
         HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 \
         {{ brew_bin_path }} upgrade
-        if [ -n "${ASKPASS_SCRIPT:-}" ] && [ -f "$ASKPASS_SCRIPT.seen" ]; then
-          echo "PP_DIAG_BECOME_PASS_HELPER_VIA_SUDO_MD5=$(cat "$ASKPASS_SCRIPT.seen")"
-        else
-          echo "PP_DIAG_BECOME_PASS_HELPER_VIA_SUDO_MD5=missing"
-        fi
       environment:
         PP_BECOME_PASS: "{{ ansible_become_password | default('') }}"
       when: ansible_facts['os_family'] == "Darwin"
@@ -682,20 +655,20 @@
       # nothing — which made `_detect_hosts_actually_patched` falsely flag the host
       # as patched and recorded an empty packages_updated list in patch_history.
       changed_when: "'==> Upgrading' in (brew_upgrade_result.stdout | default(''))"
-      # Note on secrecy: PP_BECOME_PASS is set via `environment:` and consumed
-      # by the inline askpass helper. Ansible's default-verbosity output does
-      # NOT echo `environment:` values, and the shell deliberately never prints
-      # the password (only its length). We do NOT use `no_log: true` because it
-      # hides ALL task output including brew's stdout — making "did multipass
-      # actually upgrade?" unanswerable.
+      # Note on secrecy: PP_BECOME_PASS is set via `environment:` and copied
+      # to a 0600 mktemp pass-file that the askpass helper cats. Ansible's
+      # default-verbosity output does NOT echo `environment:` values, and the
+      # shell deliberately never prints the password. We do NOT use
+      # `no_log: true` because it hides ALL task output including brew's
+      # stdout — making "did multipass actually upgrade?" unanswerable.
       tags: ['never', 'apply-updates']
 
     # Always surface brew's output to the operator log, even when the task
     # "succeeds" silently (changed_when false because nothing was upgraded, or
     # failed_when false swallowed an error). Mirrors the App Store debug task.
-    # Includes the PP_BECOME_PASS_LEN / PP_ASKPASS_READY diagnostic lines so
-    # operators can self-serve "is the sudo password reaching brew?" without
-    # cracking the playbook open.
+    # Includes the PP_DIAG_BECOME_PASS=set/empty + PP_DIAG_ASKPASS_READY=0/1
+    # markers so operators can self-serve "did the askpass helper get set up?"
+    # without cracking the playbook open.
     - name: Show Homebrew update results
       debug:
         # Single-string msg (vs a list) so the runner's keyword matcher and
