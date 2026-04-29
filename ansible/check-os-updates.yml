@@ -609,12 +609,19 @@
       # up and brew runs exactly as before — formula upgrades and casks that
       # don't need sudo continue to work without any password.
       shell: |
+        # Diagnostic: report the byte length of PP_BECOME_PASS so we can tell
+        # at a glance whether the operator-supplied sudo password reached the
+        # task env via ansible_become_password. Length-only — never the value.
+        echo "PP_BECOME_PASS_LEN=${#PP_BECOME_PASS}"
         if [ -n "${PP_BECOME_PASS:-}" ]; then
           ASKPASS_SCRIPT="$(mktemp -t pp-askpass.XXXXXX)"
           chmod 700 "$ASKPASS_SCRIPT"
           printf '#!/bin/sh\nprintf "%%s\\n" "$PP_BECOME_PASS"\n' > "$ASKPASS_SCRIPT"
           export SUDO_ASKPASS="$ASKPASS_SCRIPT"
           trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
+          echo "PP_ASKPASS_READY=1"
+        else
+          echo "PP_ASKPASS_READY=0 (no password supplied — cask sudo will not work)"
         fi
         HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 \
         {{ brew_bin_path }} upgrade
@@ -628,13 +635,25 @@
       # as patched and recorded an empty packages_updated list in patch_history.
       changed_when: "'==> Upgrading' in (brew_upgrade_result.stdout | default(''))"
       # Note on secrecy: PP_BECOME_PASS is set via `environment:` and consumed
-      # by `printf | sudo -S -v` then thrown away. Ansible's default-verbosity
-      # output does NOT echo `environment:` values, and the shell deliberately
-      # never prints the password (sudo -S reads stdin, stderr → /dev/null).
-      # We do NOT use `no_log: true` because it hides ALL task output including
-      # brew's stdout — making "did multipass actually upgrade?" unanswerable.
-      # If you crank Ansible to -vvv (PATCHPILOT_DEBUG_VERBOSE), env values get
-      # logged; that's a known trade-off for the debug path.
+      # by the inline askpass helper. Ansible's default-verbosity output does
+      # NOT echo `environment:` values, and the shell deliberately never prints
+      # the password (only its length). We do NOT use `no_log: true` because it
+      # hides ALL task output including brew's stdout — making "did multipass
+      # actually upgrade?" unanswerable.
+      tags: ['never', 'apply-updates']
+
+    # Always surface brew's output to the operator log, even when the task
+    # "succeeds" silently (changed_when false because nothing was upgraded, or
+    # failed_when false swallowed an error). Mirrors the App Store debug task.
+    # Includes the PP_BECOME_PASS_LEN / PP_ASKPASS_READY diagnostic lines so
+    # operators can self-serve "is the sudo password reaching brew?" without
+    # cracking the playbook open.
+    - name: Show Homebrew update results
+      debug:
+        msg: "{{ brew_upgrade_result.stdout_lines | default([]) + brew_upgrade_result.stderr_lines | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - brew_upgrade_result is defined
       tags: ['never', 'apply-updates']
 
     - name: Apply macOS system updates (non-control nodes — per-label with exclusions)
