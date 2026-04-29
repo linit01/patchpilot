@@ -590,22 +590,31 @@
       tags: ['never', 'apply-updates']
 
     - name: Apply Homebrew updates (macOS)
-      # If the operator supplied a become_password via PatchPilot, prime the
-      # sudo timestamp before running brew. Homebrew refuses to run as root, so
-      # we cannot use Ansible's `become: yes` — but brew internally shells out
-      # to its own `sudo -u root -E -- ...` for cask uninstallers (multipass,
-      # docker, etc.). On a non-TTY SSH session those inner sudos can't prompt
-      # and fail with "sudo: a password is required". A `sudo -S -v` here reads
-      # the password from stdin and refreshes the per-session sudo timestamp;
-      # subsequent sudo calls from brew within the same shell invocation pick
-      # up that fresh credential without prompting.
+      # If the operator supplied a become_password via PatchPilot, hand brew a
+      # SUDO_ASKPASS helper so cask uninstallers (multipass, docker, etc.) that
+      # internally shell out to `sudo -u root -E -- ...` succeed on the
+      # non-TTY SSH session. Homebrew refuses to run as root (so `become: yes`
+      # is not an option), AND it issues `sudo -k` before each privileged step
+      # in its cask uninstaller as a security measure (so `sudo -v` priming
+      # doesn't help — the cache is cleared right before brew's own sudo runs).
+      # SUDO_ASKPASS sidesteps both: when sudo finds no TTY, it spawns the
+      # askpass program to fetch the password, fresh each call.
       #
-      # If no password was supplied (PP_BECOME_PASS empty), the prelude is a
-      # no-op and brew runs exactly as it did before — formula upgrades and
-      # casks that don't need sudo continue to work without any password.
+      # We write the askpass helper to a temp file (mode 0700, owner-only),
+      # have it print PP_BECOME_PASS from the env on demand, and clean it up
+      # via trap on exit. The helper inherits the env of the brew shell, so
+      # the password never lands on disk in a readable form.
+      #
+      # If no password was supplied (PP_BECOME_PASS empty), no helper is set
+      # up and brew runs exactly as before — formula upgrades and casks that
+      # don't need sudo continue to work without any password.
       shell: |
         if [ -n "${PP_BECOME_PASS:-}" ]; then
-          printf '%s\n' "$PP_BECOME_PASS" | sudo -S -v 2>/dev/null || true
+          ASKPASS_SCRIPT="$(mktemp -t pp-askpass.XXXXXX)"
+          chmod 700 "$ASKPASS_SCRIPT"
+          printf '#!/bin/sh\nprintf "%%s\\n" "$PP_BECOME_PASS"\n' > "$ASKPASS_SCRIPT"
+          export SUDO_ASKPASS="$ASKPASS_SCRIPT"
+          trap 'rm -f "$ASKPASS_SCRIPT"' EXIT
         fi
         HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_EMOJI=1 \
         {{ brew_bin_path }} upgrade
