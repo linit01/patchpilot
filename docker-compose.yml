@@ -87,6 +87,10 @@ services:
       # Tells the uninstaller which deployment type this is
       PATCHPILOT_INSTALL_MODE: docker
 
+      # License provider — defaults to lemonsqueezy if unset.
+      PATCHPILOT_LICENSE_PROVIDER:    ${PATCHPILOT_LICENSE_PROVIDER:-lemonsqueezy}
+      PATCHPILOT_FREEMIUS_PRODUCT_ID: ${PATCHPILOT_FREEMIUS_PRODUCT_ID:-}
+
     volumes:
       - ./ansible:/ansible
       - backups:/backups

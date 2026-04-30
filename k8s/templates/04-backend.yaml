@@ -152,6 +152,12 @@ spec:
         # Used by the uninstall cleanup Job to find and remove PV dirs.
         - name: PATCHPILOT_DATA_DIR
           value: "${PP_DATA_DIR}"
+        # ── License provider — defaults to lemonsqueezy if unset ─────────
+        # Switch to "freemius" once the sandbox testing is signed off.
+        - name: PATCHPILOT_LICENSE_PROVIDER
+          value: "${PP_LICENSE_PROVIDER:-lemonsqueezy}"
+        - name: PATCHPILOT_FREEMIUS_PRODUCT_ID
+          value: "${PP_FREEMIUS_PRODUCT_ID:-}"
 
         volumeMounts:
         - name: ansible-data

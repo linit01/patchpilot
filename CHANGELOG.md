@@ -4,6 +4,22 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.18.0-beta] — 2026-04-30
+
+### Changed
+- **License system extracted behind a provider abstraction**: `backend/license.py` no longer talks to a specific vendor's REST API. A new `backend/license_providers/` package defines a thin `LicenseProvider` protocol with normalized `ActivateResult` / `ValidateResult` / `DeactivateResult` dataclasses; vendor-specific code lives in per-provider modules behind that interface. The active provider is picked at startup via the new `PATCHPILOT_LICENSE_PROVIDER` env var (default `lemonsqueezy` — existing installs see no behavior change unless the env var is flipped). Settings keys (`license_key`, `license_instance_id`, etc.) are unchanged so no DB migration is required
+- **LemonSqueezy provider** (`backend/license_providers/lemonsqueezy.py`) — existing LS REST integration moved out of `license.py` verbatim, no behavior change
+
+### Added
+- **Freemius provider stub** (`backend/license_providers/freemius.py`) — first-cut implementation of activate/validate/deactivate against `api.freemius.com/v1/products/{pid}/licenses/...`. Uses the no-auth `activate.json` endpoint (sandbox vs production is determined by which key the license was issued under at checkout, not by anything the backend sends). Validation re-issues `activate.json` against the same `(uid, license_key)` pair, relying on Freemius's documented idempotency. Status mapping: `is_block_features=true` → `disabled`, past `expiration` → `expired`, else `active`
+- **Freemius env vars** plumbed through `.env.example`, `docker-compose.yml`, and `k8s/templates/04-backend.yaml`: `PATCHPILOT_LICENSE_PROVIDER` and `PATCHPILOT_FREEMIUS_PRODUCT_ID` (default empty; set to `28811` when ready to switch)
+
+### Notes
+- **Cutover plan**: ship this build with default-LemonSqueezy behavior so existing customers are unaffected. Test Freemius end-to-end on a non-production install by setting `PATCHPILOT_LICENSE_PROVIDER=freemius` and `PATCHPILOT_FREEMIUS_PRODUCT_ID=28811` in that install's `.env`, then walk through activate/validate/deactivate against a sandbox license key generated from the Freemius dashboard's no-code sandbox checkout link. Once verified, flip new installs to Freemius and migrate existing active LS customers individually (deactivate-old, activate-new). Trial logic is provider-agnostic so mid-trial users are unaffected by a provider flip on their install
+- **Sandbox assumptions to verify**: (1) `activate.json` idempotency — re-calling with the same `(uid, license_key)` should not consume an extra activation slot or fail; if it does, validation switches to the bearer-auth `GET /licenses/{license_id}.json` path; (2) Freemius response field names (`user_first_name` / `user_last_name` / `user_email` / `is_block_features`) — came from secondary docs since the Freemius apiary spec returned an empty fetch, first sandbox call will confirm
+
+---
+
 ## [0.16.13-beta] — 2026-04-26
 
 ### Fixed

@@ -4,7 +4,8 @@ const API_BASE_URL = '/api';  // Use relative path in production
 // WebSocket Configuration
 const WS_BASE_URL = `ws${window.location.protocol === 'https:' ? 's' : ''}://${window.location.host}`;
 
-// Purchase URL (LemonSqueezy checkout)
+// Purchase URL — points at our buy page; the underlying license provider
+// (LemonSqueezy / Freemius / etc.) is configured server-side.
 const PURCHASE_URL = 'https://getpatchpilot.app/buy';
 
 // Auth State
