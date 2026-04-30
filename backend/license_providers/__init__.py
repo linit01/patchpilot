@@ -1,7 +1,10 @@
 """
 License provider package.
 
-Pick the active provider via PATCHPILOT_LICENSE_PROVIDER (default: lemonsqueezy).
+Pick the active provider via PATCHPILOT_LICENSE_PROVIDER (default: freemius).
+LemonSqueezy support is retained for any operator who wants to opt back in
+via the env var, but freemius is the default the project ships with as of
+v0.19.0-beta.
 """
 import logging
 import os
@@ -30,13 +33,13 @@ def get_provider() -> LicenseProvider:
     if _instance is not None:
         return _instance
 
-    name = os.getenv("PATCHPILOT_LICENSE_PROVIDER", "lemonsqueezy").strip().lower()
+    name = os.getenv("PATCHPILOT_LICENSE_PROVIDER", "freemius").strip().lower()
     cls = _PROVIDERS.get(name)
     if cls is None:
         logger.warning(
-            "Unknown PATCHPILOT_LICENSE_PROVIDER=%r — falling back to lemonsqueezy", name
+            "Unknown PATCHPILOT_LICENSE_PROVIDER=%r — falling back to freemius", name
         )
-        cls = LemonSqueezyProvider
+        cls = FreemiusProvider
     _instance = cls()
     logger.info("License provider: %s", _instance.name)
     return _instance

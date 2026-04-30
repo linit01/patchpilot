@@ -4,6 +4,20 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.19.0-beta] — 2026-04-30
+
+### Changed
+- **Default license provider switched from LemonSqueezy to Freemius**: the three runtime defaults (`backend/license_providers/__init__.py`, `docker-compose.yml`, `k8s/templates/04-backend.yaml`) now resolve `PATCHPILOT_LICENSE_PROVIDER` to `freemius` instead of `lemonsqueezy` when the env var is unset. PatchPilot's official Freemius product ID (28811) is also baked in as the default for `PATCHPILOT_FREEMIUS_PRODUCT_ID`. Operators who want to opt back to LemonSqueezy can set `PATCHPILOT_LICENSE_PROVIDER=lemonsqueezy` in `.env` (docker compose) or via the `PP_LICENSE_PROVIDER` install-time variable (k8s). The LemonSqueezy provider module remains in the repo and is fully functional — only the default has changed
+- **Rendered `k8s/deployment.yaml` includes the license env vars**: previously these only existed in `k8s/templates/04-backend.yaml`, which meant a `kubectl apply` against the rendered file (e.g. for new installs that bypass the install script) silently fell back to the code-level default. The rendered file now ships with both `PATCHPILOT_LICENSE_PROVIDER=freemius` and `PATCHPILOT_FREEMIUS_PRODUCT_ID=28811` baked in
+- **`.env.example` comment updated** to reflect the new default and document the opt-back-to-LS env var
+
+### Notes
+- **No customer migration required** — there were no LemonSqueezy customers in production; LS was used in sandbox only during the licensing infrastructure shakeout. The original v0.18.0-beta CHANGELOG entry mentioned "migrate existing active LS customers individually" as the cutover plan; that section did not apply because no such customers existed
+- **Buy page** — `getpatchpilot.app/buy` now Cloudflare-redirects to the Freemius hosted checkout (`https://checkout.freemius.com/app/28811/plan/47418/`). The marketing site at `getpatchpilot.app` has a "Buy a License" CTA in the hero pointing at the same URL
+- **LS sandbox archival** — the LemonSqueezy sandbox products will be deactivated on the LS side as a separate operational step
+
+---
+
 ## [0.18.2-beta] — 2026-04-30
 
 ### Fixed
@@ -30,7 +44,7 @@ All notable changes to PatchPilot will be documented in this file.
 - **Freemius env vars** plumbed through `.env.example`, `docker-compose.yml`, and `k8s/templates/04-backend.yaml`: `PATCHPILOT_LICENSE_PROVIDER` and `PATCHPILOT_FREEMIUS_PRODUCT_ID` (default empty; set to `28811` when ready to switch)
 
 ### Notes
-- **Cutover plan**: ship this build with default-LemonSqueezy behavior so existing customers are unaffected. Test Freemius end-to-end on a non-production install by setting `PATCHPILOT_LICENSE_PROVIDER=freemius` and `PATCHPILOT_FREEMIUS_PRODUCT_ID=28811` in that install's `.env`, then walk through activate/validate/deactivate against a sandbox license key generated from the Freemius dashboard's no-code sandbox checkout link. Once verified, flip new installs to Freemius and migrate existing active LS customers individually (deactivate-old, activate-new). Trial logic is provider-agnostic so mid-trial users are unaffected by a provider flip on their install
+- **Cutover plan**: ship this build with default-LemonSqueezy behavior so the existing PP install base is unaffected, then test Freemius end-to-end on a non-production install by setting `PATCHPILOT_LICENSE_PROVIDER=freemius` and `PATCHPILOT_FREEMIUS_PRODUCT_ID=28811` in that install's `.env`, walking through activate/validate/deactivate against a sandbox license key. Once verified, the defaults flip in a follow-up release (which became v0.19.0-beta). Trial logic is provider-agnostic so anyone mid-trial when the defaults flip is unaffected. (Note: LS was sandbox-only and had no production customers at the time of this writing — see v0.19.0-beta notes.)
 - **Sandbox assumptions to verify**: (1) `activate.json` idempotency — re-calling with the same `(uid, license_key)` should not consume an extra activation slot or fail; if it does, validation switches to the bearer-auth `GET /licenses/{license_id}.json` path; (2) Freemius response field names (`user_first_name` / `user_last_name` / `user_email` / `is_block_features`) — came from secondary docs since the Freemius apiary spec returned an empty fetch, first sandbox call will confirm
 
 ---

@@ -264,6 +264,12 @@ spec:
           value: "/ansible/check-os-updates.yml"
         - name: ANSIBLE_INVENTORY_PATH
           value: "/ansible/hosts"
+        # ── License provider — defaults to freemius (since v0.19.0-beta) ─
+        # Override at install time via env or by editing this file.
+        - name: PATCHPILOT_LICENSE_PROVIDER
+          value: "freemius"
+        - name: PATCHPILOT_FREEMIUS_PRODUCT_ID
+          value: "28811"
         volumeMounts:
         - name: ansible-data
           mountPath: /ansible
