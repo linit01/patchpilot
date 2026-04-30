@@ -205,7 +205,7 @@ spec:
       # behavior. Without this, every release after the first ships with stale
       # playbooks even though the backend image is current.
       - name: seed-ansible
-        image: linit01/patchpilot:backend-0.17.16-beta
+        image: linit01/patchpilot:backend-0.18.0-beta
         imagePullPolicy: Always
         command: ['sh', '-c', 'cp -rf /ansible-src/. /ansible/ && echo "Ansible seeded"']
         volumeMounts:
@@ -213,7 +213,7 @@ spec:
           mountPath: /ansible
       containers:
       - name: backend
-        image: linit01/patchpilot:backend-0.17.16-beta
+        image: linit01/patchpilot:backend-0.18.0-beta
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -341,7 +341,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: linit01/patchpilot:frontend-0.17.16-beta
+        image: linit01/patchpilot:frontend-0.18.0-beta
         imagePullPolicy: Always
         ports:
         - containerPort: 80
