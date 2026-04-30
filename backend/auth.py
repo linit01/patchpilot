@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import asyncpg
 import bcrypt
+import os
 import secrets
 import uuid
 import logging
@@ -23,6 +24,21 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 # Session duration: 24 hours
 SESSION_DURATION_HOURS = 24
 SESSION_COOKIE_NAME = "patchpilot_session"
+
+
+def _cookie_secure() -> bool:
+    """
+    Should the session cookie carry the Secure flag?
+    Honors COOKIE_SECURE=true|false explicitly; otherwise infers from
+    APP_BASE_URL (https → True, http → False). Default False keeps the
+    documented LAN-HTTP deployment working out of the box.
+    """
+    explicit = os.getenv("COOKIE_SECURE", "").strip().lower()
+    if explicit in ("1", "true", "yes"):
+        return True
+    if explicit in ("0", "false", "no"):
+        return False
+    return os.getenv("APP_BASE_URL", "").strip().lower().startswith("https://")
 
 
 # ==========================================================================
@@ -227,6 +243,7 @@ async def login(login_req: LoginRequest, request: Request, response: Response,
         value=token,
         httponly=True,
         samesite="lax",
+        secure=_cookie_secure(),
         max_age=SESSION_DURATION_HOURS * 3600,
         path="/"
     )
@@ -352,12 +369,9 @@ async def initial_setup(login_req: LoginRequest, request: Request,
     This replaces the default 'admin/admin' user with a real one.
     """
     async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE username != 'admin' OR password_hash != '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5eidgvK0K3jq6'")
+        count = await conn.fetchval("SELECT COUNT(*) FROM users")
         if count > 0:
             raise HTTPException(status_code=400, detail="Setup already completed")
-
-        # Delete the default admin user if it exists
-        await conn.execute("DELETE FROM users WHERE username = 'admin'")
 
         # Create the real admin user
         password_hash = hash_password(login_req.password)
@@ -384,6 +398,7 @@ async def initial_setup(login_req: LoginRequest, request: Request,
         value=token,
         httponly=True,
         samesite="lax",
+        secure=_cookie_secure(),
         max_age=SESSION_DURATION_HOURS * 3600,
         path="/"
     )

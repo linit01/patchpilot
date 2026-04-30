@@ -26,8 +26,8 @@
     Override with: $env:PATCHPILOT_DIR = "C:\PatchPilot" before running.
 
 .PARAMETER GitHubToken
-    GitHub personal access token for private repo access during alpha/beta.
-    Not required once the repository is public.
+    GitHub personal access token. Optional — only needed if cloning from a
+    private fork; the upstream PatchPilot repository is public.
 
 .NOTES
     Requires: Windows 10 (build 1809+) or Windows 11

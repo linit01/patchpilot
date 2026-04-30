@@ -5,6 +5,42 @@ entries at the top with a date and owner. Remove entries when shipped.
 
 ---
 
+## 2026-04-30 — Freemius validate via GET /licenses/{id}.json + Bearer auth
+
+**Context:** `backend/license_providers/freemius.py` currently implements
+`validate()` by re-issuing `activate.json` with the same (uid, license_key)
+pair. Freemius treats this as idempotent and returns the current install/
+license state without consuming an activation slot — confirmed working as of
+the v0.19.0-beta cutover.
+
+**The risk:** If Freemius ever changes that semantic (or adds rate-limiting on
+activate), every install will silently start consuming activation slots on
+each periodic check, or validate will start failing in lockstep across the
+fleet. The 30-day grace period masks short outages but not silent semantic
+changes.
+
+**The proper path:** Switch `validate()` to
+`GET /v1/products/{product_id}/licenses/{license_id}.json` with an
+`Authorization: Bearer <secret_key>` header. This is Freemius's documented
+read-only endpoint and won't be confused with re-activation.
+
+**Required work:**
+- New env var `PATCHPILOT_FREEMIUS_SECRET_KEY` (product secret, not per-install)
+- Store `license_id` from the activate response (currently logged but discarded);
+  either extend `ActivateResult` with a new field or pack it into `instance_id`
+  as `uid:license_id`
+- Implement Freemius's request signing if their bearer auth requires HMAC
+  (read their PHP SDK; the simple Bearer path may suffice)
+- Migrate existing installs: on first periodic check after upgrade, fall back
+  to the activate-as-validate path to fetch + persist `license_id`
+
+**Why deferred:** v0.19.0-beta just shipped the cutover and the current path
+is documented + production-confirmed. Switching method is a v0.20 architectural
+change, not a GA gate. Add a contract test (mock httpx) before the switch so
+any regression is caught locally.
+
+---
+
 ## 2026-04-26 — Auto-recover Fernet key on reinstall (R2 / R3)
 
 **Context:** As of v0.17.x the Docker Compose uninstall now preserves

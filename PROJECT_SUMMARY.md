@@ -1,7 +1,7 @@
 # PatchPilot — Project Summary
 
-**Version:** 0.16.8-beta
-**Status:** Beta — commercial licensing active, trial available, iOS app in TestFlight
+**Version:** 1.0.0
+**Status:** GA — commercial licensing active, trial available, iOS app in TestFlight
 **Website:** [getpatchpilot.app](https://getpatchpilot.app)
 
 ---

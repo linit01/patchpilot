@@ -4,6 +4,27 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.0.0] — 2026-04-30
+
+**General availability.** PatchPilot exits beta with a small but pointed pre-GA hardening pass.
+
+### Security
+- **License management endpoints now require `full_admin` auth.** Previously `/api/license/activate`, `/deactivate`, and `/validate` were unauthenticated, meaning any LAN visitor reaching the backend could deactivate the active license (freeing the activation slot and downgrading the install to trial) or hammer activate with arbitrary keys. All three mutating endpoints now use `Depends(require_full_admin)`. `/api/license/status` remains public — the dashboard's trial banner reads it pre-login by design
+- **Session cookies carry the `Secure` flag on HTTPS deployments.** `auth.py` adds a `_cookie_secure()` helper that infers from `APP_BASE_URL` (`https://` → True) and honors an explicit `COOKIE_SECURE=true|false` override. The default LAN-HTTP deployment is unchanged; HTTPS reverse-proxy deployments automatically get Secure cookies without any operator action
+
+### Fixed
+- **Fresh k3s installs no longer carry stale playbooks across upgrades.** The `seed-ansible` initContainer in `k8s/templates/04-backend.yaml` was using `cp -rn` (no-clobber); since v0.17.6-beta the rendered `k8s/deployment.yaml` had the `cp -rf` fix but the template — which `install-k3s.sh` re-renders at install time via envsubst — never received it. The template now matches the rendered file
+- **Docker installs now generate a strong PostgreSQL password automatically.** `install.sh` previously only replaced the Fernet key placeholder, leaving `POSTGRES_PASSWORD=CHANGE_ME_STRONG_PASSWORD` as the literal password unless the user manually edited `.env`. The install script now generates a 24-byte URL-safe random password alongside the Fernet key
+
+### Changed
+- **`docker-compose.yml` requires `POSTGRES_PASSWORD` to be set explicitly.** The `${POSTGRES_PASSWORD:-patchpilot}` weak fallback is replaced with `${POSTGRES_PASSWORD:?...}` so a missing or empty value causes Compose to fail fast with a clear error instead of silently using a known default
+- **Cleaned up dead code in `/api/auth/setup`.** The setup endpoint previously contained a check referencing a hardcoded bcrypt hash for an `admin/admin` default user that hasn't been seeded by any migration in the current codebase. Replaced with a simple `SELECT COUNT(*) FROM users` gate
+
+### Documentation
+- README and PROJECT_SUMMARY version + status flipped to v1.0.0 / GA. CHANGELOG now leads with this entry
+
+---
+
 ## [0.19.0-beta] — 2026-04-30
 
 ### Changed

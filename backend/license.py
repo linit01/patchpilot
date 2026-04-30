@@ -31,9 +31,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from auth import require_full_admin
 from license_providers import get_provider
 
 logger = logging.getLogger(__name__)
@@ -356,10 +357,14 @@ async def license_status_endpoint():
 
 
 @router.post("/activate")
-async def activate_license(req: LicenseKeyRequest):
+async def activate_license(
+    req: LicenseKeyRequest,
+    user: dict = Depends(require_full_admin),
+):
     """
     Activate a license key with the active provider.
     On success, stores the key, instance_id, and customer info.
+    Restricted to full_admin — purchase + activation is an owner action.
     """
     pool = await _get_pool()
     install_uuid = await _get_or_create_install_uuid(pool)
@@ -409,10 +414,11 @@ async def activate_license(req: LicenseKeyRequest):
 
 
 @router.post("/deactivate")
-async def deactivate_license():
+async def deactivate_license(user: dict = Depends(require_full_admin)):
     """
     Deactivate the license key with the active provider and revert to trial.
     Frees the activation slot so the key can be used on another machine.
+    Restricted to full_admin so a LAN visitor can't downgrade the install.
     """
     pool = await _get_pool()
 
@@ -459,8 +465,8 @@ async def deactivate_license():
 
 
 @router.post("/validate")
-async def validate_license_now():
-    """Manually trigger a license validation check."""
+async def validate_license_now(user: dict = Depends(require_full_admin)):
+    """Manually trigger a license validation check (full_admin only)."""
     pool = await _get_pool()
 
     license_key = await _get_setting(pool, "license_key")

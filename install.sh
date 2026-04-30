@@ -445,9 +445,13 @@ docker_setup_env() {
   local fernet_key
   fernet_key="$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || \
                 python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")"
+  local pg_password
+  pg_password="$(python3 -c "import secrets; print(secrets.token_urlsafe(24))" 2>/dev/null || \
+                 LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
   sed_i "s|PATCHPILOT_ENCRYPTION_KEY=CHANGE_ME_FERNET_KEY|PATCHPILOT_ENCRYPTION_KEY=${fernet_key}|" .env
+  sed_i "s|POSTGRES_PASSWORD=CHANGE_ME_STRONG_PASSWORD|POSTGRES_PASSWORD=${pg_password}|" .env
   sed_i "s|INSTALL_DIR=/path/to/patchpilot|INSTALL_DIR=${SCRIPT_DIR}|" .env
-  warn "Auto-generated Fernet key — saved to .env — keep this safe"
+  warn "Auto-generated Fernet key + Postgres password — saved to .env — keep this safe"
   ok "Environment configured — INSTALL_DIR set to ${SCRIPT_DIR}"
 }
 

@@ -6,7 +6,7 @@
 
 **Automated patch management system for Linux and macOS hosts — real-time monitoring, secure SSH execution, and a dark-themed web dashboard.**
 
-![Version](https://img.shields.io/badge/version-0.16.8--beta-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-blue)
 
 ---

@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER:     ${POSTGRES_USER:-patchpilot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-patchpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — run install.sh, or copy .env.example and set a strong value}
       POSTGRES_DB:       ${POSTGRES_DB:-patchpilot}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -64,9 +64,9 @@ services:
       POSTGRES_HOST:     postgres
       POSTGRES_PORT:     "5432"
       POSTGRES_USER:     ${POSTGRES_USER:-patchpilot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-patchpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — run install.sh, or copy .env.example and set a strong value}
       POSTGRES_DB:       ${POSTGRES_DB:-patchpilot}
-      DATABASE_URL:      postgresql://${POSTGRES_USER:-patchpilot}:${POSTGRES_PASSWORD:-patchpilot}@postgres:5432/${POSTGRES_DB:-patchpilot}
+      DATABASE_URL:      postgresql://${POSTGRES_USER:-patchpilot}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env — run install.sh, or copy .env.example and set a strong value}@postgres:5432/${POSTGRES_DB:-patchpilot}
 
       PATCHPILOT_ENCRYPTION_KEY: ${PATCHPILOT_ENCRYPTION_KEY}
       AUTO_REFRESH_INTERVAL:     ${AUTO_REFRESH_INTERVAL:-300}

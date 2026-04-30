@@ -46,7 +46,8 @@ spec:
             echo "PostgreSQL is up!"
 
       # Seed ansible PVC from playbooks baked into the image at /ansible-src/
-      # cp -rn = no-clobber so redeployments don't overwrite user customisations
+      # cp -rf (not -rn) so playbook updates from new images actually replace
+      # the stale copies on the Retain'd PVC across upgrades.
       - name: seed-ansible
         image: ${PP_BACKEND_IMAGE}
         imagePullPolicy: ${PP_IMAGE_PULL_POLICY}
@@ -55,7 +56,7 @@ spec:
           - -c
           - |
             echo "Seeding ansible PVC from image..."
-            cp -rn /ansible-src/. /ansible/
+            cp -rf /ansible-src/. /ansible/
             echo "Ansible PVC contents: $(ls /ansible/)"
         volumeMounts:
         - name: ansible-data
