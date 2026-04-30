@@ -35,7 +35,7 @@ pydantic==2.12.5
 pydantic_core==2.41.5
 PyNaCl==1.6.2
 python-daemon==3.1.2
-python-dotenv==1.2.1
+python-dotenv==1.2.2
 python-multipart==0.0.26
 PyYAML==6.0.3
 resolvelib==1.2.1
