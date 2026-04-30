@@ -78,15 +78,23 @@ def _is_license_active(payload: dict[str, Any]) -> str:
     return "active"
 
 
+def _normalize_uid(s: str) -> str:
+    # Freemius caps `uid` at 32 chars; uuid4() string form is 36 with hyphens,
+    # 32 without. Stripping is idempotent — safe to call on already-normalized
+    # values stored as instance_id from a prior activate.
+    return s.replace("-", "")
+
+
 class FreemiusProvider:
     name = "freemius"
 
     async def activate(self, license_key: str, install_uuid: str) -> ActivateResult:
+        uid = _normalize_uid(install_uuid)
         url = f"{_api_base()}/products/{_product_id()}/licenses/activate.json"
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
-                json={"uid": install_uuid, "license_key": license_key},
+                json={"uid": uid, "license_key": license_key},
                 headers={"Accept": "application/json"},
             )
 
@@ -120,30 +128,32 @@ class FreemiusProvider:
         last = (payload.get("user_last_name") or "").strip()
         full_name = (f"{first} {last}").strip()
 
-        # Return install_uuid as instance_id so validate/deactivate (which key
-        # off uid + license_key) can be called with just (key, instance_id).
-        # Log Freemius's own install_id for support traceability.
+        # Return the normalized uid as instance_id so validate/deactivate
+        # (which key off uid + license_key) can be called with just
+        # (key, instance_id). Log Freemius's own install_id for support
+        # traceability.
         logger.info(
             "Freemius activation: fs_install_id=%s, license_id=%s",
             fs_install_id, payload.get("license_id") or payload.get("id"),
         )
         return ActivateResult(
             ok=True,
-            instance_id=install_uuid,
+            instance_id=uid,
             customer_name=full_name,
             customer_email=payload.get("user_email", "") or "",
         )
 
     async def validate(self, license_key: str, instance_id: str) -> ValidateResult:
-        # instance_id == install_uuid (set in activate above). Re-issue
+        # instance_id == normalized uid (set in activate above). Re-issue
         # activate.json with the same (uid, license_key) pair — Freemius
         # treats this as idempotent and returns the current install/license
         # state without consuming an extra activation slot.
+        uid = _normalize_uid(instance_id)
         url = f"{_api_base()}/products/{_product_id()}/licenses/activate.json"
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
-                json={"uid": instance_id, "license_key": license_key},
+                json={"uid": uid, "license_key": license_key},
                 headers={"Accept": "application/json"},
             )
 
@@ -166,11 +176,12 @@ class FreemiusProvider:
         return ValidateResult(ok=True, status=_is_license_active(payload))
 
     async def deactivate(self, license_key: str, instance_id: str) -> DeactivateResult:
+        uid = _normalize_uid(instance_id)
         url = f"{_api_base()}/products/{_product_id()}/licenses/deactivate.json"
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
-                json={"uid": instance_id, "license_key": license_key},
+                json={"uid": uid, "license_key": license_key},
                 headers={"Accept": "application/json"},
             )
 
