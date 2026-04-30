@@ -659,13 +659,4 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
-## [1.0.0] — 2026-01-15
-
-### Added
-- Initial release.
-- Multi-platform support: Debian/Ubuntu, RHEL/CentOS, macOS.
-- Host management, encrypted SSH credential storage, dashboard, settings.
-
----
-
 **Legend:** Added · Changed · Deprecated · Removed · Fixed · Security
