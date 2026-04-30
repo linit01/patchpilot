@@ -4,6 +4,14 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [0.18.2-beta] — 2026-04-30
+
+### Fixed
+- **Validation failures now stick to the DB**: when the license server returns an authoritative reject (4xx with an explicit error like "license_key not found" or "quota reached"), `license.py` now writes `license_status='expired'` to the settings table so the UI's status badge and subsequent `/api/license/status` calls reflect reality. Previously, a failed `/api/license/validate` returned the rejection in the HTTP response body but didn't update the cached state, leaving the UI showing "Licensed" for an install that the server had revoked. Same fix applied in the periodic background check
+- **Transient vs authoritative split in the Freemius provider**: `freemius.py` now treats 5xx responses as transient by raising (so `license.py`'s exception path triggers and the 30-day grace period applies), while 4xx responses still return `ok=False` with the parsed error (authoritative — propagates to the DB per the fix above). Without this split, a brief Freemius outage would have flipped every active license to `expired` because all non-2xx responses were being mapped the same way
+
+---
+
 ## [0.18.1-beta] — 2026-04-30
 
 ### Fixed

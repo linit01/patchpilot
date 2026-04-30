@@ -321,7 +321,17 @@ async def periodic_license_check():
                     else:
                         logger.info(f"[License] Validation successful, status: {result.status}")
                 else:
-                    logger.warning(f"[License] Validation failed: {result.error or 'unknown error'}")
+                    # Authoritative reject from the license server (4xx with
+                    # an explicit error) — flip license_status so the UI and
+                    # subsequent /api/license/status calls reflect reality.
+                    # Transient failures (network, 5xx) raise and land in the
+                    # except block below, where the 30-day grace period applies.
+                    await _set_setting(_pool, "license_status", "expired",
+                                       "Current license status")
+                    logger.warning(
+                        f"[License] Authoritative validation failure — "
+                        f"flipped status to expired: {result.error or 'unknown error'}"
+                    )
 
             except Exception as e:
                 logger.warning(f"[License] Could not reach license server: {e}")
@@ -468,6 +478,13 @@ async def validate_license_now():
         )
 
     if not result.ok:
+        # Authoritative reject from the license server (4xx with an explicit
+        # error) — flip license_status so subsequent /api/license/status calls
+        # reflect reality. Transient failures (network, 5xx) raise and are
+        # caught above as a 502; the grace period handles those without
+        # touching the stored status.
+        await _set_setting(pool, "license_status", "expired",
+                           "Current license status")
         return {"valid": False, "status": "invalid",
                 "message": result.error or "Validation failed."}
 

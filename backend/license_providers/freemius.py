@@ -98,6 +98,11 @@ class FreemiusProvider:
                 headers={"Accept": "application/json"},
             )
 
+        # 5xx is transient — raise so license.py applies the grace period.
+        # 4xx is authoritative — return ok=False with the parsed error.
+        if resp.status_code >= 500:
+            resp.raise_for_status()
+
         try:
             payload = resp.json()
         except Exception:
@@ -157,6 +162,10 @@ class FreemiusProvider:
                 headers={"Accept": "application/json"},
             )
 
+        # 5xx is transient — raise so license.py applies the grace period.
+        if resp.status_code >= 500:
+            resp.raise_for_status()
+
         try:
             payload = resp.json()
         except Exception:
@@ -184,6 +193,10 @@ class FreemiusProvider:
                 json={"uid": uid, "license_key": license_key},
                 headers={"Accept": "application/json"},
             )
+
+        # 5xx is transient — raise so license.py logs/handles as such.
+        if resp.status_code >= 500:
+            resp.raise_for_status()
 
         if resp.status_code >= 400:
             try:
