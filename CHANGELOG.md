@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.0.2] — 2026-05-08
+
+### Security
+- **Bumped `python-multipart` 0.0.26 → 0.0.27** ([GHSA-59g5-xgcq-4qw3](https://github.com/linit01/patchpilot/security/dependabot/5), severity: high). The vulnerable version's multipart parser reads a part's headers section without bounding the byte count, so a slow-drip request with no terminating CRLF can pin a worker on CPU/memory until the connection drops — a classic DoS. PatchPilot's `multipart/form-data` surface (SSH key upload and backup-restore archive upload) is auth-gated, so the unauthenticated blast radius was small, but bumping the dep closes the auth'd-low-priv-user vector flagged by GHSA
+
+---
+
 ## [1.0.1] — 2026-05-08
 
 Fresh-install bug-fix release. Three issues found while bringing up PatchPilot on a new k3s server.
