@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.1.1] — 2026-05-08
+
+### Fixed
+- **Freemius activation finally clears the required-field cascade.** v1.0.4 sent `email` as the field name, but Freemius's activate endpoint requires the field to be named `user_email` (note the field-name inconsistency on Freemius's side: `first_name` and `last_name` are without the `user_` prefix, but `user_email` requires it). My earlier API probes used a deliberately-malformed test key that short-circuited validation at "Invalid license key" before the email check ran, so the mismatch went unnoticed across v1.0.3 / v1.0.4. The provider now sends the correct field name in both `activate()` and `validate()`. Per Freemius's documentation the required fields for the no-auth public activate endpoint are exactly `uid`, `license_key`, `first_name`, `last_name`, `user_email` — no further iterations expected on this front
+
+---
+
 ## [1.1.0] — 2026-05-08
 
 Linux host onboarding parity. Minor version bump because this introduces a new feature (a dedicated Linux bootstrap script + agent endpoint + UI), not just bug fixes.

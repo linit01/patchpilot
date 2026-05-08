@@ -118,20 +118,22 @@ class FreemiusProvider:
     ) -> ActivateResult:
         uid = _normalize_uid(install_uuid)
         url = f"{_api_base()}/products/{_product_id()}/licenses/activate.json"
-        # Freemius cascade-validates first_name, last_name, and email when
-        # the license_key isn't already bound to a customer (e.g. licenses
-        # created manually in the Freemius dashboard for testing). Each
-        # missing field returns a separate "<field> is a required parameter."
-        # response, so always send all three with sentinels when the
-        # operator's PatchPilot user doesn't populate them. For
-        # checkout-purchased licenses these values land on the install
-        # record, not the customer record (which is already bound).
+        # Freemius cascade-validates first_name, last_name, and user_email
+        # when the license_key isn't already bound to a customer (e.g.
+        # licenses created manually in the Freemius dashboard for testing).
+        # Each missing field returns a separate "<field> is a required
+        # parameter." response, so always send all three with sentinels when
+        # the operator's PatchPilot user doesn't populate them.
+        # NOTE field-name inconsistency: Freemius's activate endpoint uses
+        # `first_name` and `last_name` (no prefix) but `user_email` (with
+        # prefix). For checkout-purchased licenses these values land on the
+        # install record, not the customer record (which is already bound).
         payload = {
             "uid": uid,
             "license_key": license_key,
             "first_name": first_name or "PatchPilot",
             "last_name": last_name or "User",
-            "email": email or "patchpilot@localhost",
+            "user_email": email or "patchpilot@localhost",
         }
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
@@ -200,15 +202,16 @@ class FreemiusProvider:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
-                # Freemius requires first_name + last_name + email even on
-                # idempotent re-activations; the existing install/customer
-                # record's name fields are not overwritten.
+                # Freemius requires first_name + last_name + user_email even
+                # on idempotent re-activations; the existing install/customer
+                # record's name fields are not overwritten. Note the field
+                # name is `user_email` (with prefix), not `email`.
                 json={
                     "uid": uid,
                     "license_key": license_key,
                     "first_name": "PatchPilot",
                     "last_name": "User",
-                    "email": "patchpilot@localhost",
+                    "user_email": "patchpilot@localhost",
                 },
                 headers={"Accept": "application/json"},
             )
