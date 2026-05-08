@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.0.4] — 2026-05-08
+
+### Fixed
+- **Freemius activation no longer fails with `last_name is a required parameter.`** v1.0.3 added `first_name` to the activate.json payload but only sent `last_name` and `email` when the activating PatchPilot admin had them populated. Freemius cascade-validates all three when the license_key isn't pre-bound to a customer (i.e. dashboard-created test licenses) and rejects on the first missing field, so v1.0.3 cleared the `first_name` rejection and immediately tripped on `last_name`. The provider now always sends `first_name`, `last_name`, and `email` with sentinels (`"PatchPilot"`, `"User"`, `"patchpilot@localhost"`) when the admin's record doesn't supply them. Same change applied to `validate()`, which re-POSTs `activate.json` for idempotent state checks. For checkout-purchased licenses the customer is already bound at purchase, so the sent values land on the install record, not the customer record
+
+---
+
 ## [1.0.3] — 2026-05-08
 
 License activation hardening — two related fixes after v1.0.1 didn't fully clear the activation path on a fresh k3s install.

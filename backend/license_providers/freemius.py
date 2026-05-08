@@ -118,21 +118,21 @@ class FreemiusProvider:
     ) -> ActivateResult:
         uid = _normalize_uid(install_uuid)
         url = f"{_api_base()}/products/{_product_id()}/licenses/activate.json"
-        # Freemius rejects activate.json with "first_name is a required
-        # parameter." if first_name is missing. The customer record on
-        # Freemius's side is keyed off the license_key (set at checkout),
-        # so what we send here lands on the install record, not the
-        # customer record. Fall back to a sentinel if the operator's
-        # PatchPilot user doesn't have first_name populated.
+        # Freemius cascade-validates first_name, last_name, and email when
+        # the license_key isn't already bound to a customer (e.g. licenses
+        # created manually in the Freemius dashboard for testing). Each
+        # missing field returns a separate "<field> is a required parameter."
+        # response, so always send all three with sentinels when the
+        # operator's PatchPilot user doesn't populate them. For
+        # checkout-purchased licenses these values land on the install
+        # record, not the customer record (which is already bound).
         payload = {
             "uid": uid,
             "license_key": license_key,
             "first_name": first_name or "PatchPilot",
+            "last_name": last_name or "User",
+            "email": email or "patchpilot@localhost",
         }
-        if last_name:
-            payload["last_name"] = last_name
-        if email:
-            payload["email"] = email
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
@@ -200,10 +200,16 @@ class FreemiusProvider:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
-                # first_name is required by Freemius even on idempotent
-                # re-activations; existing install record's name fields
-                # are not overwritten.
-                json={"uid": uid, "license_key": license_key, "first_name": "PatchPilot"},
+                # Freemius requires first_name + last_name + email even on
+                # idempotent re-activations; the existing install/customer
+                # record's name fields are not overwritten.
+                json={
+                    "uid": uid,
+                    "license_key": license_key,
+                    "first_name": "PatchPilot",
+                    "last_name": "User",
+                    "email": "patchpilot@localhost",
+                },
                 headers={"Accept": "application/json"},
             )
 
