@@ -4,6 +4,17 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.1.2] — 2026-05-08
+
+### Fixed
+- **Activated license no longer flips to `expired` ~60s after a successful activation.** Two layers to this. (1) `freemius.py`'s `validate()` re-issues `activate.json` with the same `(uid, license_key)` on the assumption that Freemius treats it as idempotent and returns the existing install state — confirmed-against-the-live-API to be **false**. Freemius treats the repeat call as a *new* activation attempt, which trips the per-license quota and returns HTTP 400 with `code: license_utilized`. (2) `periodic_license_check` in `license.py` was treating *any* 4xx as an "authoritative reject" and immediately flipping `license_status` to `expired`, bypassing the 30-day grace period. The combination of (1) and (2) meant: every PP install activated, then ~60s later (when the periodic-check loop's startup sleep elapsed) the validate-via-activate.json call returned `license_utilized`, and the periodic check obediently flipped the locally-stored status to `expired` — losing the activation in the UI even though Freemius still held the slot. The provider now treats `license_utilized` as a *positive* signal (the license is real, has active installs, and our locally-stored `instance_id` is one of them; without bearer-auth we can't query install ownership directly, so we trust local state) and returns `ok=True, status=active`. The periodic check no longer trips the false flip
+- **Slot leak from the same bug.** Each retry of an "activated then disappeared" license burned another Freemius activation slot, because the activate path consumed slots in Freemius while PP's UI showed no license. Resolved by (a) the validate fix above (no more spurious flips), and (b) for affected installs: deactivate the orphaned slot via the Freemius developer dashboard's Installs tab (PP's own deactivate path is also broken pending v1.1.3 — see below)
+
+### Known limitations (v1.1.3 candidates)
+- **Deactivate via PatchPilot UI does not actually free the Freemius slot.** Freemius's `deactivate.json` requires `install_id`, which v1.1.x doesn't capture during activation (we stored only the normalized `uid` as `instance_id` and discarded Freemius's `install_id` after logging it). v1.1.3 will store `install_id` during activate so subsequent deactivates flow end-to-end. Until then, operators who need to free a slot must do so from the Freemius developer dashboard
+
+---
+
 ## [1.1.1] — 2026-05-08
 
 ### Fixed

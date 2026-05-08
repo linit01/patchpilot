@@ -231,7 +231,29 @@ class FreemiusProvider:
 
         if resp.status_code >= 400 or "error" in payload:
             err = payload.get("error") or {}
+            code = (err.get("code") or "").lower() if isinstance(err, dict) else ""
             msg = err.get("message") if isinstance(err, dict) else str(err)
+
+            # `license_utilized` (HTTP 400) means the license has reached its
+            # activation cap. For our use case — periodic re-check of OUR own
+            # active license — this is a *positive* signal, not a failure:
+            # Freemius is confirming the license exists, has active installs,
+            # and our (uid, license_key) was previously accepted. The
+            # "Freemius treats activate.json as idempotent" assumption baked
+            # into our earlier validate() was wrong; Freemius treats a repeat
+            # call as a NEW activation attempt, which trips the per-license
+            # quota. Without bearer-auth we can't query install ownership,
+            # so we trust our locally-stored instance_id and surface this as
+            # status=active. Without this carve-out, the periodic check
+            # interprets license_utilized as "authoritative reject" and flips
+            # license_status to expired ~60s after every successful activate.
+            if code == "license_utilized":
+                logger.debug(
+                    "Freemius validate: license_utilized — license is real "
+                    "and at quota, treating as active"
+                )
+                return ValidateResult(ok=True, status="active")
+
             return ValidateResult(
                 ok=False, status="invalid", error=msg or "Validation failed."
             )

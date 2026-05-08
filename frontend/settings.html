@@ -1429,7 +1429,7 @@
                         padding: 16px;
                     ">
                         <h3 style="margin: 0 0 10px 0; font-size: 15px; color: var(--cyan, #00c0ef);">
-                            🐧 Step 1: Run this on the Linux host (as root)
+                            🐧 Step 1: Run this on the Linux host (Terminal — sudo prompt expected)
                         </h3>
                         <div style="position: relative;">
                             <pre id="linux-setup-cmd" style="
@@ -1905,13 +1905,7 @@
             }
         }
 
-        function copyLinuxCmd() {
-            const text = document.getElementById('linux-setup-cmd').textContent;
-            navigator.clipboard.writeText(text).then(
-                () => { /* no-op; visual feedback handled by browser permissions UI */ },
-                (err) => alert('Copy failed: ' + err)
-            );
-        }
+        function copyLinuxCmd() { copySetupCmd('linux-setup-cmd'); }
 
         async function openAddWindowsHostModal() {
             currentEditHostId = null;
