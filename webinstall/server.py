@@ -180,7 +180,7 @@ class K3sConfig(BaseModel):
     db_user: str = "patchpilot"
     db_password: str = ""
     db_name: str = "patchpilot"
-    postgres_storage_class: str = "local-data"
+    postgres_storage_class: str = ""
     postgres_storage_size: str = "5Gi"
     encryption_key: str = ""
     auto_refresh_interval: int = 60

@@ -4,6 +4,17 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.0.1] — 2026-05-08
+
+Fresh-install bug-fix release. Three issues found while bringing up PatchPilot on a new k3s server.
+
+### Fixed
+- **License activation no longer fails with `Invalid request path.`** `k8s/install-k3s.sh` was rendering `templates/04-backend.yaml` via `envsubst` with an explicit variable allowlist that omitted `PP_LICENSE_PROVIDER` and `PP_FREEMIUS_PRODUCT_ID`. The placeholders `${PP_LICENSE_PROVIDER:-freemius}` / `${PP_FREEMIUS_PRODUCT_ID:-28811}` were therefore copied **literally** into the rendered manifest, so the deployed pod's env var contained the literal string `${PP_FREEMIUS_PRODUCT_ID:-28811}` and the Freemius client POSTed to `/v1/products/${PP_FREEMIUS_PRODUCT_ID:-28811}/licenses/activate.json` — which Freemius rejects with `not_implemented: Invalid request path.` Both variables are now exported and added to the envsubst allowlist, with `:=freemius` / `:=28811` defaults applied if the install script is invoked without them set
+- **Setup wizard's License step no longer 401s with `Authentication required`.** Commit 1c0090c (the v1.0.0 hardening pass) added `Depends(require_full_admin)` to `/api/license/activate`, but `/api/setup/complete` only created the admin user — it did not establish a session — so the wizard's step 7 fetch had no `patchpilot_session` cookie. `setup_api.py` now creates a session row and sets the session cookie immediately after the trial is started, mirroring the legacy `/auth/setup` endpoint. The user is auto-logged-in for the License step (and lands on the dashboard already authenticated)
+- **Webinstall wizard's Storage step no longer suggests a fictional StorageClass.** The PostgreSQL StorageClass input was hardcoded to `local-data`, which doesn't exist on a stock k3s install (only `local-path` does). The input is now a placeholder, and `loadStorageClasses()` pre-fills it from the cluster's actual detected StorageClasses on entry to page 4 — preferring a name that suggests Retain (`local-data`, `*-retain`) when one exists, otherwise the first detected class. The Pydantic default in `webinstall/server.py` was also flipped from `"local-data"` to `""` for consistency
+
+---
+
 ## [1.0.0] — 2026-04-30
 
 **General availability.** PatchPilot exits beta with a small but pointed pre-GA hardening pass.

@@ -280,7 +280,7 @@
       <div class="field">
         <label>PostgreSQL StorageClass</label>
         <div class="hint">Use a Retain class to protect data across reinstalls.</div>
-        <input type="text" id="postgres_storage_class" value="local-data">
+        <input type="text" id="postgres_storage_class" placeholder="local-path">
       </div>
       <div class="field">
         <label>PostgreSQL volume size</label>
@@ -862,6 +862,16 @@ async function loadStorageClasses() {
       });
       html += '</tbody></table>';
       $('sc-list').innerHTML = html;
+
+      // Pre-fill the StorageClass input with a detected class if the user
+      // hasn't typed anything yet, preferring one whose name suggests Retain
+      // (e.g. local-data, *-retain) so reinstall-safety is the default.
+      const input = $('postgres_storage_class');
+      if (input && !input.value.trim()) {
+        const names = info.storageClasses.map(sc => sc.name);
+        const preferred = names.find(n => /retain|local-data/i.test(n)) || names[0];
+        input.value = preferred;
+      }
     }
   } catch(e) {}
 }

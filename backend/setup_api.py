@@ -5,12 +5,21 @@ All endpoints here are PUBLIC (no auth required) but are locked out
 once setup is complete (i.e., at least one user exists in the DB).
 """
 
-from fastapi import APIRouter, HTTPException
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
 import bcrypt
 import logging
 import os
+
+from auth import (
+    SESSION_COOKIE_NAME,
+    SESSION_DURATION_HOURS,
+    _cookie_secure,
+    generate_session_token,
+)
 
 def _install_defaults() -> dict:
     """Return install-time defaults from environment variables set by install-k3s.sh."""
@@ -114,7 +123,7 @@ async def setup_status():
 
 
 @router.post("/complete")
-async def complete_setup(payload: SetupCompleteRequest):
+async def complete_setup(payload: SetupCompleteRequest, request: Request, response: Response):
     """
     Execute the full first-run setup in a single atomic transaction:
       1. Create admin user
@@ -233,6 +242,29 @@ async def complete_setup(payload: SetupCompleteRequest):
     # Start the 14-day trial
     await start_trial(pool)
 
+    # Auto-login the new admin so the wizard's License step (which now hits
+    # require_full_admin endpoints) has a valid session. Without this, step 7
+    # POST /api/license/activate returns 401 "Authentication required".
+    token = generate_session_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_DURATION_HOURS)
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO sessions (user_id, token, expires_at, ip_address, user_agent)
+            VALUES ($1, $2, $3, $4, $5)
+        """, user_id, token, expires_at,
+            request.client.host if request.client else None,
+            request.headers.get("user-agent", ""))
+
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        max_age=SESSION_DURATION_HOURS * 3600,
+        path="/",
+    )
+
     return {
         "success": True,
         "message": "Setup complete! Redirecting to login...",
@@ -240,6 +272,7 @@ async def complete_setup(payload: SetupCompleteRequest):
         "hosts_created": hosts_created,
         "backup_type": payload.backup.storage_type,
         "ssh_key_saved": ssh_key_saved,
+        "token": token,
     }
 
 
