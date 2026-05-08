@@ -370,7 +370,12 @@ async def activate_license(
     install_uuid = await _get_or_create_install_uuid(pool)
 
     try:
-        result = await get_provider().activate(req.license_key, install_uuid)
+        result = await get_provider().activate(
+            req.license_key,
+            install_uuid,
+            email=user.get("email") or "",
+            first_name=user.get("username") or "",
+        )
     except Exception as e:
         logger.error(f"License activation error: {e}")
         raise HTTPException(

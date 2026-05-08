@@ -4,6 +4,19 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.0.3] — 2026-05-08
+
+License activation hardening — two related fixes after v1.0.1 didn't fully clear the activation path on a fresh k3s install.
+
+### Fixed
+- **Freemius activation no longer fails with `first_name is a required parameter`.** Freemius's `POST /v1/products/{product_id}/licenses/activate.json` requires a `first_name` field on every call (it's used to materialize the customer record on activation when the license isn't pre-bound to a user, e.g. licenses created manually in the Freemius dashboard for testing). The provider was POSTing only `{uid, license_key}`. `backend/license_providers/freemius.py` now includes `first_name` (and optional `last_name` / `email`) in both `activate` and `validate` calls. Values are sourced from the activating PatchPilot admin user (`username` → `first_name`, `email` → `email`); a `"PatchPilot"` sentinel is used if the admin record has no username. For real-customer-purchased licenses the customer is already bound at checkout, so the sent `first_name` satisfies API validation without affecting the customer record
+- **Pre-v1.0.1 deployments self-heal on update.** `_product_id()` in the Freemius provider now sanity-checks `PATCHPILOT_FREEMIUS_PRODUCT_ID` and falls back to the project default `28811` if the value is empty or non-numeric. The pre-v1.0.1 `install-k3s.sh` rendered `04-backend.yaml` with the literal string `${PP_FREEMIUS_PRODUCT_ID:-28811}` as the env value (because the variable wasn't in the envsubst allowlist); since PatchPilot's in-app self-update only bumps the image tag and never re-renders the manifest, that broken env value would persist forever without operator intervention. The defensive fallback closes the loop — affected deployments now activate successfully on first try after self-updating to v1.0.3, and the operator gets a log line with the exact `kubectl set env` command to repair the manifest at their leisure
+
+### Changed
+- **`LicenseProvider.activate` Protocol gained three optional kwargs** (`email`, `first_name`, `last_name`). The LemonSqueezy provider accepts and discards them — LS keys customer info off the license itself. Freemius uses them for the API call described above
+
+---
+
 ## [1.0.2] — 2026-05-08
 
 ### Security

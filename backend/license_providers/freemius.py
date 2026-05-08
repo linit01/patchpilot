@@ -36,6 +36,7 @@ from .base import ActivateResult, DeactivateResult, ValidateResult
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://api.freemius.com/v1"
+DEFAULT_PRODUCT_ID = "28811"
 
 
 def _api_base() -> str:
@@ -43,12 +44,30 @@ def _api_base() -> str:
 
 
 def _product_id() -> str:
+    # Defensive against a pre-v1.0.1 install: that install-k3s.sh did not
+    # include $PP_FREEMIUS_PRODUCT_ID in its envsubst allowlist, so the
+    # rendered 04-backend.yaml shipped a literal "${PP_FREEMIUS_PRODUCT_ID:-28811}"
+    # as the env value. Such a value would land in the URL path and Freemius
+    # rejects with "Invalid request path." Self-update only bumps the image
+    # tag — the broken env value would persist — so we sanity-check here and
+    # fall back to the project default if the value isn't a plain integer.
     pid = os.getenv("PATCHPILOT_FREEMIUS_PRODUCT_ID", "").strip()
     if not pid:
-        raise RuntimeError(
-            "PATCHPILOT_FREEMIUS_PRODUCT_ID is not set. "
-            "Set it to your Freemius product ID (e.g. 28811)."
+        logger.warning(
+            "PATCHPILOT_FREEMIUS_PRODUCT_ID is not set; using project default %s",
+            DEFAULT_PRODUCT_ID,
         )
+        return DEFAULT_PRODUCT_ID
+    if not pid.isdigit():
+        logger.warning(
+            "PATCHPILOT_FREEMIUS_PRODUCT_ID=%r is not a valid integer "
+            "(likely an unsubstituted envsubst placeholder from a pre-v1.0.1 "
+            "install); falling back to %s. To repair the deployment in place: "
+            "kubectl set env -n <ns> deployment/patchpilot-backend "
+            "PATCHPILOT_FREEMIUS_PRODUCT_ID=%s",
+            pid, DEFAULT_PRODUCT_ID, DEFAULT_PRODUCT_ID,
+        )
+        return DEFAULT_PRODUCT_ID
     return pid
 
 
@@ -88,13 +107,36 @@ def _normalize_uid(s: str) -> str:
 class FreemiusProvider:
     name = "freemius"
 
-    async def activate(self, license_key: str, install_uuid: str) -> ActivateResult:
+    async def activate(
+        self,
+        license_key: str,
+        install_uuid: str,
+        *,
+        email: str = "",
+        first_name: str = "",
+        last_name: str = "",
+    ) -> ActivateResult:
         uid = _normalize_uid(install_uuid)
         url = f"{_api_base()}/products/{_product_id()}/licenses/activate.json"
+        # Freemius rejects activate.json with "first_name is a required
+        # parameter." if first_name is missing. The customer record on
+        # Freemius's side is keyed off the license_key (set at checkout),
+        # so what we send here lands on the install record, not the
+        # customer record. Fall back to a sentinel if the operator's
+        # PatchPilot user doesn't have first_name populated.
+        payload = {
+            "uid": uid,
+            "license_key": license_key,
+            "first_name": first_name or "PatchPilot",
+        }
+        if last_name:
+            payload["last_name"] = last_name
+        if email:
+            payload["email"] = email
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
-                json={"uid": uid, "license_key": license_key},
+                json=payload,
                 headers={"Accept": "application/json"},
             )
 
@@ -158,7 +200,10 @@ class FreemiusProvider:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 url,
-                json={"uid": uid, "license_key": license_key},
+                # first_name is required by Freemius even on idempotent
+                # re-activations; existing install record's name fields
+                # are not overwritten.
+                json={"uid": uid, "license_key": license_key, "first_name": "PatchPilot"},
                 headers={"Accept": "application/json"},
             )
 

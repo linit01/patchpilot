@@ -40,7 +40,15 @@ class DeactivateResult:
 class LicenseProvider(Protocol):
     name: str
 
-    async def activate(self, license_key: str, install_uuid: str) -> ActivateResult: ...
+    async def activate(
+        self,
+        license_key: str,
+        install_uuid: str,
+        *,
+        email: str = "",
+        first_name: str = "",
+        last_name: str = "",
+    ) -> ActivateResult: ...
 
     async def validate(self, license_key: str, instance_id: str) -> ValidateResult: ...
 

@@ -16,7 +16,18 @@ LS_API_URL = "https://api.lemonsqueezy.com/v1/licenses"
 class LemonSqueezyProvider:
     name = "lemonsqueezy"
 
-    async def activate(self, license_key: str, install_uuid: str) -> ActivateResult:
+    async def activate(
+        self,
+        license_key: str,
+        install_uuid: str,
+        *,
+        email: str = "",
+        first_name: str = "",
+        last_name: str = "",
+    ) -> ActivateResult:
+        # LS keys customer info off the license itself; the operator-side
+        # metadata is unused. Accepted for protocol compatibility.
+        del email, first_name, last_name
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 f"{LS_API_URL}/activate",
