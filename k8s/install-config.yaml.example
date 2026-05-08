@@ -11,7 +11,12 @@ patchpilot:
     # The public image is a multi-arch manifest list — Docker/k8s pull the right arch automatically.
     # If you built with ./k8s/build-push.sh (dev mode, no --release), use the arch-suffixed tag instead.
     # tag: 0.9.8-alpha
-    pullPolicy: Always
+    # IfNotPresent uses the local k3s image cache for known versioned tags
+    # (backend-1.x.x); only pulls when the tag changes (e.g. via in-app
+    # self-update). Setting Always re-pulls on every pod restart and breaks
+    # if the tag has been removed from the registry. Switch to Always only
+    # if you're chasing a mutable tag like :latest.
+    pullPolicy: IfNotPresent
   dockerHub:
     # Only needed if using a private image repo (--developer mode)
     # Leave blank for the public image

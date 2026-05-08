@@ -325,7 +325,7 @@ load_config() {
 
   PP_IMAGE_STRATEGY="$(yaml_get patchpilot.image.strategy registry)"
   PP_IMAGE_TAG="$(yaml_get patchpilot.image.tag "${PP_FILE_VERSION}")"
-  PP_IMAGE_PULL_POLICY="$(yaml_get patchpilot.image.pullPolicy Always)"
+  PP_IMAGE_PULL_POLICY="$(yaml_get patchpilot.image.pullPolicy IfNotPresent)"
   PP_PULL_SECRET_NAME="$(yaml_get patchpilot.image.pullSecretName dockerhub-pull-secret)"
 
   # Detect cluster arch (used by developer mode for single-arch local builds)

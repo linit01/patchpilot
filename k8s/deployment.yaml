@@ -206,7 +206,7 @@ spec:
       # playbooks even though the backend image is current.
       - name: seed-ansible
         image: linit01/patchpilot:backend-1.1.1
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         command: ['sh', '-c', 'cp -rf /ansible-src/. /ansible/ && echo "Ansible seeded"']
         volumeMounts:
         - name: ansible-data
@@ -214,7 +214,7 @@ spec:
       containers:
       - name: backend
         image: linit01/patchpilot:backend-1.1.1
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
         env:
@@ -348,7 +348,7 @@ spec:
       containers:
       - name: frontend
         image: linit01/patchpilot:frontend-1.1.1
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
         resources:

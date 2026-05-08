@@ -163,7 +163,7 @@ class K3sConfig(BaseModel):
     dh_username: str
     dh_token: str
     image_tag: str = PP_VERSION
-    pull_policy: str = "Always"
+    pull_policy: str = "IfNotPresent"
     hostname: str
     additional_hostnames: str = ""
     tls_enabled: bool = True
