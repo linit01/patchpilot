@@ -485,6 +485,7 @@
                         <button class="btn btn-secondary" onclick="exportHosts()">↑ Export</button>
                         <button class="btn btn-primary" onclick="openAddWindowsHostModal()">+ Add Windows Host</button>
                         <button class="btn btn-primary" onclick="openAddMacosHostModal()">+ Add macOS Host</button>
+                        <button class="btn btn-primary" onclick="openAddLinuxHostModal()">+ Add Linux Host</button>
                         <button class="btn btn-primary" onclick="openAddHostModal()">+ Add Host</button>
                     </div>
                 </div>
@@ -498,6 +499,7 @@
                         <div style="display: flex; gap: 10px; justify-content: center;">
                             <button class="btn btn-primary" onclick="openAddWindowsHostModal()">+ Add Windows Host</button>
                             <button class="btn btn-primary" onclick="openAddMacosHostModal()">+ Add macOS Host</button>
+                            <button class="btn btn-primary" onclick="openAddLinuxHostModal()">+ Add Linux Host</button>
                             <button class="btn btn-primary" onclick="openAddHostModal()">+ Add Host</button>
                         </div>
                     </div>
@@ -1418,6 +1420,68 @@
                     </h3>
                 </div>
 
+                <!-- Linux Setup Instructions (shown only for Add Linux Host) -->
+                <div id="linux-setup-section" style="display: none; margin-bottom: 20px;">
+                    <div style="
+                        background: rgba(0, 192, 239, 0.08);
+                        border: 1px solid rgba(0, 192, 239, 0.25);
+                        border-radius: 8px;
+                        padding: 16px;
+                    ">
+                        <h3 style="margin: 0 0 10px 0; font-size: 15px; color: var(--cyan, #00c0ef);">
+                            🐧 Step 1: Run this on the Linux host (as root)
+                        </h3>
+                        <div style="position: relative;">
+                            <pre id="linux-setup-cmd" style="
+                                background: var(--bg-input, #1a1a2e);
+                                border: 1px solid var(--border);
+                                border-radius: 6px;
+                                padding: 12px 40px 12px 12px;
+                                font-family: monospace;
+                                font-size: 13px;
+                                white-space: pre-wrap;
+                                word-break: break-all;
+                                color: var(--green-bright, #4caf50);
+                                margin: 0;
+                                line-height: 1.5;
+                            ">Loading...</pre>
+                            <button type="button" onclick="copyLinuxCmd()" style="
+                                position: absolute;
+                                top: 8px;
+                                right: 8px;
+                                background: rgba(255,255,255,0.1);
+                                border: 1px solid var(--border);
+                                border-radius: 4px;
+                                color: var(--text-muted);
+                                cursor: pointer;
+                                padding: 4px 8px;
+                                font-size: 12px;
+                            " title="Copy to clipboard">📋 Copy</button>
+                        </div>
+                        <p style="margin: 10px 0 0 0; font-size: 12px; color: var(--text-muted);">
+                            Creates a <code>patchpilot</code> system user, authorizes the PatchPilot SSH key,
+                            and writes <code>/etc/sudoers.d/patchpilot</code> with <code>NOPASSWD: SETENV:</code>
+                            scoped to the host's package manager (apt/dnf/yum/zypper/pacman) plus
+                            <code>reboot</code> / <code>shutdown</code>. Supported: Debian/Ubuntu, RHEL family,
+                            SUSE, Arch.
+                        </p>
+                        <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                            <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Need to generate an SSH key first?</summary>
+                            <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                                <p style="margin: 0 0 8px 0;">Run this on the <strong>PatchPilot server</strong> (or wherever you manage keys):</p>
+                                <pre style="margin: 0 0 8px 0; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 4px; font-size: 12px; white-space: pre-wrap;">ssh-keygen -t ed25519 -C "patchpilot"</pre>
+                                <p style="margin: 0; font-size: 12px; color: var(--text-muted);">
+                                    Add the <strong>private key</strong> to PatchPilot via Settings → SSH Keys.
+                                    The setup script above automatically installs the <strong>public key</strong> on the Linux host.
+                                </p>
+                            </div>
+                        </details>
+                    </div>
+                    <h3 style="margin: 20px 0 10px 0; font-size: 15px; color: var(--cyan, #00c0ef);">
+                        Step 2: Add the host details
+                    </h3>
+                </div>
+
                 <div class="form-group">
                     <label>Hostname or IP Address *</label>
                     <input type="text" id="hostname" required placeholder="server.example.com or 192.168.1.100">
@@ -1778,6 +1842,7 @@
             document.getElementById('hostname').disabled = false;
             document.getElementById('windows-setup-section').style.display = 'none';
             document.getElementById('macos-setup-section').style.display = 'none';
+            document.getElementById('linux-setup-section').style.display = 'none';
             const savedUser = document.getElementById('default-ssh-user').value;
             const savedPort = document.getElementById('default-ssh-port').value;
             if (savedUser) document.getElementById('ssh-user').value = savedUser;
@@ -1799,6 +1864,7 @@
             document.getElementById('ssh-port').value = '22';
             document.getElementById('windows-setup-section').style.display = 'none';
             document.getElementById('macos-setup-section').style.display = 'block';
+            document.getElementById('linux-setup-section').style.display = 'none';
             document.getElementById('host-modal').classList.add('active');
             populateAuthDropdown();
             toggleAuthFields();
@@ -1813,6 +1879,40 @@
             }
         }
 
+        async function openAddLinuxHostModal() {
+            currentEditHostId = null;
+            _isWindowsAddMode = false;
+            window._patchpilot_detected_os = 'Linux';
+            document.getElementById('modal-title').textContent = 'Add Linux Host';
+            document.getElementById('host-form').reset();
+            document.getElementById('hostname').disabled = false;
+            document.getElementById('ssh-user').value = 'patchpilot';
+            document.getElementById('ssh-port').value = '22';
+            document.getElementById('windows-setup-section').style.display = 'none';
+            document.getElementById('macos-setup-section').style.display = 'none';
+            document.getElementById('linux-setup-section').style.display = 'block';
+            document.getElementById('host-modal').classList.add('active');
+            populateAuthDropdown();
+            toggleAuthFields();
+
+            const cmdEl = document.getElementById('linux-setup-cmd');
+            try {
+                const baseUrl = document.getElementById('app-base-url').value.trim().replace(/\/+$/, '')
+                             || window.location.origin;
+                cmdEl.textContent = `curl -fsSL ${baseUrl}/api/settings/linux-agent | sudo bash`;
+            } catch (e) {
+                cmdEl.textContent = 'Error loading setup command: ' + e.message;
+            }
+        }
+
+        function copyLinuxCmd() {
+            const text = document.getElementById('linux-setup-cmd').textContent;
+            navigator.clipboard.writeText(text).then(
+                () => { /* no-op; visual feedback handled by browser permissions UI */ },
+                (err) => alert('Copy failed: ' + err)
+            );
+        }
+
         async function openAddWindowsHostModal() {
             currentEditHostId = null;
             _isWindowsAddMode = true;
@@ -1824,6 +1924,7 @@
             document.getElementById('ssh-port').value = '22';
             document.getElementById('windows-setup-section').style.display = 'block';
             document.getElementById('macos-setup-section').style.display = 'none';
+            document.getElementById('linux-setup-section').style.display = 'none';
             document.getElementById('host-modal').classList.add('active');
             populateAuthDropdown();
             toggleAuthFields();

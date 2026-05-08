@@ -1620,3 +1620,95 @@ PATCHPILOT_SCRIPT_EOF
 bash "$TMPSCRIPT" --public-key "$PUB_KEY"
 '''
     return Response(content=bootstrap, media_type="text/plain; charset=utf-8")
+
+
+@public_router.get("/linux-agent", include_in_schema=False)
+async def linux_agent_script(pool: asyncpg.Pool = Depends(get_db_pool)):
+    """
+    Serve a bash bootstrap script that downloads and runs the Linux
+    Enable-PatchPilotSSH.sh with the default SSH public key pre-injected.
+
+    Mirrors /macos-agent and /windows-agent. No authentication required —
+    only the public key is exposed.
+
+    Usage on the Linux host (must run as root):
+        curl -fsSL http://<patchpilot>/api/settings/linux-agent | sudo bash
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE is_default = TRUE LIMIT 1"
+            )
+        if not row:
+            raise HTTPException(status_code=404,
+                detail="No default SSH key configured. Add one in Settings > SSH Keys.")
+
+        decrypted_private = decrypt_credential(row['ssh_key_encrypted'])
+
+        key_obj = None
+        for key_class in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
+            try:
+                key_obj = key_class.from_private_key(io.StringIO(decrypted_private))
+                break
+            except Exception:
+                continue
+
+        if not key_obj:
+            raise HTTPException(status_code=500, detail="Could not parse the default SSH key")
+
+        pub_key = f"{key_obj.get_name()} {key_obj.get_base64()} patchpilot"
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to derive public key: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to derive public key: {e}")
+
+    script_paths = [
+        '/scripts/linux/Enable-PatchPilotSSH.sh',
+        '/ansible/scripts/linux/Enable-PatchPilotSSH.sh',
+        '/ansible-src/scripts/linux/Enable-PatchPilotSSH.sh',
+        os.path.join(os.path.dirname(__file__), '..', 'scripts', 'linux', 'Enable-PatchPilotSSH.sh'),
+    ]
+    sh_script = None
+    for sp in script_paths:
+        try:
+            with open(sp, 'r', encoding='utf-8') as f:
+                sh_script = f.read()
+            break
+        except FileNotFoundError:
+            continue
+
+    if not sh_script:
+        raise HTTPException(status_code=500,
+            detail="Enable-PatchPilotSSH.sh not found in image. Reinstall PatchPilot.")
+
+    if "PATCHPILOT_SCRIPT_EOF" in sh_script:
+        raise HTTPException(status_code=500,
+            detail="Setup script contains the heredoc sentinel. File a bug.")
+
+    if '"' in pub_key or '\n' in pub_key:
+        raise HTTPException(status_code=500,
+            detail="Derived public key contains an unsafe character.")
+
+    bootstrap = f'''#!/usr/bin/env bash
+# PatchPilot Linux Agent Setup
+# Pipe me through `sudo bash` — creating a system user requires root.
+set -euo pipefail
+
+if [[ "$EUID" -ne 0 ]]; then
+    echo "PatchPilot Linux setup must run as root. Re-run:" >&2
+    echo "  curl -fsSL <url> | sudo bash" >&2
+    exit 1
+fi
+
+PUB_KEY="{pub_key}"
+TMPSCRIPT="$(mktemp -t patchpilot-setup.XXXXXX)"
+trap 'rm -f "$TMPSCRIPT"' EXIT
+
+cat > "$TMPSCRIPT" <<'PATCHPILOT_SCRIPT_EOF'
+{sh_script}
+PATCHPILOT_SCRIPT_EOF
+
+bash "$TMPSCRIPT" --public-key "$PUB_KEY"
+'''
+    return Response(content=bootstrap, media_type="text/plain; charset=utf-8")

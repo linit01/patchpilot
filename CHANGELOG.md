@@ -4,6 +4,21 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.1.0] — 2026-05-08
+
+Linux host onboarding parity. Minor version bump because this introduces a new feature (a dedicated Linux bootstrap script + agent endpoint + UI), not just bug fixes.
+
+### Added
+- **Linux host onboarding parity with Windows.** New `scripts/linux/Enable-PatchPilotSSH.sh` creates a dedicated `patchpilot` system user (no password, key-only login), authorizes the PatchPilot SSH public key in `~patchpilot/.ssh/authorized_keys`, and writes `/etc/sudoers.d/patchpilot` with `NOPASSWD: SETENV:` entries scoped to the host's package manager (apt/dnf/yum/zypper/pacman) plus `/sbin/reboot` and `/sbin/shutdown` — no `ALL=(ALL) NOPASSWD: ALL` shape, no SSH-as-root requirement. Distro family is detected from `/etc/os-release` (`ID` + `ID_LIKE`); Debian/Ubuntu, RHEL family (RHEL/CentOS/Fedora/Rocky/Alma/OracleLinux), SUSE/openSUSE, and Arch are supported. Mirrors the existing macOS/Windows scripts (idempotent, validates the sudoers fragment with `visudo -cf` before installing, restores SELinux contexts on the `.ssh` directory)
+- **`/api/settings/linux-agent` public endpoint** serves a curl-pipe-able bootstrap that downloads the script with the operator's default SSH public key already injected. Mirrors the `/macos-agent` and `/windows-agent` endpoints. Operators run `curl -fsSL <url>/api/settings/linux-agent | sudo bash` on each Linux host
+- **"+ Add Linux Host" button** in Settings → Hosts (alongside the macOS and Windows buttons), opening a modal that displays the curl-pipe command and pre-fills SSH user `patchpilot` / port `22` for the new host. The empty-state CTA in the Hosts tab gets the same button. The macOS path remains unchanged (operator's own user is the right shape there because Apple ID / mas tie patching to the logged-in account); only the Linux path gets the dedicated service-account treatment
+
+### Notes
+- Existing Linux hosts onboarded as `root` keep working; the script does not touch their root authorized_keys. Migration is an in-PatchPilot edit (change `ssh_user` on the host record to `patchpilot` after running the script and confirming connectivity)
+- Database column defaults, Pydantic model defaults, and the `DEFAULT_SSH_USER` env-var fallback still default to `root` for first-time setup. Operators can flip `default_ssh_user` in Settings → General if they want every newly-added host to default to `patchpilot`
+
+---
+
 ## [1.0.4] — 2026-05-08
 
 ### Fixed
