@@ -4,6 +4,20 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.1.3] — 2026-05-14
+
+Operational stability fix. A long-running PatchPilot backend pod was accumulating ssh zombie processes until the host node became unusable.
+
+### Fixed
+- **SSH zombie process leak in the backend pod (root cause: no PID-1 reaper).** A diagnostic session on a multi-week PatchPilot deployment found **6954** zombie `ssh` processes all parented to the `uvicorn` server (PID 1 in the container), driving the 15-minute load average to **432** and consuming **3.9 GB** of swap on the k3s node. Two factors combined to produce the leak. (1) `Dockerfile`'s final `CMD` launched `uvicorn` directly with no init wrapper, making uvicorn PID 1 in the container. uvicorn does not install a `SIGCHLD` handler or call `waitpid()` on orphans, so it cannot reap children that get reparented to it (which is what PID 1 is supposed to do). (2) `backend/ansible_runner.py` enables Ansible's SSH multiplexing (`ControlMaster=auto -o ControlPath=/tmp/ansible-cm-%C -o ControlPersist=60s`) for performance — this forks a backgrounded session-leader `ssh` master per fleet host on every check/patch run. The masters outlive `ansible-playbook` by up to 60s by design (that's the point of `ControlPersist`), so when `ansible-playbook` exits cleanly (correctly reaped via `process.communicate()` / `process.wait()`), the orphaned ssh masters reparent to PID 1 (uvicorn). When they finally exit on the ControlPersist timeout, uvicorn never calls `waitpid()` on them and they become permanent `Zs` (zombie + session leader — note the **session leader** flag matches `ssh`'s `setsid()` exactly, confirming the path). Every check/patch run leaks roughly one ssh per host; over weeks of normal operation across a fleet, the count climbs into the thousands. Fix: bake `tini` into the backend image as `ENTRYPOINT` (`/usr/bin/tini --`). `tini` is the de-facto PID-1 init for containers (~24 KB, exactly what `docker run --init` uses); it installs a `SIGCHLD` handler that reaps zombies and forwards signals to uvicorn unchanged. Application behavior, signal handling on pod shutdown, exit codes, healthchecks, and the in-app self-update flow are all unchanged. Considered and rejected: disabling Ansible's `ControlMaster` (real performance cost on multi-task playbooks) and writing a Python-side `SIGCHLD` handler in `app.py` (fragile reinvention of `tini`).
+
+### Notes
+- The fix is purely on PatchPilot's backend image. Fleet hosts being patched (macOS / Windows / Linux) and the iOS client app are not affected by this bug — they don't run the backend
+- Existing deployments continue to leak until they pick up the new image. After self-updating to v1.1.3 the pod restarts on the new entrypoint and starts at zero zombies. Verify on the k3s host with `ps -eo stat | grep "^Z" | wc -l` over the following day; expect zero or single-digit transient
+- The deactivate-flow fix listed as a v1.1.3 candidate in v1.1.2's "Known limitations" is deferred — this release ships the operational-stability fix instead. Operators who need to free a Freemius slot continue to use the Freemius developer dashboard's Installs tab as a workaround
+
+---
+
 ## [1.1.2] — 2026-05-08
 
 ### Changed

@@ -28,6 +28,7 @@ ARG TARGETARCH
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
+        tini \
         openssh-client \
         sshpass \
         postgresql-client \
@@ -87,4 +88,8 @@ RUN mkdir -p /ansible /backups
 EXPOSE 8000
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
+# tini reaps orphaned children (notably ssh ControlMaster processes spawned by
+# Ansible with ControlPersist=60s, which outlive ansible-playbook and reparent
+# to PID 1). Without tini, uvicorn-as-PID-1 leaves them as permanent zombies.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
