@@ -4,6 +4,21 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.1.4] — 2026-05-15
+
+UX fix following v1.1.0's Linux service-user onboarding work. The schedule form and the ad-hoc Patch Now modal still required a shared SUDO password as if every host were the operator's own user, blocking the no-password-needed Linux/Windows `patchpilot` service-user path that v1.1.0 introduced.
+
+### Fixed
+- **"Shared SUDO Password" field on the schedule form is no longer required.** The schedule form ([`frontend/settings.html`](frontend/settings.html)) marked the field with a `*`, set the HTML `required` attribute, and the help text and info banner declared that "all hosts in a schedule must share the same SUDO password" — copy and validation that predate v1.1.0's Linux/Windows `patchpilot` service-user onboarding. Linux and Windows hosts onboarded via the patchpilot bootstrap script get scoped `NOPASSWD: SETENV:` sudoers entries for the host's package manager + reboot/shutdown, so they don't need a sudo password at all. The backend always treated `become_password` as `Optional[str]` ([`schedules_api.py:36`](backend/schedules_api.py#L36)) and the JS submission already serialized empty → `null` ([`settings.html:2217`](frontend/settings.html#L2217)) — only the frontend validation was wrong. Fix drops the `required` attribute and asterisk, rewrites the help text and info banner to call out that the field is needed only when a selected host actually prompts for sudo (typically macOS, where Apple ID / mas tie patching to the operator's account), and removes the dynamic `required = !sched.has_password` setter in the edit-mode handler. Linux-only and Windows-only schedules can now be created and edited with the password field blank
+- **"Sudo Password" field in the ad-hoc Patch Now modal is no longer required.** Same root cause and same shape of fix in [`frontend/index.html`](frontend/index.html) (label dropped "(required for Linux hosts)" — backwards from current reality) and [`frontend/app.js`](frontend/app.js) (the `if (!password) { alert(...); return; }` guard in `confirmPatch()` removed). Behavior on a macOS host that genuinely needs a password and doesn't get one is unchanged from before — Ansible surfaces the sudo-prompt error in the patch progress modal, same as if the operator had entered a wrong password
+
+### Notes
+- Backend / Pydantic / DB schema unchanged. Pure frontend cleanup
+- The platform asymmetry is unchanged and intentional: macOS uses the operator's user (Apple ID / mas constraint), Linux and Windows use the dedicated `patchpilot` service user with NOPASSWD sudoers
+- The deactivate-flow fix listed as a v1.1.3 candidate in v1.1.2's "Known limitations" remains deferred
+
+---
+
 ## [1.1.3] — 2026-05-14
 
 Operational stability fix. A long-running PatchPilot backend pod was accumulating ssh zombie processes until the host node became unusable.

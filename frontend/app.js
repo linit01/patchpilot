@@ -1025,12 +1025,12 @@ function handlePatchSelected() {
 // Confirm Patch
 async function confirmPatch() {
     const password = document.getElementById('become-password').value;
-    
-    if (!password) {
-        alert('Please enter sudo password');
-        return;
-    }
-    
+
+    // No client-side require: backend treats become_password as Optional and
+    // Linux/Windows hosts onboarded via the patchpilot service user have
+    // NOPASSWD sudoers. macOS hosts that need a password and don't get one
+    // will surface a sudo-prompt error from Ansible in the progress modal.
+
     // Build the definitive hosts list
     const hostsToPatc = window.selectedHostsForPatch || Array.from(selectedHosts);
     

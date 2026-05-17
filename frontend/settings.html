@@ -917,7 +917,7 @@
                 </div>
 
                 <div class="info-box" style="margin-bottom: 20px;">
-                    <strong>ℹ️ Info:</strong> Schedules automatically patch hosts within a time window. All hosts in a schedule must share the same SUDO password. Schedules run once per day during the configured window.
+                    <strong>ℹ️ Info:</strong> Schedules automatically patch hosts within a time window. If any selected host needs a sudo password (typically macOS, since Apple ID / mas tie patching to the operator's user), all hosts in the schedule share that same password. Linux and Windows hosts onboarded via the dedicated <code>patchpilot</code> service user don't need a password — the bootstrap script configures scoped NOPASSWD sudoers. Schedules run once per day during the configured window.
                 </div>
 
                 <div id="schedules-list">
@@ -1664,11 +1664,11 @@
                     <div id="sched-hosts-list" style="max-height:200px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; padding:8px; background:var(--bg-black);">
                         Loading hosts...
                     </div>
-                    <div class="help-text">All selected hosts must share the same SUDO password</div>
+                    <div class="help-text">If any selected host needs a sudo password (typically macOS), all selected hosts must share the same one</div>
                 </div>
                 <div class="form-group">
-                    <label>Shared SUDO Password *</label>
-                    <input type="password" id="sched-password" placeholder="Enter SUDO password for all hosts" required>
+                    <label>Shared SUDO Password</label>
+                    <input type="password" id="sched-password" placeholder="Leave blank for Linux/Windows patchpilot-user hosts; required for macOS">
                 </div>
                 <div class="form-group">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
@@ -2281,9 +2281,10 @@
                 document.getElementById('sched-end').value = sched.end_time;
                 document.getElementById('sched-auto-reboot').checked = sched.auto_reboot;
                 document.getElementById('sched-password').value = '';
-                document.getElementById('sched-password').placeholder = sched.has_password ? 
-                    'Leave blank to keep existing password' : 'Enter SUDO password';
-                document.getElementById('sched-password').required = !sched.has_password;
+                document.getElementById('sched-password').placeholder = sched.has_password ?
+                    'Leave blank to keep existing password' : 'Leave blank for Linux/Windows patchpilot-user hosts; required for macOS';
+                // No client-side required: backend treats become_password as Optional and
+                // hosts with NOPASSWD sudoers (Linux/Windows patchpilot user) don't need one.
                 
                 // Set days
                 const days = sched.day_of_week.split(',').map(d => d.trim().toLowerCase());
