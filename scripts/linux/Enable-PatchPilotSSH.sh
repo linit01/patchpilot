@@ -13,7 +13,10 @@
 #   2. Creates a `patchpilot` system user (no password, key-only login)
 #   3. Authorizes a PatchPilot SSH public key in ~patchpilot/.ssh/authorized_keys
 #   4. Writes /etc/sudoers.d/patchpilot with NOPASSWD entries for the detected
-#      package manager + /sbin/reboot, /sbin/shutdown
+#      package manager + /sbin/reboot, /sbin/shutdown + /bin/sh, /bin/bash
+#      (the shells are required because Ansible's become wraps every task in
+#      `sudo -n /bin/sh -c '...'`; effective blast radius is unchanged from
+#      already allowing apt-get/dpkg/dnf which can install arbitrary packages)
 #   5. Ensures sshd is running and enabled
 #
 # Run on each Linux host as root (curl-pipe with sudo, or invoke directly):
@@ -183,6 +186,15 @@ _resolve() { command -v "$1" 2>/dev/null || echo "$2"; }
 REBOOT_BIN="$(_resolve reboot /sbin/reboot)"
 SHUTDOWN_BIN="$(_resolve shutdown /sbin/shutdown)"
 SYSTEMCTL_BIN="$(_resolve systemctl /usr/bin/systemctl)"
+# Ansible's become wraps every shell:/command: task in `sudo -n /bin/sh -c '...'`
+# (and the apt/dnf modules in `sudo -n /usr/bin/python3 ...`). Sudo matches by
+# the argv[0] it's invoked with — NOT the inner command — so a list scoped to
+# /usr/bin/apt-get etc. never matches what Ansible actually runs. We allow the
+# shells explicitly. Effective blast radius is unchanged: any holder of the
+# PatchPilot SSH key could already gain root via `sudo apt-get install <evil>`.
+SH_BIN="$(_resolve sh /bin/sh)"
+BASH_BIN="$(_resolve bash /bin/bash)"
+SHELL_CMDS="${SH_BIN}, ${BASH_BIN}"
 
 case "$DISTRO_FAMILY" in
     debian)
@@ -191,21 +203,21 @@ case "$DISTRO_FAMILY" in
         DPKG_BIN="$(_resolve dpkg /usr/bin/dpkg)"
         UNATTENDED_BIN="$(_resolve unattended-upgrade /usr/bin/unattended-upgrade)"
         NEEDRESTART_BIN="$(_resolve needrestart /usr/sbin/needrestart)"
-        SUDO_CMDS="${APT_GET_BIN}, ${APT_BIN}, ${DPKG_BIN}, ${UNATTENDED_BIN}, ${NEEDRESTART_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}"
+        SUDO_CMDS="${APT_GET_BIN}, ${APT_BIN}, ${DPKG_BIN}, ${UNATTENDED_BIN}, ${NEEDRESTART_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}, ${SHELL_CMDS}"
         ;;
     rhel)
         DNF_BIN="$(_resolve dnf /usr/bin/dnf)"
         YUM_BIN="$(_resolve yum /usr/bin/yum)"
         NEEDS_RESTARTING_BIN="$(_resolve needs-restarting /usr/bin/needs-restarting)"
-        SUDO_CMDS="${DNF_BIN}, ${YUM_BIN}, ${NEEDS_RESTARTING_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}"
+        SUDO_CMDS="${DNF_BIN}, ${YUM_BIN}, ${NEEDS_RESTARTING_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}, ${SHELL_CMDS}"
         ;;
     suse)
         ZYPPER_BIN="$(_resolve zypper /usr/bin/zypper)"
-        SUDO_CMDS="${ZYPPER_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}"
+        SUDO_CMDS="${ZYPPER_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}, ${SHELL_CMDS}"
         ;;
     arch)
         PACMAN_BIN="$(_resolve pacman /usr/bin/pacman)"
-        SUDO_CMDS="${PACMAN_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}"
+        SUDO_CMDS="${PACMAN_BIN}, ${REBOOT_BIN}, ${SHUTDOWN_BIN}, ${SYSTEMCTL_BIN}, ${SHELL_CMDS}"
         ;;
 esac
 

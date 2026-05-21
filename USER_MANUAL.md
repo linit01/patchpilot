@@ -438,7 +438,7 @@ The bootstrap script (run as root on the target):
 
 1. Creates the `patchpilot` system user (no login shell).
 2. Adds PatchPilot's public key to `~patchpilot/.ssh/authorized_keys`.
-3. Writes `/etc/sudoers.d/patchpilot` with NOPASSWD scoped to `apt-get` / `dnf` / `yum` / `reboot` / `shutdown` — **not** `ALL=(ALL) NOPASSWD: ALL`.
+3. Writes `/etc/sudoers.d/patchpilot` with NOPASSWD scoped to the host's package manager (`apt-get` / `dnf` / `yum` / `zypper` / `pacman`), `reboot`, `shutdown`, and `/bin/sh` + `/bin/bash`. The shells are required because Ansible's `become` wraps every task in `sudo -n /bin/sh -c '...'`; effective privilege is unchanged from already allowing the package manager (which can install arbitrary packages). Still **not** `ALL=(ALL) NOPASSWD: ALL` in form, and not the kitchen-sink wheel-group entry.
 
 Once it runs, the Linux host needs no sudo password from PatchPilot. Leave the "Shared SUDO Password" field blank on schedules and Patch Now dialogs.
 
