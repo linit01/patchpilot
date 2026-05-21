@@ -1273,15 +1273,27 @@ def _parse_unreachable_hostnames(output: str, attempted_hostnames: list) -> list
 
 def _detect_hosts_actually_patched(output: str, hostnames: list) -> set:
     """
-    Determine which hosts actually had their packages updated, even when Ansible
-    exits non-zero due to a post-update SSH failure (e.g. temp key race condition).
+    Determine which hosts completed the Apply-updates task successfully, including
+    the no-op case where the host had nothing to update.
 
-    Logic: scan the output task-by-task. If a host has a 'changed:' or 'ok:' line
+    Logic: scan the output task-by-task. If a host has a 'changed:' OR 'ok:' line
     inside the 'Apply updates' task block, the apt/yum/brew command ran to completion
     on that host — regardless of whether subsequent tasks (reboot check, etc.) were
-    UNREACHABLE because the SSH connection dropped after the packages were installed.
+    UNREACHABLE because the SSH connection dropped after the packages were installed,
+    and regardless of whether the host actually had updates to apply.
 
-    Returns a set of hostname strings that were successfully patched.
+    Why 'ok:' counts as success: the playbook's `changed_when` for Apply-updates is
+    "'0 upgraded' not in apt_upgrade_result.stdout" — so `ok:` from this task means
+    apt ran cleanly and found nothing to upgrade (host already current). Treating
+    that as a patch FAILURE was producing red 'failed' entries in the per-host
+    patch log for hosts that were genuinely up-to-date. v1.1.6 reverts the v0.9.18
+    tightening that excluded `ok:` here. The original concern (no-op runs inflating
+    dashboard 'patched today' counters) is the lesser evil; if it becomes a
+    problem, distinguish via the empty packages_updated array, not by misreporting
+    a successful no-op as a failure.
+
+    Returns a set of hostname strings whose Apply-updates task completed (whether
+    or not any packages were installed).
     """
     import re
     patched = set()
@@ -1296,12 +1308,7 @@ def _detect_hosts_actually_patched(output: str, hostnames: list) -> set:
             continue
 
         if in_apply_task:
-            # ONLY count changed: — ok: means apt ran but installed nothing.
-            # This happens when the check playbook read a stale apt cache that showed
-            # packages pending, but the patch playbook runs apt-get update first and
-            # gets a fresh view where nothing needs upgrading.
-            # Accepting ok: here was the root cause of false-positive "patched" reports.
-            m = re.match(r'^changed:\s*\[([^\]]+)\]', stripped)
+            m = re.match(r'^(?:changed|ok):\s*\[([^\]]+)\]', stripped)
             if m:
                 ansible_host = m.group(1)
                 for h in hostnames:
@@ -1310,11 +1317,6 @@ def _detect_hosts_actually_patched(output: str, hostnames: list) -> set:
                         break
                 else:
                     patched.add(ansible_host)
-            # Log ok: explicitly so the stale-cache condition is visible in logs
-            m_ok = re.match(r'^ok:\s*\[([^\]]+)\]', stripped)
-            if m_ok:
-                print(f"[WARN] apt task reported ok (no changes) for {m_ok.group(1)} — "
-                      f"host may have stale check cache or packages already current")
 
     return patched
 
