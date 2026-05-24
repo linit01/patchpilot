@@ -64,7 +64,7 @@ struct PatchHistoryView: View {
                     .fontWeight(.medium)
                     .foregroundColor(Theme.textPrimary)
 
-                Text(record.createdAt ?? "—")
+                Text(BackendDate.formatLocal(record.createdAt))
                     .font(.caption)
                     .foregroundColor(Theme.textSecondary)
             }

@@ -55,6 +55,7 @@ class ScheduleResponse(BaseModel):
     day_of_week: str
     start_time: str
     end_time: str
+    timezone: str
     auto_reboot: bool
     has_password: bool
     host_count: int
@@ -63,6 +64,27 @@ class ScheduleResponse(BaseModel):
     last_status: Optional[str]
     created_at: str
     updated_at: str
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+
+async def _get_schedule_timezone(conn) -> str:
+    """Read the configured schedule timezone (IANA name) from settings.
+
+    Returns 'UTC' if unset or on any error. Schedule start_time/end_time are
+    bare TIME values interpreted in this zone by the scheduler loop, so
+    clients need this string to render the windows unambiguously.
+    """
+    try:
+        row = await conn.fetchrow("SELECT value FROM settings WHERE key = 'schedule_timezone'")
+        if row and row['value']:
+            return row['value'].strip() or 'UTC'
+    except Exception:
+        pass
+    return 'UTC'
 
 
 # ============================================================================
@@ -149,6 +171,7 @@ async def list_schedules(owner: str = None,
                 ORDER BY s.name
             """)
         
+        tz = await _get_schedule_timezone(conn)
         result = []
         for sched in schedules:
             # Get hosts for this schedule
@@ -159,7 +182,7 @@ async def list_schedules(owner: str = None,
                 WHERE sh.schedule_id = $1
                 ORDER BY h.hostname
             """, sched['id'])
-            
+
             result.append({
                 "id": str(sched['id']),
                 "name": sched['name'],
@@ -167,10 +190,11 @@ async def list_schedules(owner: str = None,
                 "day_of_week": sched['day_of_week'],
                 "start_time": str(sched['start_time'])[:5],
                 "end_time": str(sched['end_time'])[:5],
+                "timezone": tz,
                 "auto_reboot": sched['auto_reboot'],
                 "has_password": sched['become_password_encrypted'] is not None,
                 "host_count": sched['host_count'],
-                "hosts": [{"id": str(h['id']), "hostname": h['hostname'], 
+                "hosts": [{"id": str(h['id']), "hostname": h['hostname'],
                           "status": h['status'], "os_family": h['os_family']} for h in hosts],
                 "last_run": sched['last_run'].isoformat() if sched['last_run'] else None,
                 "last_status": sched['last_status'],
@@ -179,7 +203,7 @@ async def list_schedules(owner: str = None,
                 "updated_at": sched['updated_at'].isoformat(),
                 "owner_username": sched.get('owner_username')
             })
-        
+
         return result
 
 
@@ -260,6 +284,7 @@ async def get_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_poo
             WHERE sh.schedule_id = $1
         """, sched_uuid)
         
+        tz = await _get_schedule_timezone(conn)
         return {
             "id": str(sched['id']),
             "name": sched['name'],
@@ -267,6 +292,7 @@ async def get_schedule(schedule_id: str, pool: asyncpg.Pool = Depends(get_db_poo
             "day_of_week": sched['day_of_week'],
             "start_time": str(sched['start_time'])[:5],
             "end_time": str(sched['end_time'])[:5],
+            "timezone": tz,
             "auto_reboot": sched['auto_reboot'],
             "has_password": sched['become_password_encrypted'] is not None,
             "host_count": len(hosts),

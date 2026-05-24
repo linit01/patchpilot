@@ -65,7 +65,7 @@ struct HostDetailView: View {
             infoRow("OS", [host.osFamily, host.osVersion].compactMap { $0 }.joined(separator: " "))
             infoRow("SSH User", host.sshUser ?? "—")
             infoRow("SSH Port", host.sshPort.map { "\($0)" } ?? "22")
-            infoRow("Last Checked", host.lastChecked ?? "Never")
+            infoRow("Last Checked", BackendDate.formatLocal(host.lastChecked, fallback: "Never"))
             infoRow("Pending Updates", "\(host.totalUpdates ?? 0)")
         }
         .padding()
@@ -249,7 +249,7 @@ struct HostDetailView: View {
                         .foregroundColor(record.isSuccess ? Theme.green : Theme.red)
 
                     VStack(alignment: .leading) {
-                        Text(record.createdAt ?? "—")
+                        Text(BackendDate.formatLocal(record.createdAt))
                             .font(.caption)
                             .foregroundColor(Theme.textSecondary)
                         if let pkgs = record.packagesUpdated, pkgs > 0 {

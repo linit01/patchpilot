@@ -31,6 +31,7 @@
 		AADB8DCEA4050D542F9E58B2 /* StatsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB91B2034BF7B0EA6D6C20CD /* StatsCard.swift */; };
 		B0CF96110C836D5038C7DE2E /* PatchHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EBD198A4B31C0DD70F977F8 /* PatchHistory.swift */; };
 		BDDA3752974A0F071B37CC4C /* ServerConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73B5124673141E176CC5A2A /* ServerConfigView.swift */; };
+		C91F45BCA6B7AF28674B38AB /* DateParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = E83C7A33566EC1717696C5CA /* DateParsing.swift */; };
 		CDA530CF75C9D780A98FBB1D /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F8CF07383A9EEA1168D8521 /* KeychainHelper.swift */; };
 		D2D02AF2D3A67106C97AA932 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AE2DED1F68E6A18F2AF202A /* ContentView.swift */; };
 		E8734070575274CFAF37C568 /* WebSocketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 814B978EDA12471FF75B4510 /* WebSocketService.swift */; };
@@ -60,7 +61,7 @@
 		814B978EDA12471FF75B4510 /* WebSocketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketService.swift; sourceTree = "<group>"; };
 		8EBD198A4B31C0DD70F977F8 /* PatchHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatchHistory.swift; sourceTree = "<group>"; };
 		911AC18582D733F678D84409 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		9FD6A64E0610CDEAFBC85DA6 /* PatchPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PatchPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9FD6A64E0610CDEAFBC85DA6 /* PatchPilot.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PatchPilot.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1970F280A8865ABFD5C2BA7 /* HostRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostRow.swift; sourceTree = "<group>"; };
 		A72A3DD62A57E2AE3E7DECC4 /* Schedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Schedule.swift; sourceTree = "<group>"; };
 		A73B5124673141E176CC5A2A /* ServerConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfigView.swift; sourceTree = "<group>"; };
@@ -70,6 +71,7 @@
 		CF6454739760FF82307092AC /* FlowLegend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowLegend.swift; sourceTree = "<group>"; };
 		DDC7705245DA940D6C821FBD /* PatchPilotApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatchPilotApp.swift; sourceTree = "<group>"; };
 		DF402FCCF56C26F3503009A0 /* HostDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDetailView.swift; sourceTree = "<group>"; };
+		E83C7A33566EC1717696C5CA /* DateParsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateParsing.swift; sourceTree = "<group>"; };
 		F56516C992298ACCFF65D605 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		FCF8A4B46EC83CF6CFEEF173 /* StatsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -78,6 +80,7 @@
 		0B744D3D1E5BFE9D5B67B691 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				E83C7A33566EC1717696C5CA /* DateParsing.swift */,
 				3F8CF07383A9EEA1168D8521 /* KeychainHelper.swift */,
 				911AC18582D733F678D84409 /* Theme.swift */,
 			);
@@ -253,9 +256,10 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2640;
+				LastUpgradeCheck = 1500;
 				TargetAttributes = {
 					95042DB4590DD2739E9AB992 = {
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -300,6 +304,7 @@
 				D2D02AF2D3A67106C97AA932 /* ContentView.swift in Sources */,
 				870387168E608FE0D446BF02 /* DashboardStats.swift in Sources */,
 				4ECD369DF7A75B234C11628E /* DashboardView.swift in Sources */,
+				C91F45BCA6B7AF28674B38AB /* DateParsing.swift in Sources */,
 				7F9143E20D5FFE96793E5EA1 /* FlowLegend.swift in Sources */,
 				29104CE765A95DB6235AF41F /* Host.swift in Sources */,
 				FF22873CFAC8D8F7E4B6B994 /* HostDetailView.swift in Sources */,
@@ -397,7 +402,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = TRAHG99N36;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PatchPilot/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -485,7 +490,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = TRAHG99N36;
+				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PatchPilot/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
