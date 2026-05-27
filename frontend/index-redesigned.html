@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PatchPilot — Dashboard (Redesigned Mockup)</title>
+<style>
+/* ════════════════════════════════════════════════════════════
+   REDESIGN MOCKUP — applies design-critique recommendations.
+   Self-contained: no external fonts, no JS, no app.js.
+   Differences vs. current styles.css are marked with /* CHANGE */
+/* ════════════════════════════════════════════════════════════ */
+
+:root {
+    --bg-black: #000000;
+    --bg-panel: #111111;
+    --bg-card: #1a1a1a;
+    --bg-card-hover: #222222;
+    --bg-card-inner: #0d0d0d;
+    --border: #2a2a2a;
+    --border-light: #1e1e1e;
+    --text-primary: #e8e8e8;
+    --text-secondary: #b0b0b0;        /* CHANGE was #999 — easier secondary text */
+    --text-muted: #7a7a7a;            /* CHANGE was #555 — fixes 3.2:1 contrast fail */
+    --blue: #3498db;
+    --blue-dim: rgba(52,152,219,0.12);
+    --green: #00a65a;
+    --green-bright: #2ecc71;
+    --green-dim: rgba(0,166,90,0.12);
+    --amber: #f39c12;
+    --amber-dim: rgba(243,156,18,0.12);
+    --red: #e74c3c;
+    --red-dim: rgba(231,76,60,0.12);
+    --cyan: #00c0ef;
+    --cyan-dim: rgba(0,192,239,0.10);
+    --purple: #9b59b6;
+    --purple-dim: rgba(155,89,182,0.12);
+    --radius: 6px;
+    --radius-pill: 20px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* CHANGE: system font stack — no Google Fonts CDN.
+   Privacy + works in air-gapped k8s installs. */
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg-black);
+    color: var(--text-primary);
+    min-height: 100vh;
+    display: flex;
+}
+.mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* CHANGE: global focus-visible ring — keyboard users can now see where they are. */
+*:focus { outline: none; }
+*:focus-visible {
+    outline: 2px solid var(--cyan);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* ════════════════════════════════════════
+   SIDEBAR
+   ════════════════════════════════════════ */
+.sidebar {
+    width: 232px;
+    min-height: 100vh;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    z-index: 100;
+    overflow-y: auto;
+}
+
+.sidebar-brand {
+    padding: 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.brand-mark {
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--cyan), var(--blue));
+    display: flex; align-items: center; justify-content: center;
+}
+.brand-mark svg { width: 18px; height: 18px; color: #fff; }
+.sidebar-brand-text {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+}
+.sidebar-brand-text span { color: var(--cyan); }
+
+.sidebar-status {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+}
+.status-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 0;
+    color: var(--text-secondary);
+}
+.status-row-sub {
+    padding: 2px 0 2px 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+}
+.status-dot.green { background: var(--green-bright); box-shadow: 0 0 6px var(--green-bright); }
+.status-dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+
+.sidebar-nav { flex: 1; padding: 8px 0; }
+
+/* CHANGE: nav-section label sits above each group; section groups are
+   visually separated so users see "page links" vs "open dialog" as two
+   different intents. */
+.nav-section-label {
+    padding: 14px 18px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--text-muted);
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+    border-left: 3px solid transparent;
+    text-decoration: none;
+    min-height: 40px;  /* CHANGE: predictable touch target */
+}
+.nav-item:hover {
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.03);
+}
+.nav-item.active {
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.05);
+    border-left-color: var(--cyan);
+}
+
+/* CHANGE: SVG icons inherit currentColor — consistent cross-platform,
+   no emoji-font roulette. */
+.nav-icon {
+    width: 18px; height: 18px;
+    flex-shrink: 0;
+    opacity: 0.85;
+}
+.nav-item.active .nav-icon { color: var(--cyan); opacity: 1; }
+
+.nav-badge {
+    margin-left: auto;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+}
+.nav-badge.blue { background: #5b99f5; color: #000; }
+.nav-badge.amber { background: var(--amber); color: #000; }
+.nav-badge.red { background: var(--red); color: #fff; }
+
+.sidebar-version {
+    padding: 10px 18px;
+    border-top: 1px solid var(--border);
+    display: flex; flex-wrap: wrap;
+    align-items: center; gap: 6px;
+}
+.version-label {
+    font-size: 10px; font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.version-tag {
+    font-size: 11px; font-weight: 600;
+    color: var(--cyan);
+}
+.update-badge {
+    width: 100%;
+    display: flex; align-items: center; gap: 6px;
+    margin-top: 4px;
+    font-size: 11px; font-weight: 600;
+    color: var(--cyan);
+    padding: 6px 10px;
+    border-radius: 4px;
+    background: rgba(0,200,255,0.08);
+    border: 1px solid rgba(0,200,255,0.25);
+    cursor: pointer;
+}
+.update-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--cyan);
+    animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.sidebar-footer {
+    padding: 14px 18px;
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+}
+.user-avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--purple), var(--blue));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+    color: #fff;
+}
+.user-info { flex: 1; }
+.user-name { font-size: 13px; font-weight: 600; }
+.user-role { font-size: 11px; color: var(--text-muted); }
+.logout-btn {
+    background: none; border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 4px;
+}
+.logout-btn:hover { color: var(--red); background: rgba(255,255,255,0.04); }
+
+/* ════════════════════════════════════════
+   MAIN
+   ════════════════════════════════════════ */
+.main {
+    flex: 1;
+    margin-left: 232px;
+    padding: 24px 28px 52px;
+    min-height: 100vh;
+}
+
+/* CHANGE: title row is its own row — wraps cleanly, no orphan buttons
+   on narrow viewports. Activity bar is a separate, dedicated row. */
+.page-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+    gap: 16px;
+}
+.page-title {
+    font-size: 22px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.top-actions {
+    display: flex; gap: 10px; align-items: center;
+    flex-wrap: wrap;
+}
+
+.countdown-display {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 8px 14px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.countdown-display span { color: var(--cyan); font-weight: 600; }
+
+/* Buttons */
+.btn {
+    padding: 8px 18px;
+    border-radius: var(--radius-pill);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    display: inline-flex; align-items: center; gap: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    min-height: 36px;  /* CHANGE: consistent target height */
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-primary:hover:not(:disabled) { box-shadow: 0 0 16px rgba(52,152,219,0.4); transform: translateY(-1px); }
+.btn-warning { background: var(--amber); color: #000; font-weight: 700; }
+.btn-warning:hover:not(:disabled) { box-shadow: 0 0 16px rgba(243,156,18,0.4); transform: translateY(-1px); }
+.btn-secondary {
+    background: rgba(255,255,255,0.06);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+.btn-secondary:hover { color: var(--text-primary); border-color: var(--text-muted); background: rgba(255,255,255,0.1); }
+
+/* CHANGE: activity bar moved to its own row — full width, doesn't fight
+   buttons for space on narrow viewports. */
+.activity-bar-row {
+    margin-bottom: 20px;
+    padding: 8px 14px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    overflow-x: auto;
+}
+.activity-bar-row::-webkit-scrollbar { display: none; }
+.activity-bar-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+.activity-pills { display: flex; gap: 6px; flex-shrink: 0; }
+.activity-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    border-radius: var(--radius-pill);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    background: rgba(255,255,255,0.04);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+.pill-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+.activity-pill.pill-running { color: var(--cyan); border-color: rgba(0,192,239,0.3); background: var(--cyan-dim); }
+.activity-pill.pill-running .pill-dot { background: var(--cyan); animation: pulse 1.5s ease-in-out infinite; }
+.activity-pill.pill-success { color: var(--green-bright); border-color: rgba(0,166,90,0.3); background: var(--green-dim); }
+.activity-pill.pill-success .pill-dot { background: var(--green-bright); }
+.activity-pill.pill-warning { color: var(--amber); border-color: rgba(243,156,18,0.3); background: var(--amber-dim); }
+.activity-pill.pill-warning .pill-dot { background: var(--amber); }
+
+/* Stat cards: 5-card row preserved from production (intentional pattern). */
+.stats-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 22px;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.25s;
+}
+.stat-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+}
+.stat-total   { border-top: 3px solid var(--blue); }
+.stat-success { border-top: 3px solid var(--green); }
+.stat-warning { border-top: 3px solid var(--amber); }
+.stat-danger  { border-top: 3px solid var(--red); }
+.stat-info    { border-top: 3px solid var(--purple); }
+
+.stat-value {
+    font-size: 40px; font-weight: 800;
+    line-height: 1; margin-bottom: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.stat-total .stat-value   { color: var(--blue); }
+.stat-success .stat-value { color: var(--green-bright); }
+.stat-warning .stat-value { color: var(--amber); }
+.stat-danger .stat-value  { color: var(--red); }
+.stat-info .stat-value    { color: var(--purple); }
+.stat-label {
+    font-size: 12px; font-weight: 500;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+/* CHANGE: SVG glyph instead of low-opacity emoji — sharper, scales cleanly. */
+.stat-glyph {
+    position: absolute;
+    right: 18px; top: 50%;
+    transform: translateY(-50%);
+    width: 44px; height: 44px;
+    opacity: 0.12;
+    color: currentColor;
+}
+.stat-total   .stat-glyph { color: var(--blue); }
+.stat-success .stat-glyph { color: var(--green-bright); }
+.stat-warning .stat-glyph { color: var(--amber); }
+.stat-danger  .stat-glyph { color: var(--red); }
+.stat-info    .stat-glyph { color: var(--purple); }
+
+/* Panels */
+.panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 20px;
+    overflow: hidden;
+}
+.panel-header {
+    padding: 14px 22px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 12px;
+}
+.panel-toggle {
+    background: none; border: none;
+    color: var(--text-muted);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 8px 12px;   /* CHANGE: 28×28+ target, was tiny */
+    border-radius: 6px;
+    line-height: 1;
+}
+.panel-toggle:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+.panel-body { padding: 22px; }
+
+.chart-legend { display: flex; gap: 14px; font-size: 11px; }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); }
+.legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+.chart-bars { height: 160px; display: flex; align-items: flex-end; gap: 4px; }
+.chart-bar-group { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+.chart-bar-stack { width: 100%; display: flex; flex-direction: column-reverse; gap: 1px; }
+.chart-bar-seg { width: 100%; }
+.chart-bar-seg:first-child { border-radius: 0 0 2px 2px; }
+.chart-bar-seg:last-child  { border-radius: 2px 2px 0 0; }
+.chart-bar-seg:only-child  { border-radius: 2px; }
+.chart-bar-count {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px; font-weight: 700;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+}
+.chart-bar-label {
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 9px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.charts-row-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 20px;
+}
+.donut-wrapper { display: flex; align-items: center; gap: 24px; padding: 8px 0; }
+.donut-svg { width: 120px; height: 120px; flex-shrink: 0; }
+.donut-legend { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.donut-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-secondary); }
+.donut-row .swatch { width: 10px; height: 10px; border-radius: 2px; }
+.donut-row .count { margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-weight: 600; color: var(--text-primary); }
+
+/* Hosts table */
+.table-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 20px;
+}
+.hosts-table { width: 100%; border-collapse: collapse; }
+.hosts-table thead { background: var(--bg-panel); }
+.hosts-table th {
+    padding: 11px 16px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);  /* CHANGE: was --text-muted #555, now #b0 */
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid var(--border);
+}
+.hosts-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-light);
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+.hosts-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+.hosts-table tbody tr:last-child td { border-bottom: none; }
+input[type="checkbox"] {
+    width: 16px; height: 16px;
+    accent-color: var(--cyan);
+    cursor: pointer;
+}
+.status-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 12px;
+    border-radius: var(--radius-pill);
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.3px;
+}
+.status-up-to-date     { background: var(--green-dim); color: var(--green-bright); }
+.status-updates-avail  { background: var(--amber-dim); color: var(--amber); }
+.status-unreachable    { background: var(--red-dim);   color: var(--red); }
+.action-btn {
+    padding: 5px 14px; font-size: 11px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    background: rgba(255,255,255,0.04);
+    color: var(--text-secondary);
+    font-weight: 500;
+    min-height: 28px;
+}
+.action-btn:hover { color: var(--cyan); border-color: var(--cyan); background: var(--cyan-dim); }
+
+/* CHANGE: dedicated empty state for hosts table, not a misleading
+   "Loading hosts..." row when there are zero. */
+.empty-state {
+    padding: 48px 24px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+.empty-state-icon {
+    width: 48px; height: 48px;
+    color: var(--text-muted);
+    margin: 0 auto 12px;
+    opacity: 0.6;
+}
+.empty-state-title {
+    font-size: 15px; font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+.empty-state-desc {
+    font-size: 13px;
+    margin-bottom: 18px;
+    color: var(--text-secondary);
+}
+
+/* CHANGE: toast region — replaces in-flow status-message that pushes
+   layout when it appears. */
+.toast-region {
+    position: fixed;
+    top: 20px; right: 20px;
+    z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px;
+    max-width: 360px;
+}
+.toast {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    display: flex; align-items: flex-start; gap: 10px;
+    border: 1px solid;
+    background: var(--bg-card);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+    animation: slidein 0.25s ease-out;
+}
+@keyframes slidein {
+    from { transform: translateX(20px); opacity: 0; }
+    to   { transform: translateX(0); opacity: 1; }
+}
+.toast.toast-success { border-color: rgba(0,166,90,0.4); color: var(--green-bright); }
+.toast.toast-info    { border-color: rgba(52,152,219,0.4); color: var(--blue); }
+.toast svg { width: 18px; height: 18px; flex-shrink: 0; margin-top: 1px; }
+.toast-body { flex: 1; color: var(--text-primary); }
+.toast-body strong { display: block; margin-bottom: 2px; }
+
+/* Console bar (collapsed only for mockup) */
+.console-bar {
+    position: fixed;
+    bottom: 0; left: 232px; right: 0;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    height: 36px;
+    display: flex; align-items: center;
+    padding: 0 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+    z-index: 50;
+}
+.console-bar strong { color: var(--text-secondary); margin-right: 12px; letter-spacing: 1px; }
+
+/* Caption banner so reviewers know this is the mockup */
+.mockup-banner {
+    background: linear-gradient(90deg, var(--purple-dim), var(--cyan-dim));
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px;
+    font-size: 12px;
+    color: var(--text-primary);
+    text-align: center;
+    letter-spacing: 0.3px;
+}
+.mockup-banner strong { color: var(--cyan); }
+
+/* Annotations — green dots labeled with the change number */
+.annot {
+    position: relative;
+}
+.annot::before {
+    content: attr(data-annot);
+    position: absolute;
+    top: -8px; left: -10px;
+    background: var(--cyan);
+    color: #000;
+    font-size: 10px;
+    font-weight: 800;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 5;
+    box-shadow: 0 0 0 2px var(--bg-black);
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════ SIDEBAR ═══════ -->
+<aside class="sidebar">
+    <div class="sidebar-brand">
+        <div class="brand-mark">
+            <!-- CHANGE: SVG brand mark; was a JPEG with radial mask -->
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                <path d="m9 12 2 2 4-4"/>
+            </svg>
+        </div>
+        <div class="sidebar-brand-text">Patch<span>Pilot</span></div>
+    </div>
+
+    <div class="sidebar-status">
+        <div class="status-row"><div class="status-dot green"></div><span>Backend Connected</span></div>
+        <div class="status-row"><div class="status-dot green"></div><span>12 hosts monitored</span></div>
+        <div class="status-row"><div class="status-dot amber"></div><span>Load: 0.42 / 0.38 / 0.31</span></div>
+        <div class="status-row-sub mono"><span>Uptime: 14d 06:22</span></div>
+    </div>
+
+    <nav class="sidebar-nav">
+        <a class="nav-item active" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+            Dashboard
+        </a>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13l2 2 4-4"/></svg>
+            Patch History
+        </a>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            Hosts
+            <span class="nav-badge blue">12</span>
+        </a>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15M2 7l10 5 10-5M2 7v10l10 5 10-5V7M12 22V12"/></svg>
+            Packages
+            <span class="nav-badge amber">47</span>
+        </a>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+            Alerts
+            <span class="nav-badge red">2</span>
+        </a>
+
+        <div class="nav-section-label">Management</div>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            General
+        </a>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></svg>
+            SSH Keys
+        </a>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Users
+        </a>
+        <a class="nav-item" href="#" tabindex="0">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Schedules
+        </a>
+    </nav>
+
+    <div class="sidebar-version">
+        <span class="version-label">PatchPilot</span>
+        <span class="version-tag mono">v1.2.0</span>
+        <div class="update-badge" tabindex="0">
+            <span class="update-dot"></span> Update available
+        </div>
+    </div>
+
+    <div class="sidebar-footer">
+        <div class="user-avatar">JS</div>
+        <div class="user-info">
+            <div class="user-name">john</div>
+            <div class="user-role">full_admin</div>
+        </div>
+        <button class="logout-btn" aria-label="Sign out">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        </button>
+    </div>
+</aside>
+
+<!-- ═══════ MAIN ═══════ -->
+<div class="main">
+
+    <div class="mockup-banner">
+        <strong>Redesign mockup</strong> — applies the design-critique recommendations.
+        Numbered <span style="display:inline-flex;width:14px;height:14px;background:var(--cyan);color:#000;border-radius:50%;align-items:center;justify-content:center;font-size:9px;font-weight:800;">N</span> markers indicate notable changes.
+    </div>
+
+    <!-- CHANGE #1: Title + actions on one row, activity bar moved to its own row below -->
+    <div class="page-title-row" style="margin-top: 24px;">
+        <div class="page-title annot" data-annot="1">Dashboard</div>
+        <div class="top-actions">
+            <select class="btn-secondary" style="padding:8px 14px; border-radius:6px; background:var(--bg-panel); color:var(--text-secondary); font-size:13px; border:1px solid var(--border);">
+                <option>All Users</option>
+            </select>
+            <div class="countdown-display mono">Next check: <span>02:47</span></div>
+            <button class="btn btn-secondary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5"/></svg>
+                Refresh
+            </button>
+            <button class="btn btn-warning">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m13 2-3 7h6l-5 13 3-9H8l5-11z"/></svg>
+                Patch Selected (3)
+            </button>
+        </div>
+    </div>
+
+    <!-- Activity bar full width on its own row -->
+    <div class="activity-bar-row">
+        <span class="activity-bar-label">Activity</span>
+        <div class="activity-pills">
+            <span class="activity-pill pill-running"><span class="pill-dot"></span>Patching frigate.lan</span>
+            <span class="activity-pill pill-success"><span class="pill-dot"></span>johns-mbp.lan up-to-date</span>
+            <span class="activity-pill pill-success"><span class="pill-dot"></span>nas01.lan patched · 12 pkgs</span>
+            <span class="activity-pill pill-warning"><span class="pill-dot"></span>winsrv-01 needs reboot</span>
+        </div>
+    </div>
+
+    <!-- 5 stat cards preserved from production layout. -->
+    <div class="stats-container">
+        <div class="stat-card stat-total">
+            <div class="stat-value">12</div>
+            <div class="stat-label">Total Hosts</div>
+            <svg class="stat-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <div class="stat-card stat-success">
+            <div class="stat-value">8</div>
+            <div class="stat-label">Up to Date</div>
+            <svg class="stat-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>
+        </div>
+        <div class="stat-card stat-warning">
+            <div class="stat-value">3</div>
+            <div class="stat-label">Need Updates</div>
+            <svg class="stat-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg>
+        </div>
+        <div class="stat-card stat-danger">
+            <div class="stat-value">1</div>
+            <div class="stat-label">Unreachable</div>
+            <svg class="stat-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg>
+        </div>
+        <div class="stat-card stat-info">
+            <div class="stat-value">47</div>
+            <div class="stat-label">Pending Updates</div>
+            <svg class="stat-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15M2 7l10 5 10-5M2 7v10l10 5 10-5V7M12 22V12"/></svg>
+        </div>
+    </div>
+
+    <!-- Patch activity chart -->
+    <div class="panel">
+        <div class="panel-header">
+            Patch Activity (Last 7 Days)
+            <div style="display:flex; align-items:center; gap:14px;">
+                <div class="chart-legend">
+                    <span class="legend-item"><span class="legend-dot" style="background:var(--blue)"></span> Patched</span>
+                    <span class="legend-item"><span class="legend-dot" style="background:var(--red)"></span> Failed</span>
+                </div>
+                <button class="panel-toggle annot" data-annot="2" title="Collapse">▾</button>
+            </div>
+        </div>
+        <div class="panel-body">
+            <div class="chart-bars">
+                <div class="chart-bar-group">
+                    <div class="chart-bar-count">3</div>
+                    <div class="chart-bar-stack" style="height:30%">
+                        <div class="chart-bar-seg" style="background:var(--blue); height:100%"></div>
+                    </div>
+                    <div class="chart-bar-label">Sat</div>
+                </div>
+                <div class="chart-bar-group">
+                    <div class="chart-bar-count">0</div>
+                    <div class="chart-bar-stack" style="height:0%"></div>
+                    <div class="chart-bar-label">Sun</div>
+                </div>
+                <div class="chart-bar-group">
+                    <div class="chart-bar-count">8</div>
+                    <div class="chart-bar-stack" style="height:75%">
+                        <div class="chart-bar-seg" style="background:var(--blue); height:88%"></div>
+                        <div class="chart-bar-seg" style="background:var(--red); height:12%"></div>
+                    </div>
+                    <div class="chart-bar-label">Mon</div>
+                </div>
+                <div class="chart-bar-group">
+                    <div class="chart-bar-count">5</div>
+                    <div class="chart-bar-stack" style="height:50%">
+                        <div class="chart-bar-seg" style="background:var(--blue); height:100%"></div>
+                    </div>
+                    <div class="chart-bar-label">Tue</div>
+                </div>
+                <div class="chart-bar-group">
+                    <div class="chart-bar-count">11</div>
+                    <div class="chart-bar-stack" style="height:90%">
+                        <div class="chart-bar-seg" style="background:var(--blue); height:91%"></div>
+                        <div class="chart-bar-seg" style="background:var(--red); height:9%"></div>
+                    </div>
+                    <div class="chart-bar-label">Wed</div>
+                </div>
+                <div class="chart-bar-group">
+                    <div class="chart-bar-count">6</div>
+                    <div class="chart-bar-stack" style="height:55%">
+                        <div class="chart-bar-seg" style="background:var(--blue); height:100%"></div>
+                    </div>
+                    <div class="chart-bar-label">Thu</div>
+                </div>
+                <div class="chart-bar-group">
+                    <div class="chart-bar-count">2</div>
+                    <div class="chart-bar-stack" style="height:22%">
+                        <div class="chart-bar-seg" style="background:var(--blue); height:100%"></div>
+                    </div>
+                    <div class="chart-bar-label">Fri</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Donuts -->
+    <div class="charts-row-2col">
+        <div class="panel">
+            <div class="panel-header">OS Distribution <button class="panel-toggle">▾</button></div>
+            <div class="panel-body">
+                <div class="donut-wrapper">
+                    <svg class="donut-svg" viewBox="0 0 42 42">
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--border)" stroke-width="6"/>
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--blue)"        stroke-width="6" stroke-dasharray="42 100" stroke-dashoffset="25" transform="rotate(-90 21 21)"/>
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--amber)"       stroke-width="6" stroke-dasharray="33 100" stroke-dashoffset="-17" transform="rotate(-90 21 21)"/>
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--green-bright)" stroke-width="6" stroke-dasharray="25 100" stroke-dashoffset="-50" transform="rotate(-90 21 21)"/>
+                        <text x="21" y="22" text-anchor="middle" fill="var(--text-primary)" font-size="7" font-weight="700">12</text>
+                        <text x="21" y="28" text-anchor="middle" fill="var(--text-muted)" font-size="3">HOSTS</text>
+                    </svg>
+                    <div class="donut-legend">
+                        <div class="donut-row"><span class="swatch" style="background:var(--blue)"></span>Ubuntu <span class="count">5</span></div>
+                        <div class="donut-row"><span class="swatch" style="background:var(--amber)"></span>macOS <span class="count">4</span></div>
+                        <div class="donut-row"><span class="swatch" style="background:var(--green-bright)"></span>Windows <span class="count">3</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-header">Update Types <button class="panel-toggle">▾</button></div>
+            <div class="panel-body">
+                <div class="donut-wrapper">
+                    <svg class="donut-svg" viewBox="0 0 42 42">
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--border)" stroke-width="6"/>
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--red)"     stroke-width="6" stroke-dasharray="28 100" stroke-dashoffset="25" transform="rotate(-90 21 21)"/>
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--amber)"   stroke-width="6" stroke-dasharray="44 100" stroke-dashoffset="-3" transform="rotate(-90 21 21)"/>
+                        <circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--blue)"    stroke-width="6" stroke-dasharray="28 100" stroke-dashoffset="-47" transform="rotate(-90 21 21)"/>
+                        <text x="21" y="22" text-anchor="middle" fill="var(--text-primary)" font-size="7" font-weight="700">47</text>
+                        <text x="21" y="28" text-anchor="middle" fill="var(--text-muted)" font-size="3">PKGS</text>
+                    </svg>
+                    <div class="donut-legend">
+                        <div class="donut-row"><span class="swatch" style="background:var(--red)"></span>Security <span class="count">13</span></div>
+                        <div class="donut-row"><span class="swatch" style="background:var(--amber)"></span>Recommended <span class="count">21</span></div>
+                        <div class="donut-row"><span class="swatch" style="background:var(--blue)"></span>Other <span class="count">13</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hosts table -->
+    <div class="table-container">
+        <div class="panel-header">
+            All Hosts
+            <span style="font-size:11px; font-weight:400; color:var(--text-secondary); text-transform:none; letter-spacing:0;">Showing 12 of 12</span>
+        </div>
+        <table class="hosts-table">
+            <thead>
+                <tr>
+                    <th style="width:36px"><input type="checkbox" aria-label="Select all"></th>
+                    <th>Host</th>
+                    <th>IP Address</th>
+                    <th>OS</th>
+                    <th>Status</th>
+                    <th>Updates</th>
+                    <th>Last Checked</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><input type="checkbox"></td>
+                    <td><strong style="color:var(--text-primary)">johns-mbp.lan</strong></td>
+                    <td class="mono">10.0.1.42</td>
+                    <td>macOS 14.5</td>
+                    <td><span class="status-badge status-up-to-date">● Up to Date</span></td>
+                    <td>0</td>
+                    <td class="mono">2m ago</td>
+                    <td><button class="action-btn">View</button></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" checked></td>
+                    <td><strong style="color:var(--text-primary)">frigate.lan</strong></td>
+                    <td class="mono">10.0.1.101</td>
+                    <td>Ubuntu 24.04</td>
+                    <td><span class="status-badge status-updates-avail">● Updates Available</span></td>
+                    <td>14</td>
+                    <td class="mono">8m ago</td>
+                    <td><button class="action-btn">Patch</button></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" checked></td>
+                    <td><strong style="color:var(--text-primary)">nas01.lan</strong></td>
+                    <td class="mono">10.0.1.20</td>
+                    <td>Ubuntu 22.04</td>
+                    <td><span class="status-badge status-updates-avail">● Updates Available</span></td>
+                    <td>22</td>
+                    <td class="mono">3m ago</td>
+                    <td><button class="action-btn">Patch</button></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox"></td>
+                    <td><strong style="color:var(--text-primary)">winsrv-01</strong></td>
+                    <td class="mono">10.0.1.15</td>
+                    <td>Win Server 2022</td>
+                    <td><span class="status-badge status-unreachable">● Unreachable</span></td>
+                    <td>—</td>
+                    <td class="mono">2h ago</td>
+                    <td><button class="action-btn">Retry</button></td>
+                </tr>
+                <tr>
+                    <td><input type="checkbox" checked></td>
+                    <td><strong style="color:var(--text-primary)">k3s-ctrl.lan</strong></td>
+                    <td class="mono">10.0.1.10</td>
+                    <td>Ubuntu 24.04</td>
+                    <td><span class="status-badge status-updates-avail">● Updates Available</span></td>
+                    <td>11</td>
+                    <td class="mono">1m ago</td>
+                    <td><button class="action-btn">Patch</button></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- CHANGE #3: dedicated empty-state pattern (shown alongside the
+         real table here just so you can see how it looks; in production
+         this only renders when the hosts table is empty). -->
+    <div class="panel annot" data-annot="3" style="margin-top: 28px;">
+        <div class="panel-header">Empty State (preview)</div>
+        <div class="empty-state">
+            <svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <path d="M8 21h8M12 17v4"/>
+            </svg>
+            <div class="empty-state-title">No hosts yet</div>
+            <div class="empty-state-desc">Add your first host to start tracking system updates and patch status.</div>
+            <button class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                Add First Host
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- CHANGE #4: toasts replace in-flow status-message that pushes layout -->
+<div class="toast-region">
+    <div class="toast toast-success annot" data-annot="4">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        <div class="toast-body">
+            <strong>nas01.lan patched</strong>
+            12 packages updated, no reboot required.
+        </div>
+    </div>
+    <div class="toast toast-info">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <div class="toast-body">
+            <strong>Next check in 02:47</strong>
+            Auto-discovery scheduled.
+        </div>
+    </div>
+</div>
+
+<div class="console-bar">
+    <strong>CONSOLE</strong>
+    <span>Frontend ─ idle</span>
+    <span style="margin-left:auto;">▲</span>
+</div>
+
+</body>
+</html>
