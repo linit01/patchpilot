@@ -1521,6 +1521,34 @@ def _extract_packages_updated(output: str, hostname: str) -> list:
                     seen.add(label)
                     packages.append(label)
 
+    # Strategy 6: macOS App Store (mas) output -- the Apply App Store updates task
+    # wrapper script emits a clean per-app summary line:
+    #   DONE [<app_id>] <name> (<old_ver> -> <new_ver>)
+    # This is more reliable than scraping mas's own "==> Updated ..." noise, since
+    # the wrapper only logs DONE when `mas upgrade` exited 0 for that app.
+    if not packages:
+        _mas_lines = []
+        for line in output.splitlines():
+            json_m = _re.search(r'=>\s*(\{.*)', line)
+            if json_m:
+                try:
+                    data = _json.loads(json_m.group(1))
+                    _mas_lines.extend(data.get('stdout_lines', []))
+                except Exception:
+                    pass
+
+        for s in _mas_lines:
+            s = s.strip()
+            mas_m = _re.match(r'^DONE\s+\[\d+\]\s+(.+?)\s+\(([^)]*->\s*[^)]+)\)\s*$', s)
+            if mas_m:
+                name = mas_m.group(1).strip()
+                ver_range = mas_m.group(2).strip()
+                new_ver = ver_range.split('->')[-1].strip()
+                key = f"{name}={new_ver}"
+                if key not in seen:
+                    seen.add(key)
+                    packages.append(f"{name} ({new_ver})")
+
     return packages
 
 
