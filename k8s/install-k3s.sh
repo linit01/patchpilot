@@ -143,6 +143,21 @@ prompt_value() {
   echo "${value}"
 }
 
+# detect_default_sc: returns the cluster's default StorageClass (the one
+# annotated storageclass.kubernetes.io/is-default-class=true). Falls back to
+# 'local-path' (the stock k3s provisioner) if none is marked default or kubectl
+# can't reach the cluster. Result is memoized in PP_DETECTED_DEFAULT_SC.
+detect_default_sc() {
+  if [[ -n "${PP_DETECTED_DEFAULT_SC:-}" ]]; then
+    echo "${PP_DETECTED_DEFAULT_SC}"; return
+  fi
+  local sc
+  sc="$(kubectl get sc -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | head -1)"
+  [[ -z "${sc}" ]] && sc="local-path"
+  PP_DETECTED_DEFAULT_SC="${sc}"
+  echo "${sc}"
+}
+
 # confirm_proceed: auto-yes in NO_PROMPTS mode
 confirm_proceed() {
   local msg="$1"
@@ -273,6 +288,20 @@ check_prerequisites() {
   ok "python3: $(python3 --version)"
   python3 -c "import yaml" 2>/dev/null && ok "PyYAML available" \
     || warn "PyYAML not installed — using fallback parser (pip3 install pyyaml recommended)"
+  if command -v envsubst &>/dev/null; then
+    ok "envsubst: $(command -v envsubst)"
+  else
+    err "envsubst not found — required to render manifests"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      err "On macOS, install via Homebrew: brew install gettext"
+      err "gettext is keg-only, so envsubst may not be on PATH. If it still"
+      err "isn't found after install, run: brew link --force gettext"
+      err "(or add \$(brew --prefix gettext)/bin to PATH)"
+    else
+      err "Install it via your package manager (e.g. apt-get install gettext-base)"
+    fi
+    die "Missing required dependency: envsubst"
+  fi
   # Docker is only required when building and pushing images locally.
   # In registry mode (images pre-pushed to DockerHub) or no-interactive/web
   # wizard mode, skip Docker checks to avoid hanging if Docker daemon isn't
@@ -429,7 +458,7 @@ load_config() {
   PP_DB_PASSWORD="$(yaml_get patchpilot.postgres.password)"
   PP_DB_NAME="$(yaml_get patchpilot.postgres.database patchpilot)"
   PP_POSTGRES_STORAGE_SIZE="$(yaml_get patchpilot.postgres.storageSize 5Gi)"
-  PP_POSTGRES_STORAGE_CLASS="$(yaml_get patchpilot.postgres.storageClass local-data)"
+  PP_POSTGRES_STORAGE_CLASS="$(yaml_get patchpilot.postgres.storageClass "$(detect_default_sc)")"
   if [[ -z "${PP_DB_PASSWORD}" ]]; then
     PP_DB_PASSWORD="$(gen_password)"
     warn "Auto-generated PostgreSQL password: ${YELLOW}${PP_DB_PASSWORD}${NC} — save this"
@@ -461,7 +490,7 @@ load_config() {
   echo ""
 
   # Postgres — always local
-  PP_POSTGRES_STORAGE_CLASS="$(yaml_get patchpilot.postgres.storageClass local-data)"
+  PP_POSTGRES_STORAGE_CLASS="$(yaml_get patchpilot.postgres.storageClass "$(detect_default_sc)")"
   PP_POSTGRES_STORAGE_CLASS="$(prompt_value "PostgreSQL StorageClass (local recommended)" "${PP_POSTGRES_STORAGE_CLASS}" true)"
   PP_POSTGRES_STORAGE_SIZE="$(yaml_get patchpilot.postgres.storageSize 5Gi)"
   PP_POSTGRES_STORAGE_SIZE="$(prompt_value "PostgreSQL volume size" "${PP_POSTGRES_STORAGE_SIZE}")"
@@ -776,22 +805,45 @@ validate_storage_classes() {
   step "Validating StorageClasses"
   local available_scs
   available_scs="$(kubectl get sc -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"
-  for sc_var in "${PP_POSTGRES_STORAGE_CLASS}" "${PP_APP_STORAGE_CLASS}"; do
+
+  # volume_label:storageclass — each volume the installer provisions, so a
+  # failure names the specific volume (postgres/backups/ansible) at fault.
+  local checks=(
+    "postgres:${PP_POSTGRES_STORAGE_CLASS}"
+    "backups:${PP_APP_STORAGE_CLASS}"
+    "ansible:${PP_ANSIBLE_STORAGE_CLASS}"
+  )
+  local failures=()
+  local seen_ok=" "
+  local entry vol sc_var
+  for entry in "${checks[@]}"; do
+    vol="${entry%%:*}"
+    sc_var="${entry#*:}"
     [[ -z "${sc_var}" ]] && continue
     if echo "${available_scs}" | tr ' ' '\n' | grep -qx "${sc_var}"; then
-      ok "StorageClass exists: ${sc_var}"
-      local binding_mode
-      binding_mode="$(kubectl get sc "${sc_var}" -o jsonpath='{.volumeBindingMode}' 2>/dev/null)"
-      if [[ "${binding_mode}" == "WaitForFirstConsumer" ]]; then
-        warn "StorageClass '${sc_var}' uses WaitForFirstConsumer — PVCs will pend until pod schedules"
-        PP_SC_WAIT_FOR_CONSUMER="true"
+      # Only report/warn once per distinct StorageClass to cut noise.
+      if [[ "${seen_ok}" != *" ${sc_var} "* ]]; then
+        ok "StorageClass exists: ${sc_var}"
+        local binding_mode
+        binding_mode="$(kubectl get sc "${sc_var}" -o jsonpath='{.volumeBindingMode}' 2>/dev/null)"
+        if [[ "${binding_mode}" == "WaitForFirstConsumer" ]]; then
+          warn "StorageClass '${sc_var}' uses WaitForFirstConsumer — PVCs will pend until pod schedules"
+          PP_SC_WAIT_FOR_CONSUMER="true"
+        fi
+        seen_ok+="${sc_var} "
       fi
     else
-      err "StorageClass '${sc_var}' not found in cluster"
-      kubectl get sc --no-headers 2>/dev/null | awk '{print "    " $1 "  (" $2 ")"}' >&2
-      die "StorageClass validation failed — fix config and retry."
+      err "StorageClass '${sc_var}' (${vol} volume) not found in cluster"
+      failures+=("${vol}:${sc_var}")
     fi
   done
+
+  if [[ ${#failures[@]} -gt 0 ]]; then
+    echo "" >&2
+    err "Available StorageClasses in cluster:"
+    kubectl get sc --no-headers 2>/dev/null | awk '{print "    " $1 "  (" $2 ")"}' >&2
+    die "StorageClass validation failed for: ${failures[*]} — fix config and retry."
+  fi
 }
 
 # ── Wait for PVCs ──────────────────────────────────────────────────────────────

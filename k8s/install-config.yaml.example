@@ -44,7 +44,7 @@ patchpilot:
     password: ''                    # Leave blank — installer generates a strong password
     database: patchpilot
     storageSize: 5Gi
-    storageClass: app-data          # Change to match your cluster's StorageClass
+    storageClass: local-path        # Change to match your cluster's StorageClass (leave blank to auto-detect the cluster default)
   app:
     encryptionKey: ''               # Leave blank — installer auto-generates a Fernet key
     autoRefreshInterval: 60
