@@ -59,9 +59,15 @@ PiHole → patchpilot.lan → same Traefik LoadBalancer IP
 | K3s | Required | `curl -sfL https://get.k3s.io \| sh -` |
 | Traefik | Ships with k3s | Auto-installed |
 | cert-manager | Required for **`acme`** mode only | See below |
+| NFS client on nodes | Required for **NFS backups** only | `apt-get install -y nfs-common` (Debian/Ubuntu) · `dnf install -y nfs-utils` (RHEL) |
 
 > Using **`byo`** TLS (your own cert) or plain HTTP? You can skip cert-manager
 > and the Cloudflare token entirely — jump to [Bring-your-own certificate](#bring-your-own-certificate-byo-tls).
+
+> **NFS backups:** if you point backups at an NFS share, every k3s node needs the
+> NFS client utilities installed, or the backups volume fails to mount with
+> `bad option … you might need a /sbin/mount.<type> helper program`. Local-disk
+> backups (and the postgres/ansible volumes) don't need this.
 
 ```bash
 # Install cert-manager (if not already present)

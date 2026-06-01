@@ -4,6 +4,20 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.5.3] — 2026-06-01
+
+Installer/onboarding UX + docs polish — turns four gotchas surfaced during a Site B (internal-CA, macOS deploy host) rollout into upfront guidance.
+
+### Fixed
+- **Web installer banner showed `<this-host-ip>` on macOS.** The remote-access line used Linux-only `hostname -I`, which returns nothing on macOS. Now uses the cross-platform `docker_access_host()` helper (`ipconfig getifaddr` on macOS) so the banner shows the real LAN IP.
+
+### Added
+- **macOS firewall preflight in `install.sh`.** When the macOS Application Firewall is on, it silently blocks incoming connections to the wizard's Python (loopback is exempt), so remote access to `:9090` fails while localhost works. The launcher now detects this and prints the exact `socketfilterfw --setglobalstate off/on` commands instead of leaving the operator guessing.
+- **NFS-backups node prerequisite, surfaced up front.** Selecting NFS backups now warns (and KUBERNETES.md documents) that every k3s node needs the NFS client (`nfs-common` / `nfs-utils`), or the backups volume fails to mount with `bad option … you might need a /sbin/mount.<type> helper program`.
+- **Internal-CA / self-signed host-onboarding guidance.** The Add Host screen (Linux/macOS/Windows) now has a "HTTPS with an internal CA or self-signed cert?" note: hosts must trust the root CA or the onboarding `curl`/`irm` fails with `unable to get local issuer certificate`, with per-OS trust-store commands and the `-k` one-off caveat.
+
+---
+
 ## [1.5.2] — 2026-06-01
 
 ### Fixed

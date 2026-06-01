@@ -625,6 +625,9 @@ load_config() {
     PP_NFS_SHARE="$(prompt_value "NFS export path (e.g. /mnt/nas1/BACKUPS)" "${PP_NFS_SHARE}" true)"
     PP_NFS_SHARE="${PP_NFS_SHARE%/}"
     info "Using NFS: ${PP_NFS_SERVER}:${PP_NFS_SHARE}"
+    warn "NFS backups require the NFS client on every k3s node, or the backups"
+    warn "volume fails to mount ('bad option ... need a /sbin/mount.<type> helper')."
+    warn "Install it on each node:  apt-get install -y nfs-common   (RHEL: dnf install -y nfs-utils)"
   else
     PP_APP_STORAGE_CLASS="${PP_POSTGRES_STORAGE_CLASS}"
     PP_NFS_SERVER=""

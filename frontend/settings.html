@@ -1338,6 +1338,12 @@
                             You'll be prompted once for your sudo password.
                         </p>
                         <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                            <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">HTTPS with an internal CA or self-signed cert?</summary>
+                            <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                                If PatchPilot uses an <strong>internal-CA</strong> or self-signed HTTPS cert, the Mac must trust that CA or <code>curl</code> fails with <code>unable to get local issuer certificate</code>. Import your root CA into the System keychain and mark it trusted (<code>sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain root-ca.crt</code>), or add <code>-k</code> to the curl for a one-off on a trusted network.
+                            </div>
+                        </details>
+                        <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
                             <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Need to generate an SSH key first?</summary>
                             <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
                                 <p style="margin: 0 0 8px 0;">Run this on the <strong>PatchPilot server</strong> (or wherever you manage keys):</p>
@@ -1397,6 +1403,12 @@
                             and configures key-based authentication. Once the script completes, fill in the
                             hostname below and save.
                         </p>
+                        <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                            <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">HTTPS with an internal CA or self-signed cert?</summary>
+                            <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                                If PatchPilot uses an <strong>internal-CA</strong> or self-signed HTTPS cert, the Windows host must trust that CA or <code>irm</code> fails the TLS check. Import your root CA into the machine's Trusted Root store first (<code>Import-Certificate -FilePath root-ca.crt -CertStoreLocation Cert:\LocalMachine\Root</code>) in an elevated PowerShell, then run the command above.
+                            </div>
+                        </details>
                         <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
                             <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Need to generate an SSH key first?</summary>
                             <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
@@ -1459,6 +1471,14 @@
                             <code>reboot</code> / <code>shutdown</code>. Supported: Debian/Ubuntu, RHEL family,
                             SUSE, Arch.
                         </p>
+                        <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+                            <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">HTTPS with an internal CA or self-signed cert?</summary>
+                            <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                                If PatchPilot is served over HTTPS with an <strong>internal-CA</strong> or self-signed cert, the host must trust that CA or the command fails with <code>curl: (60) SSL certificate problem: unable to get local issuer certificate</code>.<br>
+                                <strong>Fix:</strong> install your root CA on the host — copy it to <code>/usr/local/share/ca-certificates/</code> then run <code>sudo update-ca-certificates</code> (RHEL: <code>/etc/pki/ca-trust/source/anchors/</code> + <code>update-ca-trust</code>).<br>
+                                <strong>One-off:</strong> add <code>-k</code> to the <code>curl</code> to skip verification — only on a trusted network, since you're piping to <code>sudo bash</code>.
+                            </div>
+                        </details>
                         <details style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
                             <summary style="cursor: pointer; color: var(--cyan, #00c0ef); font-weight: 500;">Need to generate an SSH key first?</summary>
                             <div style="margin-top: 8px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 6px;">

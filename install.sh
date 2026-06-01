@@ -175,10 +175,12 @@ install_web() {
   export PATCHPILOT_WEB_PORT="${WEB_PORT}"
   export PATCHPILOT_DEVELOPER="${DEVELOPER_MODE}"
 
-  # Detect LAN IP for remote-access instructions (server installs)
+  # Detect LAN IP for remote-access instructions (cross-platform: macOS uses
+  # ipconfig, Linux uses hostname -I — hostname -I is Linux-only and returns
+  # nothing on macOS, which is why the banner used to show <this-host-ip>).
   local lan_ip
-  lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  [[ -z "${lan_ip}" ]] && lan_ip="<this-host-ip>"
+  lan_ip="$(docker_access_host)"
+  [[ -z "${lan_ip}" || "${lan_ip}" == "localhost" ]] && lan_ip="<this-host-ip>"
 
   echo ""
   echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -192,6 +194,21 @@ install_web() {
   echo -e "${YELLOW}     Complete setup promptly and ensure your firewall${NC}"
   echo -e "${YELLOW}     restricts access to trusted hosts only.${NC}"
   echo -e "${YELLOW}  Press Ctrl+C to stop${NC}"
+
+  # macOS Application Firewall blocks incoming connections to the wizard's Python
+  # (loopback is exempt), so remote access to :${WEB_PORT} fails silently while
+  # localhost keeps working. Warn up front so remote setup isn't a mystery.
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    local fw_state
+    fw_state="$(/usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null || true)"
+    if [[ "${fw_state}" == *enabled* ]]; then
+      echo ""
+      echo -e "${YELLOW}  ⚠  macOS firewall is ON — remote access to :${WEB_PORT} will be blocked${NC}"
+      echo -e "${YELLOW}     (localhost still works). For remote setup, temporarily allow it:${NC}"
+      echo -e "${YELLOW}       sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off${NC}"
+      echo -e "${YELLOW}     and re-enable after install with: ... --setglobalstate on${NC}"
+    fi
+  fi
   echo ""
 
   sleep 1 && (
