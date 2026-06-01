@@ -477,6 +477,29 @@ async def restore_from_backup(file: UploadFile = File(...)):
         except Exception as br_e:
             logger.warning(f"Could not sync backup_restore pool: {br_e}")
 
+        # ── 4c. Re-bind the restored license to this install ───────────────
+        # The restored DB carries the previous install's license_instance_id,
+        # which fails provider validation here and flips the license to expired.
+        # Re-activate against the provider (reusing the restored install_uuid so
+        # no new activation slot is consumed). Falls back to a needs_activation
+        # state (one-click Activate in the UI) if the provider can't be reached.
+        try:
+            from license import (
+                rebind_license_after_restore as _rebind_license,
+                license_set_pool as _license_set_pool,
+            )
+            _license_set_pool(new_pool)
+            _lic = await _rebind_license(new_pool)
+            if _lic.get("license") == "reactivated":
+                logger.info("License re-activated for this install after restore")
+            elif _lic.get("license") == "needs_activation":
+                warnings.append(
+                    "License restored but needs re-activation — open Settings → License "
+                    "and click Activate to bind it to this installation."
+                )
+        except Exception as lic_e:
+            logger.warning(f"License rebind after restore failed (non-fatal): {lic_e}")
+
         # ── 5. Restore Ansible files ───────────────────────────────────────
         ansible_src = staging / "ansible"
         if ansible_src.exists() and any(ansible_src.iterdir()):

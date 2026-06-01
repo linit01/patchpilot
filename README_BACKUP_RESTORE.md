@@ -83,8 +83,8 @@ settings_export.json written (human-readable settings)
 /ansible/* files copied into staging
         │
         ▼
-Optional: PATCHPILOT_ENCRYPTION_KEY written to
-encryption_key.json (user-controlled toggle)
+PATCHPILOT_ENCRYPTION_KEY written to
+encryption_key.json (always included)
         │
         ▼
 backup_metadata.json written
@@ -156,7 +156,7 @@ patchpilot_backup_20260220_020000.tar.gz
     ├── ansible/
     │   ├── hosts                ← Ansible inventory
     │   └── check-os-updates.yml ← Ansible playbook(s)
-    └── encryption_key.json      ← (only if "Include encryption key" toggled ON)
+    └── encryption_key.json      ← (always included — required for a working restore)
 ```
 
 ---
@@ -212,6 +212,6 @@ kubectl scale deployment patchpilot-backend -n patchpilot --replicas=1
 
 - The `backups` volume is **not** publicly accessible — only through the `/api/backup/download/<filename>` endpoint
 - Backup filenames are sanitized server-side to prevent path traversal
-- If you include the encryption key in a backup, treat that archive like a secret — it can decrypt all stored SSH credentials
+- Every backup includes the encryption key (required so a restore on a fresh install works without manual steps) — treat the archive like a secret, since the key can decrypt all stored SSH credentials
 - The Docker socket mount (optional) gives the backend container Docker daemon access; only enable it if your API endpoints are not publicly exposed
 - Consider restricting the `/api/backup/*` endpoints with authentication middleware if your PatchPilot instance is network-accessible

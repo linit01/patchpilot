@@ -418,10 +418,11 @@ async def _run_backup(description: str, include_encryption_key: bool,
     """
     _check_pg_client_tools()
 
-    # Uninstall backups must always carry the encryption key — without it the
-    # restored DB's SSH credentials are permanently unreadable.
-    if uninstall_mode:
-        include_encryption_key = True
+    # Every backup carries the encryption key — without it the restored DB's SSH
+    # credentials are permanently unreadable, and a restore on a fresh install
+    # would silently lose them. This is non-negotiable for a working restore, so
+    # the option is always on (the create-backup UI no longer exposes a toggle).
+    include_encryption_key = True
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     short_id = secrets.token_hex(2)  # 4 hex chars

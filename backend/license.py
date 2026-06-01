@@ -195,6 +195,20 @@ async def get_license_status(pool) -> dict:
             "customer_email": customer_email or "",
         }
 
+    # License key present but not yet bound to this install — e.g. just restored
+    # from a backup, where the old install's instance binding was dropped. The
+    # app stays usable; the UI shows a one-click "Activate" to finish re-binding.
+    if license_key and license_status == "needs_activation":
+        return {
+            "status": "needs_activation",
+            "trial_days_total": TRIAL_DAYS,
+            "trial_days_remaining": None,
+            "trial_expires_at": None,
+            "license_key_set": True,
+            "customer_name": customer_name or "",
+            "customer_email": customer_email or "",
+        }
+
     # No trial started yet
     if not trial_started:
         return {
@@ -246,11 +260,82 @@ async def get_license_status(pool) -> dict:
     }
 
 
+async def rebind_license_after_restore(pool) -> dict:
+    """Re-bind a restored license to THIS install.
+
+    A restored backup carries the previous install's license_instance_id, which
+    fails provider validation on a new install (it flips to 'expired' → the UI
+    shows nothing useful). Drop the stale binding and re-activate the key against
+    the provider so the license works here. The restored install_uuid is reused,
+    so the provider sees the same install identity and re-binds without consuming
+    a new activation slot. Falls back to a 'needs_activation' state (key kept, one
+    click to finish) when the provider is unreachable or rejects (e.g. activation
+    limit). No-op when there's no license key — the restored trial_started_at then
+    drives the trial at its original period.
+    """
+    try:
+        license_key = await _get_setting(pool, "license_key")
+    except Exception as e:
+        logger.warning(f"[License] restore rebind: could not read license_key: {e}")
+        return {"license": "error", "error": str(e)}
+
+    if not license_key:
+        return {"license": "none"}
+
+    # Stale binding from the old install — drop it regardless of outcome.
+    await _set_setting(pool, "license_last_validated", "",
+                       "Last successful license validation")
+
+    install_uuid = await _get_or_create_install_uuid(pool)
+    customer_email = await _get_setting(pool, "license_customer_email") or ""
+    customer_name = await _get_setting(pool, "license_customer_name") or ""
+
+    try:
+        result = await get_provider().activate(
+            license_key, install_uuid,
+            email=customer_email, first_name=customer_name,
+        )
+    except Exception as e:
+        logger.warning(f"[License] restore rebind: provider unreachable: {e}")
+        await _set_setting(pool, "license_status", "needs_activation",
+                           "Current license status")
+        return {"license": "needs_activation", "error": "provider unreachable"}
+
+    if result.ok and result.instance_id:
+        now = datetime.now(timezone.utc).isoformat()
+        await _set_setting(pool, "license_instance_id", result.instance_id,
+                           "License server activation instance ID")
+        await _set_setting(pool, "license_status", "active",
+                           "Current license status")
+        await _set_setting(pool, "license_last_validated", now,
+                           "Last successful license validation")
+        if result.customer_name:
+            await _set_setting(pool, "license_customer_name", result.customer_name,
+                               "Customer name from license server")
+        if result.customer_email:
+            await _set_setting(pool, "license_customer_email", result.customer_email,
+                               "Customer email from license server")
+        logger.info("[License] restore rebind: re-activated successfully")
+        return {"license": "reactivated"}
+
+    # Provider rejected (e.g. activation limit) — keep the key, prompt 1-click activate.
+    await _set_setting(pool, "license_status", "needs_activation",
+                       "Current license status")
+    logger.warning(f"[License] restore rebind: provider rejected — needs_activation: {result.error}")
+    return {
+        "license": "needs_activation",
+        "error": result.error or "activation rejected",
+        "activation_limit_reached": getattr(result, "activation_limit_reached", False),
+    }
+
+
 # ── Middleware helpers ─────────────────────────────────────────────────────────
 async def check_trial_active(pool) -> bool:
     """Returns True if the app is licensed or within the trial period."""
     status = await get_license_status(pool)
-    return status["status"] in ("trial", "active", "no_setup")
+    # needs_activation = a restored license awaiting re-bind — keep the app usable
+    # so the owner isn't locked out before they click Activate.
+    return status["status"] in ("trial", "active", "no_setup", "needs_activation")
 
 
 async def require_license(pool) -> bool:
@@ -416,6 +501,36 @@ async def activate_license(
         "message": "License activated successfully.",
         "customer_name": result.customer_name,
     }
+
+
+@router.post("/reactivate")
+async def reactivate_license(user: dict = Depends(require_full_admin)):
+    """
+    One-click re-activation of the license key already stored in settings (no
+    re-typing). Used after a restore when auto-rebind couldn't reach the provider
+    or the activation slot was busy. Re-binds the stored key to this install.
+    """
+    pool = await _get_pool()
+    license_key = await _get_setting(pool, "license_key")
+    if not license_key:
+        raise HTTPException(status_code=400,
+                            detail="No stored license key to re-activate.")
+
+    result = await rebind_license_after_restore(pool)
+    if result.get("license") == "reactivated":
+        return {"status": "active", "message": "License re-activated for this installation."}
+
+    if result.get("activation_limit_reached"):
+        raise HTTPException(
+            status_code=400,
+            detail="This license key has reached its activation limit. "
+                   "Deactivate it on your other installation first, or "
+                   f"contact support at {PURCHASE_URL}"
+        )
+    raise HTTPException(
+        status_code=502,
+        detail=result.get("error") or "Could not re-activate the license. Try again.",
+    )
 
 
 @router.post("/deactivate")

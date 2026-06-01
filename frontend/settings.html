@@ -1059,13 +1059,7 @@
                                     <label>Description (optional)</label>
                                     <input type="text" id="backup-description" placeholder="e.g. Pre-upgrade snapshot">
                                 </div>
-                                <div class="form-group">
-                                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; text-transform:none; letter-spacing:0; font-weight:400; font-size:13px; color:var(--text-secondary);">
-                                        <input type="checkbox" id="backup-include-key" style="width:auto; margin:0;">
-                                        Include encryption key in backup
-                                    </label>
-                                    <div class="help-text">⚠️ Key allows decrypting SSH credentials — store backup securely if enabled</div>
-                                </div>
+                                <div class="help-text" style="margin-bottom:12px;">🔐 Every backup includes the encryption key so a restore on a fresh install works automatically. Treat the archive as a secret — it can decrypt all stored SSH credentials.</div>
                                 <button class="btn btn-primary" onclick="createBackup()" id="backup-create-btn">
                                     <span class="btn-icon">💾</span> Create Backup
                                 </button>
@@ -3709,13 +3703,13 @@
         async function createBackup() {
             const btn = document.getElementById('backup-create-btn');
             const desc = document.getElementById('backup-description').value.trim();
-            const includeKey = document.getElementById('backup-include-key').checked;
             btn.disabled = true;
             btn.textContent = '⏳ Creating…';
             showBackupBanner('Creating backup…', 0);
 
             try {
-                const params = new URLSearchParams({ description: desc, include_encryption_key: includeKey });
+                // Encryption key is always included now (required for a working restore).
+                const params = new URLSearchParams({ description: desc, include_encryption_key: 'true' });
                 const res = await fetch(`${_BACKUP_API}/create?${params}`, {
                     method: 'POST',
                 });
@@ -4297,6 +4291,25 @@
                     detail.innerHTML = `Your 14-day trial has expired. Enter a license key to continue using PatchPilot.`;
                     deactivateSection.style.display = 'none';
                     keyInput.disabled = false;
+                } else if (data.status === 'needs_activation') {
+                    badge.textContent = 'Activate';
+                    badge.style.background = 'rgba(232, 153, 62, 0.15)';
+                    badge.style.color = '#e8993e';
+                    detail.innerHTML = 'Your license was restored from a backup. ' +
+                        '<button onclick="reactivateLicense()" class="btn btn-primary" style="padding:4px 12px; font-size:12px; margin-left:6px;">Activate for this install</button>' +
+                        '<br><span style="font-size:12px; color:var(--text-muted);">Or enter a different key below.</span>';
+                    deactivateSection.style.display = 'none';
+                    keyInput.disabled = false;
+                } else if (data.status === 'expired' || data.status === 'disabled') {
+                    badge.textContent = data.status === 'disabled' ? 'Disabled' : 'Expired';
+                    badge.style.background = 'rgba(232, 84, 84, 0.15)';
+                    badge.style.color = '#e85454';
+                    detail.innerHTML = `Your license is ${data.status}. ` +
+                        '<button onclick="reactivateLicense()" class="btn btn-primary" style="padding:4px 12px; font-size:12px; margin:0 6px;">Re-activate</button>' +
+                        'or enter a new key below' +
+                        (data.status === 'expired' ? ', or <a href="https://getpatchpilot.app/buy" target="_blank" style="color:var(--cyan)">renew</a>.' : '.');
+                    deactivateSection.style.display = 'none';
+                    keyInput.disabled = false;
                 } else {
                     badge.textContent = 'No Setup';
                     badge.style.background = 'rgba(122, 132, 148, 0.15)';
@@ -4346,6 +4359,30 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Activate';
+            }
+        }
+
+        // One-click re-activation of the license key already stored in settings
+        // (used after a restore). No key re-entry needed.
+        async function reactivateLicense() {
+            const detail = document.getElementById('license-status-detail');
+            const prev = detail.innerHTML;
+            detail.innerHTML = 'Activating…';
+            try {
+                const resp = await fetch('/api/license/reactivate', {
+                    method: 'POST',
+                    credentials: 'include',
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    await loadLicenseStatus();
+                } else {
+                    detail.innerHTML = prev;
+                    alert('✗ ' + (data.detail || 'Re-activation failed.'));
+                }
+            } catch (e) {
+                detail.innerHTML = prev;
+                alert('✗ Network error — please try again.');
             }
         }
 

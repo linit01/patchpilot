@@ -970,11 +970,20 @@ validate_storage_classes() {
       # Only report/warn once per distinct StorageClass to cut noise.
       if [[ "${seen_ok}" != *" ${sc_var} "* ]]; then
         ok "StorageClass exists: ${sc_var}"
-        local binding_mode
+        local binding_mode provisioner
         binding_mode="$(kubectl get sc "${sc_var}" -o jsonpath='{.volumeBindingMode}' 2>/dev/null)"
+        provisioner="$(kubectl get sc "${sc_var}" -o jsonpath='{.provisioner}' 2>/dev/null)"
         if [[ "${binding_mode}" == "WaitForFirstConsumer" ]]; then
           warn "StorageClass '${sc_var}' uses WaitForFirstConsumer — PVCs will pend until pod schedules"
           PP_SC_WAIT_FOR_CONSUMER="true"
+        elif [[ "${provisioner}" == "rancher.io/local-path" ]]; then
+          # local-path provisions a hostPath on the node the pod lands on, so it
+          # REQUIRES WaitForFirstConsumer. With Immediate it can't pick a node and
+          # fails ("configuration error, no node was specified") — PVCs hang Pending.
+          err "StorageClass '${sc_var}' (${vol}) uses rancher.io/local-path with volumeBindingMode '${binding_mode:-Immediate}'."
+          err "local-path requires WaitForFirstConsumer — with Immediate it cannot provision (no node is selected)."
+          err "Recreate the StorageClass with 'volumeBindingMode: WaitForFirstConsumer' (binding mode is immutable: delete + recreate)."
+          failures+=("${vol}:${sc_var}")
         fi
         seen_ok+="${sc_var} "
       fi
@@ -1015,12 +1024,24 @@ validate_tls_byo() {
 
 # ── Wait for PVCs ──────────────────────────────────────────────────────────────
 wait_for_pvcs() {
-  local pvcs=("patchpilot-postgres-data" "patchpilot-backups" "patchpilot-ansible-data")
   if [[ "${PP_SC_WAIT_FOR_CONSUMER:-false}" == "true" ]]; then
     info "WaitForFirstConsumer mode — skipping PVC pre-bind wait"
     return 0
   fi
-  info "Waiting for PVCs to bind (up to 90s)..."
+  # Only wait for PVCs backed by a STATIC PV — those bind immediately. Dynamic
+  # PVCs (e.g. local-path) commonly use WaitForFirstConsumer and stay Pending
+  # until their consuming pod is scheduled, so waiting here would deadlock: the
+  # pod isn't created until after this step. Their binding is verified later by
+  # wait_for_rollout.
+  local pvcs=()
+  [[ "${PP_POSTGRES_MODE:-}" != "dynamic" ]] && pvcs+=("patchpilot-postgres-data")
+  [[ "${PP_BACKUPS_MODE:-}"  != "dynamic" ]] && pvcs+=("patchpilot-backups")
+  [[ "${PP_ANSIBLE_MODE:-}"  != "dynamic" ]] && pvcs+=("patchpilot-ansible-data")
+  if [[ ${#pvcs[@]} -eq 0 ]]; then
+    info "All volumes are dynamically provisioned — they bind when pods schedule; skipping pre-bind wait"
+    return 0
+  fi
+  info "Waiting for static PVCs to bind (up to 90s): ${pvcs[*]}"
   local deadline=$(( $(date +%s) + 90 ))
   local tmpdir; tmpdir="$(mktemp -d)"
   for pvc in "${pvcs[@]}"; do echo "Pending" > "${tmpdir}/${pvc}"; done

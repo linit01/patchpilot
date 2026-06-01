@@ -25,6 +25,10 @@ data:
         listen 80;
         server_name _;
 
+        # Allow large uploads (backup restore archives can be tens of MB).
+        # Default is 1m, which rejects restore uploads with HTTP 413.
+        client_max_body_size 1024m;
+
         root  /usr/share/nginx/html;
         index login.html;
 

@@ -4,6 +4,24 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.5.0] — 2026-06-01
+
+Turnkey backup/restore — a restore on a fresh install now brings everything back (data, encryption key, license) with no CLI steps. Surfaced while migrating a prod k3s install from backup.
+
+### Changed
+- **Backups always include the encryption key.** The optional "Include encryption key" checkbox is gone — without the key, a restore on a fresh install silently loses all stored SSH credentials. `_run_backup` now always bundles `encryption_key.json`. The Backup & Restore UI shows a note that the archive is sensitive (it can decrypt all SSH credentials).
+
+### Added
+- **Restore re-binds the license automatically.** A restored backup carries the previous install's `license_instance_id`, which fails provider validation on the new install and silently flipped the license to "expired" (the UI then showed a misleading "No Setup"). Restore now drops the stale binding and re-activates the key against the provider, reusing the restored `install_uuid` so no new activation slot is consumed. If the provider is unreachable or rejects (e.g. activation limit), it keeps the key and surfaces a one-click **Activate** in Settings → License (new `POST /api/license/reactivate`, no key re-entry). With no license, the restored `trial_started_at` continues the trial at its original period.
+- **License UI handles `expired` / `needs_activation` states** instead of falling through to "No Setup" — shows a re-activate prompt.
+
+### Fixed
+- **Restore upload failed with HTTP 413 for archives over 1 MB** — the frontend nginx had no `client_max_body_size` (1 MB default). Set to `1024m` in the k8s ConfigMap template and Docker `nginx.conf`, so the wizard upload works without the curl-to-backend workaround.
+- **Dynamic PVCs deadlocked the installer's pre-bind wait** — `wait_for_pvcs` now pre-waits only static-PV-backed PVCs; dynamic (WaitForFirstConsumer) volumes bind when their pod schedules.
+- **Fail-fast validation for `rancher.io/local-path` + `Immediate`** — that StorageClass combination can't provision ("no node was specified"); the installer now stops with a clear message to recreate the SC as `WaitForFirstConsumer`.
+
+---
+
 ## [1.4.2] — 2026-06-01
 
 ### Fixed
