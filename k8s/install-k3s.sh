@@ -158,6 +158,36 @@ detect_default_sc() {
   echo "${sc}"
 }
 
+# _existing_secret_value KEY — print the decoded value of a key in the existing
+# patchpilot-secrets Secret, or empty if the secret/key is absent. A re-run must
+# REUSE the password and Fernet key already in the cluster, because:
+#   • Postgres only honours POSTGRES_PASSWORD on first init — a regenerated
+#     password will not match the already-initialised data volume, so the
+#     backend fails with "password authentication failed".
+#   • The Fernet key decrypts stored SSH secrets — regenerating it makes every
+#     stored credential undecryptable.
+# Decode with python3 (always present; portable across macOS/Linux base64).
+_existing_secret_value() {
+  local key="$1" b64
+  b64="$(kubectl get secret patchpilot-secrets -n "${PP_NAMESPACE}" \
+    -o jsonpath="{.data.${key}}" 2>/dev/null || true)"
+  [[ -z "${b64}" ]] && return 0
+  printf '%s' "${b64}" \
+    | python3 -c "import sys,base64; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())" 2>/dev/null \
+    || true
+}
+
+# _pick_ip: from a space-separated list of addresses return a single one,
+# preferring IPv4. Dual-stack nodes report both an IPv4 and an IPv6 InternalIP;
+# concatenating them produces a broken ssh target like
+# "ssh 10.0.10.101 fd06:...:bb52 sudo rm -rf ...".
+_pick_ip() {
+  local addrs="$1" ip
+  ip="$(printf '%s\n' ${addrs} | grep -m1 -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || true)"
+  [[ -z "${ip}" ]] && ip="$(printf '%s\n' ${addrs} | head -1)"
+  printf '%s' "${ip}"
+}
+
 # confirm_proceed: auto-yes in NO_PROMPTS mode
 confirm_proceed() {
   local msg="$1"
@@ -185,6 +215,16 @@ do_uninstall() {
   # Runs a busybox container that mounts the data directory from the node
   # directly — no SSH required. Must run BEFORE namespace deletion so the
   # Job has a namespace to live in.
+  #
+  # Only needed for hostpath-mode installs (static PVs named patchpilot-*).
+  # Dynamic volumes have no data under ${data_dir}; their provisioner reclaims
+  # them when the namespace/PVCs are deleted, so the Job would only create an
+  # empty ${data_dir} on the node for nothing — skip it.
+  local has_static_pv=false
+  if kubectl get pv patchpilot-postgres-data &>/dev/null || \
+     kubectl get pv patchpilot-ansible-data &>/dev/null; then
+    has_static_pv=true
+  fi
   step "Running hostPath cleanup Job (no SSH required)"
   local job_name="patchpilot-hostpath-cleanup"
   local job_json
@@ -223,7 +263,10 @@ JOBEOF
   # Delete any leftover job from a prior attempt
   kubectl delete job "${job_name}" -n "${ns}" --ignore-not-found=true &>/dev/null
 
-  if echo "${job_json}" | kubectl apply -f - &>/dev/null; then
+  if [[ "${has_static_pv}" != "true" ]]; then
+    ok "Dynamic volumes — provisioner reclaims data on namespace deletion; skipping node cleanup Job"
+    job_succeeded=true
+  elif echo "${job_json}" | kubectl apply -f - &>/dev/null; then
     info "Cleanup Job created — waiting up to 60s..."
     if kubectl wait --for=condition=complete "job/${job_name}"         -n "${ns}" --timeout=60s &>/dev/null; then
       ok "hostPath cleanup complete"
@@ -248,9 +291,9 @@ JOBEOF
 
   # ── Step 6: Surface fallback/manual commands ───────────────────────────────
   local node_ip
-  node_ip="$(kubectl get nodes \
+  node_ip="$(_pick_ip "$(kubectl get nodes \
     -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' \
-    2>/dev/null)"
+    2>/dev/null)")"
   local node_ref="${node_ip:-<k3s-node-ip>}"
 
   if [[ "${job_succeeded}" == "false" ]]; then
@@ -460,15 +503,30 @@ load_config() {
   PP_POSTGRES_STORAGE_SIZE="$(yaml_get patchpilot.postgres.storageSize 5Gi)"
   PP_POSTGRES_STORAGE_CLASS="$(yaml_get patchpilot.postgres.storageClass "$(detect_default_sc)")"
   if [[ -z "${PP_DB_PASSWORD}" ]]; then
-    PP_DB_PASSWORD="$(gen_password)"
-    warn "Auto-generated PostgreSQL password: ${YELLOW}${PP_DB_PASSWORD}${NC} — save this"
+    # Reuse the password already in the cluster so a re-run matches the
+    # initialised Postgres data volume (Postgres ignores POSTGRES_PASSWORD after
+    # first init). Only generate a fresh one when no secret exists yet.
+    PP_DB_PASSWORD="$(_existing_secret_value POSTGRES_PASSWORD)"
+    if [[ -n "${PP_DB_PASSWORD}" ]]; then
+      info "Reusing existing PostgreSQL password from patchpilot-secrets (matches the initialised data volume)"
+    else
+      PP_DB_PASSWORD="$(gen_password)"
+      warn "Auto-generated PostgreSQL password: ${YELLOW}${PP_DB_PASSWORD}${NC} — save this"
+    fi
   fi
 
   # ── Encryption key ─────────────────────────────────────────────────────────
   PP_ENCRYPTION_KEY="$(yaml_get patchpilot.app.encryptionKey)"
   if [[ -z "${PP_ENCRYPTION_KEY}" ]]; then
-    PP_ENCRYPTION_KEY="$(gen_fernet_key)"
-    warn "Auto-generated Fernet key: ${YELLOW}${PP_ENCRYPTION_KEY}${NC} — save this"
+    # Reuse the existing Fernet key — regenerating it would make every stored
+    # SSH credential undecryptable. Only generate when none exists.
+    PP_ENCRYPTION_KEY="$(_existing_secret_value PATCHPILOT_ENCRYPTION_KEY)"
+    if [[ -n "${PP_ENCRYPTION_KEY}" ]]; then
+      info "Reusing existing encryption key from patchpilot-secrets (keeps stored SSH secrets decryptable)"
+    else
+      PP_ENCRYPTION_KEY="$(gen_fernet_key)"
+      warn "Auto-generated Fernet key: ${YELLOW}${PP_ENCRYPTION_KEY}${NC} — save this"
+    fi
   fi
 
   # ── Application ────────────────────────────────────────────────────────────
@@ -544,40 +602,92 @@ load_config() {
   PP_DATA_DIR="$(yaml_get patchpilot.storage.dataDir /app-data)"
   PP_DATA_DIR="${PP_DATA_DIR%/}"  # strip trailing slash
 
-  # ── Build PV source blocks ─────────────────────────────────────────────────
-  _build_pv_source() {
-    local sc_name="$1" pv_name="$2"
-    if [[ -z "${sc_name}" ]]; then
-      echo "  hostPath:"; echo "    path: ${PP_DATA_DIR}/${pv_name}"; echo "    type: DirectoryOrCreate"
-      return
-    fi
-    local provisioner
-    provisioner="$(kubectl get sc "${sc_name}" -o jsonpath='{.provisioner}' 2>/dev/null)"
-    case "${provisioner}" in
-      rancher.io/local-path)
-        local node
-        node="$(kubectl get nodes --field-selector='spec.unschedulable!=true' \
-          -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
-        echo "  hostPath:"; echo "    path: ${PP_DATA_DIR}/${pv_name}"; echo "    type: DirectoryOrCreate"
-        echo "  nodeAffinity:"; echo "    required:"; echo "      nodeSelectorTerms:"
-        echo "      - matchExpressions:"
-        echo "        - key: kubernetes.io/hostname"; echo "          operator: In"
-        echo "          values:"; echo "          - ${node}"
-        ;;
-      nfs.csi.k8s.io|nfs-subdir-external-provisioner|cluster.local/*)
-        echo "  mountOptions:"; echo "  - nfsvers=3"; echo "  - hard"
-        echo "  nfs:"; echo "    server: ${PP_NFS_SERVER}"; echo "    path: ${PP_NFS_SHARE}"
-        ;;
-      *)
-        warn "Unknown provisioner '${provisioner}' for SC '${sc_name}' — falling back to hostPath"
-        echo "  hostPath:"; echo "    path: ${PP_DATA_DIR}/${pv_name}"; echo "    type: DirectoryOrCreate"
-        ;;
+  # ── Decide provisioning mode per volume ────────────────────────────────────
+  # dynamic   — the StorageClass has a real dynamic provisioner (e.g.
+  #             rancher.io/local-path). Emit a PVC only and let the provisioner
+  #             create the volume in its own directory. No static PV, no
+  #             hostPath, no /app-data, no node pinning.
+  # hostpath  — no StorageClass, or a no-provisioner SC. Emit a static hostPath
+  #             PV under ${PP_DATA_DIR} pinned to the node (legacy behaviour).
+  # nfs       — backups on an NFS share: emit a static NFS PV (unchanged).
+  _local_mode() {
+    local sc="$1" prov
+    [[ -z "${sc}" ]] && { echo "hostpath"; return; }
+    prov="$(kubectl get sc "${sc}" -o jsonpath='{.provisioner}' 2>/dev/null || true)"
+    case "${prov}" in
+      ""|kubernetes.io/no-provisioner) echo "hostpath" ;;
+      *)                               echo "dynamic"  ;;
     esac
   }
 
-  PP_POSTGRES_PV_SOURCE="$(_build_pv_source "${PP_POSTGRES_STORAGE_CLASS}" "patchpilot-postgres-data")"
-  PP_APP_PV_SOURCE="$(_build_pv_source "${PP_APP_STORAGE_CLASS}" "patchpilot-backups")"
-  PP_APP_PV_SOURCE_ANSIBLE="$(_build_pv_source "${PP_ANSIBLE_STORAGE_CLASS}" "patchpilot-ansible-data")"
+  # _pv_doc: full PersistentVolume YAML document for static modes, or empty
+  # string for dynamic mode (PVC-only). Args: name component size reclaim sc mode
+  _pv_doc() {
+    local name="$1" comp="$2" size="$3" reclaim="$4" sc="$5" mode="$6"
+    [[ "${mode}" == "dynamic" ]] && { printf ''; return; }
+    local src
+    if [[ "${mode}" == "nfs" ]]; then
+      src="$(printf '  mountOptions:\n  - nfsvers=3\n  - hard\n  nfs:\n    server: %s\n    path: %s' \
+        "${PP_NFS_SERVER}" "${PP_NFS_SHARE}")"
+    else
+      local node
+      node="$(kubectl get nodes --field-selector='spec.unschedulable!=true' \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+      src="$(printf '  hostPath:\n    path: %s/%s\n    type: DirectoryOrCreate\n  nodeAffinity:\n    required:\n      nodeSelectorTerms:\n      - matchExpressions:\n        - key: kubernetes.io/hostname\n          operator: In\n          values:\n          - %s' \
+        "${PP_DATA_DIR}" "${name}" "${node}")"
+    fi
+    cat <<PVDOC
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${name}
+  labels:
+    app.kubernetes.io/name: patchpilot
+    app.kubernetes.io/component: ${comp}
+    app.kubernetes.io/managed-by: patchpilot-installer
+spec:
+  capacity:
+    storage: ${size}
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: ${reclaim}
+  storageClassName: ${sc}
+  claimRef:
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    name: ${name}
+    namespace: ${PP_NAMESPACE}
+${src}
+PVDOC
+  }
+
+  # _volname: "  volumeName: <name>" for static PVs (binds the PVC to its named
+  # PV), or empty for dynamic mode (the provisioner picks the PV).
+  _volname() { [[ "$2" == "dynamic" ]] && printf '' || printf '  volumeName: %s' "$1"; }
+
+  # Local volumes (postgres, ansible, and local backups) share one mode.
+  local _local_prov_mode; _local_prov_mode="$(_local_mode "${PP_POSTGRES_STORAGE_CLASS}")"
+  PP_POSTGRES_MODE="${_local_prov_mode}"
+  PP_ANSIBLE_MODE="${_local_prov_mode}"
+  if [[ "${PP_BACKUP_STORAGE_TYPE}" == "nfs" ]]; then
+    PP_BACKUPS_MODE="nfs"
+  else
+    PP_BACKUPS_MODE="${_local_prov_mode}"
+  fi
+
+  if [[ "${_local_prov_mode}" == "dynamic" ]]; then
+    info "Local volumes use dynamic provisioning (StorageClass: ${PP_POSTGRES_STORAGE_CLASS}) — no hostPath on the node"
+  else
+    info "Local volumes use static hostPath under ${PP_DATA_DIR}"
+  fi
+
+  PP_POSTGRES_PV_DOC="$(_pv_doc patchpilot-postgres-data postgres "${PP_POSTGRES_STORAGE_SIZE}" Delete "${PP_POSTGRES_STORAGE_CLASS}" "${PP_POSTGRES_MODE}")"
+  PP_BACKUPS_PV_DOC="$(_pv_doc patchpilot-backups       backups  "${PP_BACKUPS_STORAGE_SIZE}" Retain "${PP_APP_STORAGE_CLASS}"      "${PP_BACKUPS_MODE}")"
+  PP_ANSIBLE_PV_DOC="$(_pv_doc patchpilot-ansible-data  ansible  "${PP_ANSIBLE_STORAGE_SIZE}" Delete "${PP_ANSIBLE_STORAGE_CLASS}"  "${PP_ANSIBLE_MODE}")"
+
+  PP_POSTGRES_VOLNAME="$(_volname patchpilot-postgres-data "${PP_POSTGRES_MODE}")"
+  PP_BACKUPS_VOLNAME="$(_volname patchpilot-backups "${PP_BACKUPS_MODE}")"
+  PP_ANSIBLE_VOLNAME="$(_volname patchpilot-ansible-data "${PP_ANSIBLE_MODE}")"
 
   # ── kubectl path — baked into the deployment so the backend pod can run
   #    kubectl without relying on PATH inside the slim Python image.
@@ -704,7 +814,8 @@ generate_manifests() {
            PP_BACKUP_RETAIN_COUNT PP_MAX_BACKUP_SIZE_MB \
            PP_POSTGRES_STORAGE_SIZE PP_BACKUPS_STORAGE_SIZE PP_ANSIBLE_STORAGE_SIZE \
            PP_POSTGRES_STORAGE_CLASS_SPEC PP_APP_STORAGE_CLASS_SPEC \
-           PP_POSTGRES_PV_SOURCE PP_APP_PV_SOURCE PP_APP_PV_SOURCE_ANSIBLE \
+           PP_POSTGRES_PV_DOC PP_BACKUPS_PV_DOC PP_ANSIBLE_PV_DOC \
+           PP_POSTGRES_VOLNAME PP_BACKUPS_VOLNAME PP_ANSIBLE_VOLNAME \
            PP_POSTGRES_STORAGE_CLASS PP_APP_STORAGE_CLASS \
            PP_ANSIBLE_STORAGE_CLASS PP_ANSIBLE_STORAGE_CLASS_SPEC \
            PP_NFS_SERVER PP_NFS_SHARE PP_BACKUP_STORAGE_TYPE \
@@ -718,7 +829,8 @@ generate_manifests() {
 '$PP_IMAGE_PULL_POLICY:$PP_PULL_SECRET_NAME:$PP_DB_USER:$PP_DB_PASSWORD:'\
 '$PP_DB_NAME:$PP_ENCRYPTION_KEY:$PP_BASE_URL:$PP_ALLOWED_ORIGINS:'\
 '$PP_POSTGRES_STORAGE_SIZE:$PP_BACKUPS_STORAGE_SIZE:$PP_ANSIBLE_STORAGE_SIZE:'\
-'$PP_POSTGRES_PV_SOURCE:$PP_APP_PV_SOURCE:$PP_APP_PV_SOURCE_ANSIBLE:'\
+'$PP_POSTGRES_PV_DOC:$PP_BACKUPS_PV_DOC:$PP_ANSIBLE_PV_DOC:'\
+'$PP_POSTGRES_VOLNAME:$PP_BACKUPS_VOLNAME:$PP_ANSIBLE_VOLNAME:'\
 '$PP_POSTGRES_STORAGE_CLASS:$PP_POSTGRES_STORAGE_CLASS_SPEC:'\
 '$PP_APP_STORAGE_CLASS:$PP_APP_STORAGE_CLASS_SPEC:'\
 '$PP_ANSIBLE_STORAGE_CLASS:$PP_ANSIBLE_STORAGE_CLASS_SPEC:'\
@@ -736,7 +848,16 @@ generate_manifests() {
   render "${tmpl}/00-namespace.yaml"  "${GENERATED_DIR}/00-namespace.yaml";  ok "00-namespace.yaml"
   render "${tmpl}/00b-rbac.yaml"      "${GENERATED_DIR}/00b-rbac.yaml";      ok "00b-rbac.yaml"
   render "${tmpl}/01-secrets.yaml"    "${GENERATED_DIR}/01-secrets.yaml";    ok "01-secrets.yaml"
-  render "${tmpl}/02-pvs.yaml"        "${GENERATED_DIR}/02-pvs.yaml";        ok "02-pvs.yaml"
+  render "${tmpl}/02-pvs.yaml"        "${GENERATED_DIR}/02-pvs.yaml"
+  # All volumes dynamic → no static PVs → 02-pvs.yaml is comment-only, which
+  # `kubectl apply` rejects ("no objects passed to apply"). Drop the file so the
+  # apply loop skips it.
+  if ! grep -q 'kind: PersistentVolume' "${GENERATED_DIR}/02-pvs.yaml"; then
+    rm -f "${GENERATED_DIR}/02-pvs.yaml"
+    ok "02-pvs.yaml (none needed — all volumes dynamically provisioned)"
+  else
+    ok "02-pvs.yaml"
+  fi
   render "${tmpl}/02b-pvcs.yaml"      "${GENERATED_DIR}/02b-pvcs.yaml";      ok "02b-pvcs.yaml"
   render "${tmpl}/03-postgres.yaml"   "${GENERATED_DIR}/03-postgres.yaml";   ok "03-postgres.yaml"
   render "${tmpl}/04-backend.yaml"    "${GENERATED_DIR}/04-backend.yaml";    ok "04-backend.yaml"
@@ -885,13 +1006,20 @@ wait_for_pvcs() {
 # FIX: use -t to allocate a TTY so sudo doesn't fail with
 #      "sudo: a terminal is required to read the password"
 clean_node_data_dirs() {
+  # Dynamic provisioning keeps no data under ${PP_DATA_DIR} on the node — the
+  # provisioner owns the volume directory and reclaims it on PVC deletion. There
+  # is nothing to SSH in and remove, so skip this step entirely.
+  if [[ "${PP_POSTGRES_MODE:-}" == "dynamic" ]]; then
+    ok "Local volumes are dynamically provisioned — no hostPath data on the node to clean"
+    return 0
+  fi
   local node node_ip
   local data_dir; data_dir="$(yaml_get patchpilot.storage.dataDir /app-data)"
   data_dir="${data_dir%/}"
   node="$(kubectl get nodes --field-selector='spec.unschedulable!=true' \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
-  node_ip="$(kubectl get node "${node}" \
-    -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)"
+  node_ip="$(_pick_ip "$(kubectl get node "${node}" \
+    -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)")"
 
   [[ -z "${node}" ]] && return 0
 
@@ -1012,6 +1140,23 @@ apply_manifests() {
       return 0   # doesn't exist yet — nothing to do
     fi
 
+    # Switched to dynamic provisioning: this volume no longer has a static PV in
+    # the generated manifest (file dropped, or PV doc absent). The old static PV
+    # (reclaimPolicy: Delete) would otherwise re-bind the new PVC and prevent the
+    # provisioner from creating a fresh volume — delete it. Only postgres/ansible
+    # reach here; the backups PV is never reconciled.
+    if [[ ! -f "${GENERATED_DIR}/02-pvs.yaml" ]] || \
+       ! grep -q "name: ${pv_name}\$" "${GENERATED_DIR}/02-pvs.yaml"; then
+      info "${pv_name}: now dynamically provisioned — removing stale static PV"
+      kubectl delete pv "${pv_name}" --wait=false 2>/dev/null || true
+      for _ in $(seq 1 10); do
+        kubectl get pv "${pv_name}" &>/dev/null || break
+        sleep 1
+      done
+      ok "PV ${pv_name} deleted — provisioner will create the volume"
+      return 0
+    fi
+
     # Extract the volume source from the *generated* manifest
     local new_nfs_server new_nfs_path new_host_path
     new_nfs_server="$(awk "/name: ${pv_name}\$/,/^---/{print}" "${GENERATED_DIR}/02-pvs.yaml" \
@@ -1060,7 +1205,9 @@ apply_manifests() {
   # strip it from the generated manifest so kubectl apply doesn't try to
   # mutate the immutable volume source.  The re-adoption (claimRef clear)
   # was already handled above.
-  if kubectl get pv "patchpilot-backups" &>/dev/null; then
+  if kubectl get pv "patchpilot-backups" &>/dev/null \
+     && [[ -f "${GENERATED_DIR}/02-pvs.yaml" ]] \
+     && grep -q "name: patchpilot-backups\$" "${GENERATED_DIR}/02-pvs.yaml"; then
     info "patchpilot-backups PV already exists — stripping from manifest to preserve it"
     # Use awk to remove the backups PV document from the multi-doc YAML.
     # Each document starts with "---" and the backups PV contains "name: patchpilot-backups".
@@ -1131,6 +1278,35 @@ dump_pod_diagnostics() {
   info "Recent namespace events:"
   kubectl get events -n "${PP_NAMESPACE}"     --sort-by=.lastTimestamp 2>/dev/null | tail -20 || true
   echo ""
+}
+
+# ── Retain dynamically-provisioned backups ─────────────────────────────────────
+# When backups use a dynamic provisioner (local disk on a local-path-style SC),
+# the provisioned PV inherits the StorageClass reclaim policy (usually Delete),
+# so backup archives would be wiped on uninstall. Patch the bound PV to Retain
+# and tag it so the data survives — matching the guarantee the static NFS/backups
+# PV gives. NFS backups are a static PV and already Retain, so they skip this.
+# Note: auto re-adoption of a Retained dynamic backups PV on reinstall is not yet
+# implemented — the old PV is left Released and a fresh volume is provisioned; the
+# retained data can be recovered by manually rebinding that PV.
+retain_dynamic_backups() {
+  [[ "${PP_BACKUPS_MODE:-}" == "dynamic" ]] || return 0
+  step "Securing dynamically-provisioned backups volume"
+  local pv
+  pv="$(kubectl get pvc patchpilot-backups -n "${PP_NAMESPACE}" \
+    -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+  if [[ -z "${pv}" ]]; then
+    warn "Backups PVC not bound yet — could not set Retain (backups may be deleted on uninstall)"
+    return 0
+  fi
+  if kubectl patch pv "${pv}" \
+       -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}' &>/dev/null \
+     && kubectl annotate pv "${pv}" patchpilot.io/role=backups --overwrite &>/dev/null; then
+    ok "Backups volume ${pv} set to Retain — survives uninstall"
+  else
+    warn "Could not set Retain on backups PV ${pv} — verify reclaim policy manually"
+  fi
+  return 0
 }
 
 # ── Wait for rollout ───────────────────────────────────────────────────────────
@@ -1236,6 +1412,7 @@ main() {
   clean_node_data_dirs
   apply_manifests
   wait_for_rollout
+  retain_dynamic_backups
   show_completion
 }
 
