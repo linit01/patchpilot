@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.5.1] — 2026-06-01
+
+### Changed
+- **Backups no longer write a standalone `_ENCRYPTION_KEY.txt` sidecar.** Now that every archive contains `encryption_key.json` and restore applies it automatically (1.5.0), the loose plaintext key file beside the `.tgz` was redundant noise (and an extra on-disk secret). Each backup is now a single `.tgz`. Deleting an archive still removes any legacy sidecar left by older backups.
+
+---
+
 ## [1.5.0] — 2026-06-01
 
 Turnkey backup/restore — a restore on a fresh install now brings everything back (data, encryption key, license) with no CLI steps. Surfaced while migrating a prod k3s install from backup.

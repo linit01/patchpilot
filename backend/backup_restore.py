@@ -590,24 +590,10 @@ async def _run_backup(description: str, include_encryption_key: bool,
         archive_size = archive_path.stat().st_size
         logger.info(f"Backup archive created: {archive_path} ({_human_size(archive_size)})")
 
-        # ── Step 6b: Write standalone encryption key file ─────────────────
-        # Written *beside* the tarball so the operator can grab it without
-        # cracking open the archive.  Retention policy never prunes .txt files.
-        if includes_key:
-            key_txt_name = (
-                archive_path.name
-                .replace(".tar.gz", "").replace(".tgz", "")
-                + "_ENCRYPTION_KEY.txt"
-            )
-            key_txt_path = BACKUP_DIR / key_txt_name
-            key_txt_path.write_text(
-                f"# PatchPilot Encryption Key\n"
-                f"# Backup: {archive_path.name}\n"
-                f"# Created: {datetime.now(timezone.utc).isoformat()}\n"
-                f"# WARNING: KEEP THIS FILE SECRET — it decrypts all stored SSH credentials\n\n"
-                f"PATCHPILOT_ENCRYPTION_KEY={enc_key}\n"
-            )
-            logger.info(f"Encryption key file written: {key_txt_path}")
+        # The encryption key lives inside the archive (encryption_key.json) and is
+        # applied automatically on restore — no standalone _ENCRYPTION_KEY.txt
+        # sidecar is written. (Deleting an archive still removes any legacy sidecar
+        # from older backups; see _delete_companion_key_file.)
 
     # ── Step 7: Enforce retention policy ──────────────────────────────────
     _set_progress("retention", 95, "Applying retention policy...")
