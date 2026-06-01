@@ -95,8 +95,12 @@ On the machine where you run the installer (your Mac or Linux workstation):
 In your k3s cluster:
 
 - **Traefik** — ships with k3s by default
-- **cert-manager** — `kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml`
-- **Cloudflare API token secret** (DNS-01 TLS) — see step 1 below
+- **cert-manager** — `kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml` *(only for `tls.mode: acme`)*
+- **Cloudflare API token secret** (DNS-01 TLS) — see step 1 below *(acme + DNS-01 only)*
+
+> **Internal hostname (e.g. `*.apps.lan`)?** Use `tls.mode: byo` instead — supply your
+> own cert via a `kubernetes.io/tls` secret and skip cert-manager/Cloudflare entirely.
+> See [KUBERNETES.md → Bring-your-own certificate](KUBERNETES.md#bring-your-own-certificate-byo-tls).
 
 ### Step 1 — Cloudflare API token (DNS-01 only)
 

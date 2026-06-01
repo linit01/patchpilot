@@ -12,8 +12,8 @@ metadata:
     app.kubernetes.io/name: patchpilot
     app.kubernetes.io/component: ingress
   annotations:
-    cert-manager.io/cluster-issuer: ${PP_CLUSTER_ISSUER}
     traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+${PP_CERT_MANAGER_ANNOTATION}
 ${PP_INGRESS_MIDDLEWARE_ANNOTATION}
 spec:
   ingressClassName: ${PP_INGRESS_CLASS}

@@ -469,6 +469,16 @@ load_config() {
   for h in "${PP_ADDITIONAL_HOSTNAMES[@]:-}"; do [[ -n "${h}" ]] && ALL_HOSTNAMES+=("${h}"); done
 
   PP_TLS_ENABLED="$(yaml_get patchpilot.network.tls.enabled true)"
+  # tls.mode: acme (default — cert-manager + ClusterIssuer/ACME) or byo (bring
+  # your own — reference a pre-created TLS secret, no cert-manager). byo is the
+  # path for internal/private hostnames (e.g. *.apps.lan) that public ACME CAs
+  # cannot validate.
+  PP_TLS_MODE="$(yaml_get patchpilot.network.tls.mode acme)"
+  PP_TLS_MODE="$(printf '%s' "${PP_TLS_MODE}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${PP_TLS_MODE}" != "acme" && "${PP_TLS_MODE}" != "byo" ]]; then
+    warn "Unknown tls.mode '${PP_TLS_MODE}' — defaulting to 'acme'"
+    PP_TLS_MODE="acme"
+  fi
   PP_CLUSTER_ISSUER="$(yaml_get patchpilot.network.tls.clusterIssuer letsencrypt-prod)"
   PP_TLS_SECRET_NAME="$(yaml_get patchpilot.network.tls.secretName)"
   PP_HTTPS_REDIRECT="$(yaml_get patchpilot.network.httpsRedirect true)"
@@ -490,10 +500,12 @@ load_config() {
   PP_CHALLENGE_TYPE="$(yaml_get patchpilot.certManager.challengeType dns01-cloudflare)"
   PP_CF_EMAIL="$(yaml_get patchpilot.certManager.cloudflare.email)"
   PP_CF_API_TOKEN_SECRET="$(yaml_get patchpilot.certManager.cloudflare.apiTokenSecretName cloudflare-api-token-secret)"
-  if [[ "${PP_TLS_ENABLED}" == "true" ]]; then
+  if [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "acme" ]]; then
     PP_LE_EMAIL="$(prompt_value "Let's Encrypt email" "${PP_LE_EMAIL}" true)"
     [[ "${PP_CHALLENGE_TYPE}" == "dns01-cloudflare" ]] && \
       PP_CF_EMAIL="$(prompt_value "Cloudflare account email" "${PP_CF_EMAIL}" true)"
+  elif [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "byo" ]]; then
+    info "TLS mode: bring-your-own — referencing pre-created secret '${PP_TLS_SECRET_NAME}' (no cert-manager/ACME)"
   fi
 
   # ── Database ───────────────────────────────────────────────────────────────
@@ -704,7 +716,7 @@ PVDOC
   echo "  Backend image  : ${PP_BACKEND_IMAGE}"
   echo "  Frontend image : ${PP_FRONTEND_IMAGE}"
   echo "  Primary host   : ${PP_HOSTNAME}"
-  echo "  TLS enabled    : ${PP_TLS_ENABLED}"
+  echo "  TLS enabled    : ${PP_TLS_ENABLED}$([[ "${PP_TLS_ENABLED}" == "true" ]] && echo " (${PP_TLS_MODE})")"
   echo "  Backup storage : ${PP_BACKUP_STORAGE_TYPE}${PP_NFS_SERVER:+ (${PP_NFS_SERVER}:${PP_NFS_SHARE})}"
   echo "  Data directory : ${PP_DATA_DIR}"
   echo ""
@@ -820,6 +832,7 @@ generate_manifests() {
            PP_ANSIBLE_STORAGE_CLASS PP_ANSIBLE_STORAGE_CLASS_SPEC \
            PP_NFS_SERVER PP_NFS_SHARE PP_BACKUP_STORAGE_TYPE \
            PP_CLUSTER_ISSUER PP_TLS_SECRET_NAME PP_INGRESS_CLASS \
+           PP_CERT_MANAGER_ANNOTATION \
            PP_LE_EMAIL PP_CF_EMAIL PP_CF_API_TOKEN_SECRET \
            PP_KUBECTL_BIN PP_DATA_DIR \
            PP_LICENSE_PROVIDER PP_FREEMIUS_PRODUCT_ID
@@ -840,7 +853,7 @@ generate_manifests() {
 '$PP_AUTO_REFRESH_INTERVAL:$PP_DEFAULT_SSH_USER:$PP_DEFAULT_SSH_PORT:'\
 '$PP_BACKUP_RETAIN_COUNT:$PP_MAX_BACKUP_SIZE_MB:'\
 '$PP_INGRESS_RULES:$PP_TLS_HOSTS:$PP_TLS_DNS_NAMES:'\
-'$PP_INGRESS_MIDDLEWARE_ANNOTATION:$PP_HOSTNAME:$PP_KUBECTL_BIN:$PP_DATA_DIR:'\
+'$PP_INGRESS_MIDDLEWARE_ANNOTATION:$PP_CERT_MANAGER_ANNOTATION:$PP_HOSTNAME:$PP_KUBECTL_BIN:$PP_DATA_DIR:'\
 '$PP_LICENSE_PROVIDER:$PP_FREEMIUS_PRODUCT_ID' \
       < "$1" > "$2"
   }
@@ -866,11 +879,17 @@ generate_manifests() {
   if [[ "${PP_TLS_ENABLED}" == "true" ]]; then
     render "${tmpl}/06-middlewares-https.yaml" "${GENERATED_DIR}/06-middlewares.yaml"
     ok "06-middlewares.yaml (HTTPS)"
-    local dns_names=""
-    for h in "${ALL_HOSTNAMES[@]}"; do dns_names+="    - ${h}"$'\n'; done
-    export PP_TLS_DNS_NAMES="${dns_names%$'\n'}"
-    render "${tmpl}/07-certificate.yaml" "${GENERATED_DIR}/07-certificate.yaml"
-    ok "07-certificate.yaml"
+    # cert-manager Certificate only in ACME mode. In byo mode the TLS secret is
+    # pre-created by the operator, so no Certificate (and no cert-manager) at all.
+    if [[ "${PP_TLS_MODE}" == "acme" ]]; then
+      local dns_names=""
+      for h in "${ALL_HOSTNAMES[@]}"; do dns_names+="    - ${h}"$'\n'; done
+      export PP_TLS_DNS_NAMES="${dns_names%$'\n'}"
+      render "${tmpl}/07-certificate.yaml" "${GENERATED_DIR}/07-certificate.yaml"
+      ok "07-certificate.yaml"
+    else
+      ok "07-certificate.yaml (skipped — bring-your-own cert)"
+    fi
   fi
 
   local ingress_rules=""
@@ -899,6 +918,12 @@ generate_manifests() {
     export PP_INGRESS_MIDDLEWARE_ANNOTATION=""
     [[ -n "${mw}" ]] && PP_INGRESS_MIDDLEWARE_ANNOTATION="    traefik.ingress.kubernetes.io/router.middlewares: \"${mw}\""
 
+    # cert-manager annotation only in ACME mode; byo mode references the secret
+    # directly with no cert-manager involvement.
+    export PP_CERT_MANAGER_ANNOTATION=""
+    [[ "${PP_TLS_MODE}" == "acme" ]] && \
+      PP_CERT_MANAGER_ANNOTATION="    cert-manager.io/cluster-issuer: \"${PP_CLUSTER_ISSUER}\""
+
     render "${tmpl}/08-ingress-https.yaml" "${GENERATED_DIR}/08-ingress.yaml"
     ok "08-ingress.yaml (HTTPS)"
   else
@@ -906,7 +931,7 @@ generate_manifests() {
     ok "08-ingress.yaml (HTTP)"
   fi
 
-  if [[ "${PP_TLS_ENABLED}" == "true" && "${PP_CREATE_CLUSTER_ISSUER}" == "true" ]]; then
+  if [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "acme" && "${PP_CREATE_CLUSTER_ISSUER}" == "true" ]]; then
     case "${PP_CHALLENGE_TYPE}" in
       dns01-cloudflare)
         render "${tmpl}/09-clusterissuer-cloudflare.yaml" "${GENERATED_DIR}/09-clusterissuer.yaml"
@@ -965,6 +990,27 @@ validate_storage_classes() {
     kubectl get sc --no-headers 2>/dev/null | awk '{print "    " $1 "  (" $2 ")"}' >&2
     die "StorageClass validation failed for: ${failures[*]} — fix config and retry."
   fi
+}
+
+# ── Validate bring-your-own TLS secret ──────────────────────────────────────────
+validate_tls_byo() {
+  [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "byo" ]] || return 0
+  step "Validating bring-your-own TLS secret"
+  if kubectl get secret "${PP_TLS_SECRET_NAME}" -n "${PP_NAMESPACE}" &>/dev/null; then
+    local stype
+    stype="$(kubectl get secret "${PP_TLS_SECRET_NAME}" -n "${PP_NAMESPACE}" \
+      -o jsonpath='{.type}' 2>/dev/null || true)"
+    if [[ "${stype}" == "kubernetes.io/tls" ]]; then
+      ok "TLS secret '${PP_TLS_SECRET_NAME}' found in namespace ${PP_NAMESPACE}"
+    else
+      warn "Secret '${PP_TLS_SECRET_NAME}' is type '${stype}' (expected kubernetes.io/tls) — Traefik may not serve your cert"
+    fi
+  else
+    warn "TLS secret '${PP_TLS_SECRET_NAME}' not found in namespace ${PP_NAMESPACE}."
+    warn "Create it from your wildcard cert (Traefik serves a default self-signed cert until you do):"
+    warn "  kubectl create secret tls ${PP_TLS_SECRET_NAME} --cert=your.crt --key=your.key -n ${PP_NAMESPACE}"
+  fi
+  return 0
 }
 
 # ── Wait for PVCs ──────────────────────────────────────────────────────────────
@@ -1371,8 +1417,12 @@ show_completion() {
   echo "  kubectl logs -n ${PP_NAMESPACE} -l app=patchpilot-backend -f"
   echo "  ./k8s/install-k3s.sh --uninstall"
   echo ""
-  [[ "${PP_TLS_ENABLED}" == "true" ]] && \
+  if [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "acme" ]]; then
     echo -e "${YELLOW}⏳ TLS:${NC} Certificate may take 1–3 min via Let's Encrypt."
+  elif [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "byo" ]]; then
+    echo -e "${YELLOW}🔐 TLS:${NC} serving your own cert from secret '${PP_TLS_SECRET_NAME}'."
+    echo -e "    If it isn't created yet: kubectl create secret tls ${PP_TLS_SECRET_NAME} --cert=your.crt --key=your.key -n ${PP_NAMESPACE}"
+  fi
   echo ""
 
   # Emit structured credentials marker for the web installer's summary screen.
@@ -1409,6 +1459,7 @@ main() {
   if [[ "${DRY_RUN}" == "true" ]]; then show_dry_run; exit 0; fi
 
   validate_storage_classes
+  validate_tls_byo
   clean_node_data_dirs
   apply_manifests
   wait_for_rollout

@@ -4,6 +4,26 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.4.0] — 2026-06-01
+
+Adds a bring-your-own-certificate TLS mode for the k3s installer, alongside a batch of installer hardening (v1.3.0–1.3.1) that had shipped via commit history.
+
+### Added
+- **Bring-your-own TLS certificate (`network.tls.mode: byo`).** Public ACME CAs (Let's Encrypt) can't validate internal hostnames like `patchpilot.apps.lan` — HTTP-01 needs public reachability on port 80 and DNS-01 needs a public DNS zone, neither of which exists for `.lan`. The new `byo` mode lets you supply your own `kubernetes.io/tls` secret (e.g. a `*.apps.lan` wildcard from an internal CA) and have Traefik serve it directly. In `byo` mode the installer skips cert-manager entirely — no `Certificate`, no `ClusterIssuer`, and no `cert-manager.io/cluster-issuer` annotation on the ingress — while still serving HTTPS with HTTP→HTTPS redirect, HSTS, and an `https://` base URL. A preflight check (`validate_tls_byo`) verifies the secret exists and is the right type, printing the exact `kubectl create secret tls` command if it's missing. Default mode remains `acme` (unchanged Let's Encrypt behaviour). See [KUBERNETES.md → Bring-your-own certificate](KUBERNETES.md#bring-your-own-certificate-byo-tls).
+- **True dynamic storage provisioning for local volumes.** Selecting a StorageClass backed by a real dynamic provisioner (e.g. `rancher.io/local-path`) now emits a PVC only — `storageClassName` set, no static PV, no hostPath, no `/app-data`, no node pinning — letting the provisioner create the volume in its own directory. Previously local volumes were always materialised as a static hostPath PV under `/app-data`. Postgres/ansible (and local backups) go dynamic when the SC has a provisioner; NFS backups keep their static, `Retain` PV untouched. Static hostPath remains the fallback for a blank or `no-provisioner` StorageClass.
+
+### Fixed
+- **Installer regenerated the DB password and Fernet key on every run.** With a blank `postgres.password`/`app.encryptionKey`, each run minted new values. Postgres only honours `POSTGRES_PASSWORD` on first init, so a re-run against an already-initialised data volume produced `password authentication failed for user "patchpilot"` at backend startup; a regenerated Fernet key also made stored SSH secrets undecryptable. The installer now reads the existing values back out of `patchpilot-secrets` and reuses them, generating fresh ones only when the secret is absent.
+- **`envsubst` (gettext) missing on macOS failed late.** Added a preflight check with a macOS `brew install gettext` hint (including the keg-only PATH note) instead of dying at manifest render.
+- **StorageClass default `local-data` doesn't exist on stock k3s.** The installer now auto-detects the cluster's default StorageClass (falling back to `local-path`), and StorageClass validation reports all failing volumes at once, labelled by role (postgres/backups/ansible).
+- **Dual-stack node IP produced a broken `ssh` cleanup command.** `clean_node_data_dirs`/`do_uninstall` grabbed every `InternalIP` space-separated, yielding `ssh <ipv4> <ipv6> sudo rm -rf …`. A single address (IPv4-preferred) is now selected.
+
+### Notes
+- No DB migration, no playbook change, no image change for the TLS/storage logic — it's all install-time manifest generation.
+- Removed dead legacy templates `k8s/templates/02-pvcs.yaml` and `02a-pvs.yaml`.
+
+---
+
 ## [1.1.4] — 2026-05-15
 
 UX fix following v1.1.0's Linux service-user onboarding work. The schedule form and the ad-hoc Patch Now modal still required a shared SUDO password as if every host were the operator's own user, blocking the no-password-needed Linux/Windows `patchpilot` service-user path that v1.1.0 introduced.

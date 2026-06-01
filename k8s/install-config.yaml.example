@@ -26,9 +26,12 @@ patchpilot:
     hostname: patchpilot.lan        # Hostname your ingress should respond to
     additionalHostnames: []
     tls:
-      enabled: false                # Set true to enable cert-manager TLS
-      clusterIssuer: letsencrypt-prod
-      secretName: ''
+      enabled: false                # Set true to enable HTTPS
+      mode: acme                    # acme (cert-manager + Let's Encrypt) or byo (bring your own cert)
+      clusterIssuer: letsencrypt-prod  # acme mode only
+      secretName: ''                # byo mode: name of your pre-created `kubernetes.io/tls` secret
+                                    #   kubectl create secret tls <name> --cert=your.crt --key=your.key -n patchpilot
+                                    #   Use byo for internal hostnames (e.g. *.apps.lan) that public ACME can't validate.
     httpsRedirect: true
     securityHeaders: true
     ingressClass: traefik

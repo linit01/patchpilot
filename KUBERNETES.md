@@ -3,9 +3,16 @@
 This guide covers deploying PatchPilot on a **K3s cluster** using:
 
 - **Traefik** — ingress controller (ships with k3s by default)
-- **cert-manager** — automated TLS certificate provisioning
+- **cert-manager** — automated TLS certificate provisioning (ACME mode only)
 - **Let's Encrypt** — free TLS certificates via DNS-01 (Cloudflare) or HTTP-01
 - **PostgreSQL 15** — in-cluster database with persistent storage
+
+> **TLS options.** PatchPilot supports two TLS modes (`network.tls.mode`):
+> - **`acme`** (default) — cert-manager obtains a Let's Encrypt cert automatically.
+> - **`byo`** — bring your own cert: you supply a Kubernetes TLS secret and
+>   PatchPilot points Traefik at it (no cert-manager, no ACME). Use this for
+>   internal hostnames like `*.apps.lan` that public ACME CAs cannot validate.
+>   See [Bring-your-own certificate](#bring-your-own-certificate-byo-tls).
 
 > Your setup: Traefik terminates TLS, Cloudflare DNS handles `example.com`,
 > PiHole resolves `.lan` hostnames internally — all covered by a single
@@ -51,7 +58,10 @@ PiHole → patchpilot.lan → same Traefik LoadBalancer IP
 |-----------|--------|---------|
 | K3s | Required | `curl -sfL https://get.k3s.io \| sh -` |
 | Traefik | Ships with k3s | Auto-installed |
-| cert-manager | Required | See below |
+| cert-manager | Required for **`acme`** mode only | See below |
+
+> Using **`byo`** TLS (your own cert) or plain HTTP? You can skip cert-manager
+> and the Cloudflare token entirely — jump to [Bring-your-own certificate](#bring-your-own-certificate-byo-tls).
 
 ```bash
 # Install cert-manager (if not already present)
@@ -116,7 +126,9 @@ patchpilot:
 
     tls:
       enabled: true
-      clusterIssuer: letsencrypt-prod          # Must match ClusterIssuer name below
+      mode: acme                               # acme (cert-manager/Let's Encrypt) or byo (your own cert)
+      clusterIssuer: letsencrypt-prod          # acme mode — must match ClusterIssuer name below
+      secretName: ""                           # byo mode — name of your pre-created kubernetes.io/tls secret
 
     httpsRedirect: true
     securityHeaders: true
@@ -160,9 +172,51 @@ patchpilot:
 
 | Setting | Choice | Why |
 |---------|--------|-----|
-| `challengeType` | `dns01-cloudflare` | Required for `.lan` hostname (no public HTTP) |
-| `storageClass` | `app-data` | Your TrueNAS democratic-csi or equivalent SC |
-| `encryptionKey` | blank = auto-generate | On first install let it generate; on upgrade paste the existing key to preserve encrypted SSH secrets |
+| `tls.mode` | `acme` or `byo` | `acme` = Let's Encrypt via cert-manager; `byo` = your own cert (internal `.lan` hostnames) |
+| `challengeType` | `dns01-cloudflare` | `acme` mode + `.lan` hostname (no public HTTP for HTTP-01) |
+| `storageClass` | `local-path` | Real provisioner → dynamic PVC; blank → auto-detect cluster default |
+| `encryptionKey` | blank = auto-generate | On first install let it generate; the installer **reuses** the existing key/DB password on re-runs to keep stored secrets decryptable |
+
+---
+
+## Bring-your-own certificate (`byo` TLS)
+
+Public ACME CAs (Let's Encrypt) can only issue certs for **publicly validatable**
+domains. An internal hostname like `patchpilot.apps.lan` fails both ACME challenges:
+HTTP-01 needs Let's Encrypt to reach you on port 80 over the internet, and DNS-01
+needs a public DNS zone — neither exists for `.lan`. So for internal hostnames you
+bring your own certificate (e.g. a `*.apps.lan` wildcard from your internal CA).
+
+**1. Set the config:**
+
+```yaml
+network:
+  tls:
+    enabled: true
+    mode: byo
+    secretName: apps-lan-tls
+```
+
+**2. Create the TLS secret** from your cert + key (the installer also prints this
+command if the secret is missing):
+
+```bash
+kubectl create namespace patchpilot
+kubectl create secret tls apps-lan-tls \
+  --cert=apps-lan.crt --key=apps-lan.key \
+  -n patchpilot
+```
+
+**3. Install normally.** In `byo` mode PatchPilot:
+
+- skips cert-manager entirely — no `Certificate`, no `ClusterIssuer`, no
+  `cert-manager.io/cluster-issuer` annotation;
+- points the Traefik ingress directly at your `secretName`;
+- still serves HTTPS with HTTP→HTTPS redirect, HSTS, and `https://` base URL.
+
+> **Client trust:** browsers must trust the CA that signed your wildcard cert
+> (import your internal CA into the client trust store). This is independent of
+> PatchPilot — Traefik will serve whatever cert is in the secret.
 
 ---
 

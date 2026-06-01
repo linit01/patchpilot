@@ -54,7 +54,7 @@
 
 ### Infrastructure & Deployment
 - **Docker Compose** — Single-command local or LAN deployment
-- **K3s / Kubernetes** — Full manifest set with Traefik ingress, cert-manager, Let's Encrypt TLS (DNS-01 Cloudflare or HTTP-01)
+- **K3s / Kubernetes** — Full manifest set with Traefik ingress and TLS via cert-manager/Let's Encrypt (DNS-01 Cloudflare or HTTP-01) **or** bring-your-own cert for internal hostnames (e.g. `*.apps.lan`); dynamic or static storage provisioning
 - **CI/CD** — GitHub Actions builds multi-arch images (amd64 + arm64) and auto-creates GitHub Releases on tag push
 - **PostgreSQL 15** — Persistent storage for hosts, packages, SSH keys, settings, schedules, and audit history
 - **Ansible** — Remote execution engine; playbook and inventory configurable per deployment
