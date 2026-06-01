@@ -279,11 +279,43 @@ JOBEOF
   fi
 
   # ── Step 2: Delete namespace ───────────────────────────────────────────────
-  # postgres-data and ansible-data PVs use reclaimPolicy: Delete — removed automatically.
-  # patchpilot-backups PV uses reclaimPolicy: Retain — backup archives survive uninstall
-  # and remain at ${data_dir}/patchpilot-backups for post-uninstall restore.
+  # Deleting the namespace takes pods, PVCs, and services with it. The
+  # patchpilot-backups PV uses reclaimPolicy: Retain — backup archives survive
+  # uninstall for post-uninstall restore. The postgres/ansible PVs are reclaimed
+  # in Step 2b below (they may be Retain'd by a shared StorageClass).
   info "Deleting namespace ${ns}..."
   kubectl delete namespace "${ns}" --ignore-not-found=true
+
+  # ── Step 2b: Reclaim disposable postgres/ansible volumes ───────────────────
+  # PatchPilot's own postgres/ansible volumes are disposable (daily backups cover
+  # the DB). Target them by claimRef so this also catches dynamically-provisioned
+  # PVs (pvc-<uuid>) on a Retain StorageClass (e.g. a shared 'app-data' SC), which
+  # would otherwise be left Released with their data stranded on the node. The
+  # backups PV (claim patchpilot-backups) is deliberately excluded.
+  local claim pv pvlist prov policy
+  for claim in patchpilot-postgres-data patchpilot-ansible-data; do
+    pvlist="$(kubectl get pv \
+      -o jsonpath="{range .items[?(@.spec.claimRef.name=='${claim}')]}{.metadata.name} {.spec.claimRef.namespace}{'\n'}{end}" \
+      2>/dev/null | awk -v ns="${ns}" '$2==ns{print $1}')"
+    for pv in ${pvlist}; do
+      prov="$(kubectl get pv "${pv}" -o jsonpath='{.metadata.annotations.pv\.kubernetes\.io/provisioned-by}' 2>/dev/null || true)"
+      policy="$(kubectl get pv "${pv}" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}' 2>/dev/null || true)"
+      if [[ -n "${prov}" ]]; then
+        # Dynamic: flip Retain→Delete so the provisioner removes the PV and its
+        # node data dir. Don't delete the object ourselves (would race the
+        # provisioner and strand the dir).
+        if [[ "${policy}" != "Delete" ]]; then
+          kubectl patch pv "${pv}" --type=merge \
+            -p '{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}' &>/dev/null || true
+        fi
+        ok "Reclaiming ${claim} volume ${pv} — provisioner ${prov} removes its data dir"
+      else
+        # Static hostPath: dir already wiped by the cleanup Job — remove the object.
+        kubectl delete pv "${pv}" --ignore-not-found=true --wait=false &>/dev/null || true
+        ok "Removed leftover ${claim} volume ${pv}"
+      fi
+    done
+  done
 
   # ── Step 3: Delete ClusterIssuer ──────────────────────────────────────────
   local issuer; issuer="$(yaml_get patchpilot.network.tls.clusterIssuer letsencrypt-prod)"

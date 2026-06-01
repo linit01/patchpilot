@@ -354,23 +354,31 @@ def _k8s_cleanup_background(kc: list[str], namespace: str) -> None:
     )
     completed.append(step)
 
-    # ── Step 2b: Collect Delete-policy PV names before namespace is gone ──────
-    # hostPath static PVs have no provisioner — the Delete reclaim callback
-    # will never succeed, leaving them Failed.  Collect them now and explicitly
-    # delete the objects after namespace teardown (step 2d), same as running
-    # `kubectl delete pv <name>` manually.
-    rc, pvs_out, _ = _run(
-        kc + ["get", "pv", "-o",
-              "jsonpath={range .items[*]}{.metadata.name}={.spec.persistentVolumeReclaimPolicy} {end}"],
-        timeout=15,
-    )
-    delete_policy_pvs: list[str] = []
+    # ── Step 2b: Find the disposable postgres/ansible PVs before namespace gone ─
+    # These are PatchPilot's own volumes (claim patchpilot-postgres-data /
+    # patchpilot-ansible-data) and are disposable — daily backups cover the DB.
+    # We target them by claimRef, not by name/policy, so this also catches
+    # dynamically-provisioned PVs (pvc-<uuid>) on a Retain StorageClass (e.g. a
+    # shared 'app-data' SC) that would otherwise be left Released with their data
+    # stranded on the node. The backups PV (claim patchpilot-backups) is
+    # deliberately excluded — Retain keeps it for restore.
+    DISPOSABLE_CLAIMS = ("patchpilot-postgres-data", "patchpilot-ansible-data")
+    disposable_pvs = []   # list of (name, provisioner, policy)
+    rc, pvs_json, _ = _run(kc + ["get", "pv", "-o", "json"], timeout=15)
     if rc == 0:
-        for entry in pvs_out.strip().split():
-            if "=" in entry:
-                pv_name, policy = entry.split("=", 1)
-                if policy.strip() == "Delete" and pv_name.startswith(f"{namespace}-"):
-                    delete_policy_pvs.append(pv_name)
+        try:
+            for item in json.loads(pvs_json).get("items", []):
+                spec = item.get("spec", {}) or {}
+                cr = spec.get("claimRef", {}) or {}
+                if cr.get("namespace") == namespace and cr.get("name") in DISPOSABLE_CLAIMS:
+                    disposable_pvs.append((
+                        item["metadata"]["name"],
+                        (item["metadata"].get("annotations", {}) or {}).get(
+                            "pv.kubernetes.io/provisioned-by", ""),
+                        spec.get("persistentVolumeReclaimPolicy", ""),
+                    ))
+        except Exception as e:
+            logger.warning(f"Could not enumerate disposable PVs: {e}")
 
     # ── Step 2c: Delete namespace (takes pods, PVCs, services with it) ────────
     step = "Delete PatchPilot namespace"
@@ -383,20 +391,24 @@ def _k8s_cleanup_background(kc: list[str], namespace: str) -> None:
     else:
         failed.append(f"{step}: {err}")
 
-    # ── Step 2d: Explicitly delete Delete-policy PV objects ───────────────────
-    # No provisioner handles these — just delete the objects directly.
-    step = "Delete remaining Delete-policy PV objects"
-    if delete_policy_pvs:
-        rc, _, err = _run(
-            kc + ["delete", "pv"] + delete_policy_pvs + ["--ignore-not-found=true"],
-            timeout=30,
-        )
-        if rc == 0:
-            completed.append(f"{step}: {delete_policy_pvs}")
+    # ── Step 2d: Reclaim the disposable postgres/ansible PVs ──────────────────
+    # Dynamic PVs: flip Retain→Delete so the provisioner removes the PV *and* its
+    # backing directory on the node — don't delete the object ourselves (that would
+    # race the provisioner and strand the dir). Static hostPath PVs have no
+    # provisioner (their dir was wiped by the cleanup Job above), so delete the
+    # object directly. Never touches patchpilot-backups.
+    step = "Reclaim disposable postgres/ansible volumes"
+    reaped = []
+    for name, prov, policy in disposable_pvs:
+        if prov:
+            if policy != "Delete":
+                _run(kc + ["patch", "pv", name, "--type=merge", "-p",
+                           '{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}'], timeout=15)
+            reaped.append(f"{name} (provisioner reclaims)")
         else:
-            failed.append(f"{step}: {err}")
-    else:
-        completed.append(f"{step}: none found")
+            _run(kc + ["delete", "pv", name, "--ignore-not-found=true", "--wait=false"], timeout=20)
+            reaped.append(f"{name} (deleted)")
+    completed.append(f"{step}: {reaped or 'none found'}")
 
 
     # ── Step 3: Delete ClusterIssuer ───────────────────────────────────────────
@@ -690,7 +702,8 @@ async def get_uninstall_status(user: dict = Depends(require_full_admin)):
         ]
         desc = (
             "Kubernetes / k3s installation detected. "
-            "postgres-data and ansible-data PVs use reclaimPolicy: Delete and are removed with the namespace. "
+            "The postgres and ansible volumes are disposable and are reclaimed on uninstall "
+            "(including their data dir on the node, even on a Retain StorageClass). "
             "The backups PV uses reclaimPolicy: Retain — your backup archives survive uninstall "
             "and can be restored on a fresh install. "
             "containerd image removal requires crictl on the node and is provided as a manual command."

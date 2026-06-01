@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.5.2] — 2026-06-01
+
+### Fixed
+- **Uninstall left orphaned postgres/ansible volumes behind on a Retain StorageClass.** Both uninstall paths (the in-app UI via `uninstall_api.py` and the CLI `install-k3s.sh --uninstall`) only reaped PVs that were named `patchpilot-*` *and* had a `Delete` reclaim policy. Dynamically-provisioned volumes are named `pvc-<uuid>`, and on a shared `Retain` StorageClass (e.g. an `app-data` SC) they kept a `Retain` policy — so both filters skipped them, leaving the postgres (5Gi) and ansible (1Gi) PVs `Released` with their data stranded on the node after the namespace was gone. Both paths now target these volumes by **claimRef** (`patchpilot-postgres-data` / `patchpilot-ansible-data`), and for dynamic PVs flip `Retain→Delete` so the provisioner removes the PV **and** its backing directory; static hostPath PVs are deleted directly (their dir is wiped by the cleanup Job). `patchpilot-backups` is never touched — it stays `Retain` for restore. Leaving someone's node littered with our volumes after they uninstall isn't acceptable; now uninstall is clean except for the intentionally-preserved backups.
+
+---
+
 ## [1.5.1] — 2026-06-01
 
 ### Changed
