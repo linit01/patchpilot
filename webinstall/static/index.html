@@ -232,35 +232,64 @@
         <label>HTTPS</label>
         <div class="toggle-group">
           <input type="radio" name="tls" id="tls-on" value="true" checked>
-          <label for="tls-on">🔒 HTTPS (Let's Encrypt)</label>
+          <label for="tls-on">🔒 HTTPS</label>
           <input type="radio" name="tls" id="tls-off" value="false">
           <label for="tls-off">HTTP only</label>
         </div>
       </div>
       <div id="tls-fields">
-        <div class="row">
-          <div class="field">
-            <label>Let's Encrypt email</label>
-            <input type="email" id="le_email" placeholder="you@example.com">
-            <div class="errmsg">Required for TLS</div>
+        <div class="field">
+          <label>Certificate source</label>
+          <select id="tls_method" onchange="updateTlsMethod()">
+            <option value="letsencrypt">Let's Encrypt — cert-manager issues a public cert</option>
+            <option value="existing-issuer">Existing cert-manager ClusterIssuer (e.g. internal CA)</option>
+            <option value="byo">Bring your own cert — pre-created TLS secret</option>
+          </select>
+        </div>
+
+        <div id="le-fields">
+          <div class="row">
+            <div class="field">
+              <label>Let's Encrypt email</label>
+              <input type="email" id="le_email" placeholder="you@example.com">
+              <div class="errmsg">Required</div>
+            </div>
+            <div class="field">
+              <label>ACME challenge</label>
+              <select id="challenge_type" onchange="updateChallengeFields()">
+                <option value="dns01-cloudflare">DNS-01 via Cloudflare</option>
+                <option value="http01">HTTP-01 (public domain)</option>
+              </select>
+            </div>
           </div>
-          <div class="field">
-            <label>ACME challenge</label>
-            <select id="challenge_type" onchange="updateChallengeFields()">
-              <option value="dns01-cloudflare">DNS-01 via Cloudflare</option>
-              <option value="http01">HTTP-01 (public domain)</option>
-            </select>
+          <div id="cloudflare-fields">
+            <div class="field">
+              <label>Cloudflare account email</label>
+              <input type="email" id="cf_email" placeholder="you@example.com">
+            </div>
+            <div class="field">
+              <label>Cloudflare API token secret name</label>
+              <div class="hint">Pre-create: kubectl create secret generic cloudflare-api-token-secret --from-literal=api-token=TOKEN -n cert-manager</div>
+              <input type="text" id="cf_api_token_secret" value="cloudflare-api-token-secret">
+            </div>
           </div>
         </div>
-        <div id="cloudflare-fields">
+
+        <div id="existing-issuer-fields" style="display:none">
           <div class="field">
-            <label>Cloudflare account email</label>
-            <input type="email" id="cf_email" placeholder="you@example.com">
+            <label>ClusterIssuer name</label>
+            <div class="hint">An existing cert-manager ClusterIssuer (kubectl get clusterissuers). For an internal CA the cert is signed by your root CA. No Let's Encrypt / Cloudflare needed.</div>
+            <input type="text" id="existing_cluster_issuer" placeholder="lan-ca-issuer">
+            <div class="errmsg">Required</div>
           </div>
+        </div>
+
+        <div id="byo-fields" style="display:none">
           <div class="field">
-            <label>Cloudflare API token secret name</label>
-            <div class="hint">Pre-create: kubectl create secret generic cloudflare-api-token-secret --from-literal=api-token=TOKEN -n cert-manager</div>
-            <input type="text" id="cf_api_token_secret" value="cloudflare-api-token-secret">
+            <label>TLS secret name</label>
+            <div class="hint">Pre-create in the install namespace: kubectl create secret tls NAME --cert=tls.crt --key=tls.key -n NAMESPACE</div>
+            <input type="text" id="byo_secret_name" placeholder="apps-lan-tls">
+            <div class="errmsg">Required</div>
           </div>
         </div>
       </div>
@@ -812,7 +841,16 @@ function required(id) {
 function validateCurrent() {
   const page = pageList()[currentPage];
   if (page === 2) return DEVELOPER_MODE ? !!(required('dh_username') & required('dh_token')) : true;
-  if (page === 3) { let ok = required('hostname'); if (getTls()) ok = required('le_email') && ok; return !!ok; }
+  if (page === 3) {
+    let ok = required('hostname');
+    if (getTls()) {
+      const m = getTlsMethod();
+      if (m === 'letsencrypt')          ok = required('le_email') && ok;
+      else if (m === 'existing-issuer') ok = required('existing_cluster_issuer') && ok;
+      else if (m === 'byo')             ok = required('byo_secret_name') && ok;
+    }
+    return !!ok;
+  }
   if (page === 4 && getBt() === 'nfs') return !!(required('nfs_server') & required('nfs_share'));
   return true;
 }
@@ -826,9 +864,39 @@ document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('c
 }));
 document.querySelectorAll('input[name=tls]').forEach(r => r.addEventListener('change', () => {
   $('tls-fields').style.display = getTls() ? '' : 'none';
+  if (getTls()) updateTlsMethod();
 }));
+const getTlsMethod = () => $('tls_method')?.value || 'letsencrypt';
+function updateTlsMethod() {
+  const m = getTlsMethod();
+  $('le-fields').style.display              = m === 'letsencrypt'      ? '' : 'none';
+  $('existing-issuer-fields').style.display = m === 'existing-issuer'  ? '' : 'none';
+  $('byo-fields').style.display             = m === 'byo'              ? '' : 'none';
+  if (m === 'letsencrypt') updateChallengeFields();
+}
 function updateChallengeFields() {
   $('cloudflare-fields').style.display = $('challenge_type').value === 'dns01-cloudflare' ? '' : 'none';
+}
+// Build the TLS portion of the deploy payload from the selected method.
+function tlsPayload() {
+  if (!getTls()) {
+    return { tls_enabled:false, tls_mode:'acme', create_cluster_issuer:false,
+             cluster_issuer:'', tls_secret_name:'', le_email:'', challenge_type:'http01',
+             cf_email:'', cf_api_token_secret:'' };
+  }
+  const m = getTlsMethod();
+  const le = { le_email:$('le_email').value, challenge_type:$('challenge_type').value,
+               cf_email:$('cf_email').value, cf_api_token_secret:$('cf_api_token_secret').value };
+  if (m === 'existing-issuer') {
+    return { tls_enabled:true, tls_mode:'acme', create_cluster_issuer:false,
+             cluster_issuer:$('existing_cluster_issuer').value.trim(), tls_secret_name:'', ...le };
+  }
+  if (m === 'byo') {
+    return { tls_enabled:true, tls_mode:'byo', create_cluster_issuer:false,
+             cluster_issuer:'', tls_secret_name:$('byo_secret_name').value.trim(), ...le };
+  }
+  return { tls_enabled:true, tls_mode:'acme', create_cluster_issuer:true,
+           cluster_issuer:'letsencrypt-prod', tls_secret_name:'', ...le };
 }
 function toggleNfs() {
   $('nfs-fields').classList.toggle('visible', getBt() === 'nfs');
@@ -886,7 +954,10 @@ function buildSummary() {
     ['Namespace',      $('namespace').value],
     ['Docker Hub',     DEVELOPER_MODE ? `${$('dh_repo').value} (${$('dh_username').value})` : $('dh_repo').value],
     ['Hostname',       $('hostname').value + ($('additional_hostnames').value ? ` + ${$('additional_hostnames').value}` : '')],
-    ['TLS',            getTls() ? `Yes (${$('challenge_type').value})` : 'HTTP only'],
+    ['TLS',            !getTls() ? 'HTTP only'
+                        : getTlsMethod() === 'letsencrypt'     ? `Let's Encrypt (${$('challenge_type').value})`
+                        : getTlsMethod() === 'existing-issuer' ? `ClusterIssuer: ${$('existing_cluster_issuer').value}`
+                        : `BYO secret: ${$('byo_secret_name').value}`],
     ['Postgres SC',    $('postgres_storage_class').value],
     ['Backup storage', getBt() === 'nfs' ? `NFS ${$('nfs_server').value}:${$('nfs_share').value}` : 'Local disk'],
     ['Default SSH',    `${$('default_ssh_user').value}:${$('default_ssh_port').value}`],
@@ -912,11 +983,7 @@ async function deploy() {
       dh_token:               $('dh_token').value,
       hostname:               $('hostname').value,
       additional_hostnames:   $('additional_hostnames').value,
-      tls_enabled:            getTls(),
-      le_email:               $('le_email').value,
-      challenge_type:         $('challenge_type').value,
-      cf_email:               $('cf_email').value,
-      cf_api_token_secret:    $('cf_api_token_secret').value,
+      ...tlsPayload(),
       postgres_storage_class: $('postgres_storage_class').value,
       postgres_storage_size:  $('postgres_storage_size').value,
       backup_storage_type:    getBt(),

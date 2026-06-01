@@ -167,6 +167,7 @@ class K3sConfig(BaseModel):
     hostname: str
     additional_hostnames: str = ""
     tls_enabled: bool = True
+    tls_mode: str = "acme"            # acme (cert-manager/ClusterIssuer) or byo (pre-created secret)
     https_redirect: bool = True
     security_headers: bool = True
     ingress_class: str = "traefik"
@@ -458,6 +459,7 @@ def _write_k3s_config(cfg: K3sConfig):
                 "additionalHostnames": additional,
                 "tls": {
                     "enabled": cfg.tls_enabled,
+                    "mode": cfg.tls_mode,
                     "clusterIssuer": cfg.cluster_issuer,
                     "secretName": cfg.tls_secret_name,
                 },

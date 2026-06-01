@@ -4,6 +4,22 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.4.1] — 2026-06-01
+
+Brings the **web installer** to TLS parity with the CLI. The CLI installer supported three TLS paths (Let's Encrypt, existing ClusterIssuer, bring-your-own secret) but the web wizard only offered Let's Encrypt — an operator with an internal-CA cert-manager had no way to proceed from the wizard.
+
+### Added
+- **Web installer TLS "Certificate source" selector.** The Network & TLS step now offers the same three options the CLI supports:
+  - **Let's Encrypt** — cert-manager issues a public cert (email + ACME challenge + Cloudflare fields, as before).
+  - **Existing cert-manager ClusterIssuer** — point at an existing ClusterIssuer (e.g. an internal root-CA issuer); sets `createClusterIssuer: false`. No Let's Encrypt/Cloudflare needed.
+  - **Bring your own cert** — reference a pre-created `kubernetes.io/tls` secret (`tls.mode: byo`).
+  The wizard shows only the fields relevant to the chosen source and writes the matching `install-config.yaml`. New `tls_mode` field in the web installer's config model (`webinstall/server.py`) maps to the generated `network.tls.mode`.
+
+### Notes
+- The two installers (CLI `install-k3s.sh` and web wizard `webinstall/`) are now at TLS-config parity; the web wizard remains the default install path.
+
+---
+
 ## [1.4.0] — 2026-06-01
 
 Adds a bring-your-own-certificate TLS mode for the k3s installer, alongside a batch of installer hardening (v1.3.0–1.3.1) that had shipped via commit history.
