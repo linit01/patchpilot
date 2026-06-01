@@ -1269,12 +1269,25 @@ apply_manifests() {
     ' "${GENERATED_DIR}/02-pvs.yaml" > "${GENERATED_DIR}/02-pvs.yaml.tmp" \
       && mv "${GENERATED_DIR}/02-pvs.yaml.tmp" "${GENERATED_DIR}/02-pvs.yaml"
     ok "patchpilot-backups PV preserved (not re-applied)"
+    # If backups was the only static PV (postgres/ansible are dynamic), the file
+    # is now comment-only — kubectl apply rejects that ("no objects passed to
+    # apply"). Drop it so the apply loop skips it.
+    if ! grep -q 'kind: PersistentVolume' "${GENERATED_DIR}/02-pvs.yaml"; then
+      rm -f "${GENERATED_DIR}/02-pvs.yaml"
+      ok "02-pvs.yaml now empty — nothing static to apply, skipping"
+    fi
   fi
 
   # ── Apply each manifest, showing full kubectl output ─────────────────────
   step "Applying manifests"
   for manifest in "${GENERATED_DIR}"/*.yaml; do
     local base; base="$(basename "${manifest}")"
+    # Skip comment-only / empty manifests — kubectl apply errors with
+    # "no objects passed to apply" on them.
+    if ! grep -q '^[[:space:]]*kind:' "${manifest}"; then
+      info "Skipping ${base} (no objects)"
+      continue
+    fi
     info "kubectl apply -f ${base}..."
     kubectl apply -f "${manifest}"   # full output, no suppression
     info "  → applied OK"

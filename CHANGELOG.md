@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.4.2] — 2026-06-01
+
+### Fixed
+- **Install failed with `kubectl apply -f 02-pvs.yaml: no objects passed to apply` when local volumes are dynamic and the backups PV already exists.** With postgres/ansible dynamically provisioned (v1.4.0), `02-pvs.yaml` contains only the static backups PV. On a reinstall where that backups PV already exists (Released, `Retain`), the installer strips it from the manifest to preserve it — leaving a comment-only file that `kubectl apply` rejects. The generation-time "drop empty 02-pvs.yaml" guard ran *before* the strip, so it missed this case. Now the installer re-checks after stripping and drops the file if no PV remains, and the apply loop additionally skips any manifest with no `kind:` object. Surfaced on Site A (`patchpilot.apps.lan`, app-data/local-path postgres + existing NFS backups PV).
+
+---
+
 ## [1.4.1] — 2026-06-01
 
 Brings the **web installer** to TLS parity with the CLI. The CLI installer supported three TLS paths (Let's Encrypt, existing ClusterIssuer, bring-your-own secret) but the web wizard only offered Let's Encrypt — an operator with an internal-CA cert-manager had no way to proceed from the wizard.
