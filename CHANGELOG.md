@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.6.1] — 2026-06-02
+
+### Security
+- **Bumped `paramiko` 4.0.0 → 5.0.0** to clear CVE-2026-44405 / GHSA-r374-rxx8-8654 (low): paramiko ≤ 4.0.0 permitted the weak SHA-1 RSA signature algorithm in `rsakey.py`. The fix landed in 5.0.0 (vulnerable range is `<= 4.0.0`). PatchPilot's exposure was small — real patching runs over the OpenSSH binary via Ansible, not paramiko; paramiko's only network-facing use is the password-auth SSH connection test in `settings_api.py` (the other uses are local private-key parsing). Backend runs Python 3.11 (satisfies 5.0.0's `>=3.9`) and only uses stable paramiko APIs (`SSHClient`, `AutoAddPolicy`, `Ed25519Key`/`RSAKey`/`ECDSAKey`, `from_private_key`), so the major bump is drop-in. No code change.
+
+---
+
 ## [1.6.0] — 2026-06-02
 
 Duplicate-app detection for macOS hosts. Surfaced on a Site B Mac (`studio`) where PatchPilot reported it had updated Microsoft Word and PowerPoint, yet a rescan kept showing the same two apps as pending. The cause: two copies of each app (same `CFBundleIdentifier`) existed — the current one at `/Applications/Microsoft Word.app` and a stale `16.109.1` duplicate under `/Applications/MS Office Apps/`. `mas` upgraded one copy while the other kept the old version, so every scan re-flagged it. The "Multiple installations of … exist" warning was buried in raw Ansible output and undiagnosable from the UI.
