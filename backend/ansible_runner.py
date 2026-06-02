@@ -1092,6 +1092,31 @@ class AnsibleRunner:
                                             'update_type': 'unknown'
                                         })
 
+            # Look for duplicate app installs (macOS).
+            # Format: "DUPAPP: hostname | bundle_id | App Name | /path/A.app ;; /path/B.app"
+            # Paths never contain '|' and the name is unlikely to, so a plain
+            # split on '|' yields exactly [hostname, bundle_id, name, paths_str].
+            if 'DUPAPP:' in line:
+                dm = re.search(r'DUPAPP:\s*(.+)', line)
+                if dm:
+                    rest = dm.group(1).rstrip().rstrip('"').rstrip()
+                    parts = [p.strip() for p in rest.split('|')]
+                    if len(parts) >= 4:
+                        d_host = parts[0]
+                        d_bundle = parts[1]
+                        d_name = parts[2]
+                        d_paths = [p.strip() for p in parts[3].split(';;') if p.strip()]
+                        if d_host not in hosts_data:
+                            hosts_data[d_host] = {}
+                        dups = hosts_data[d_host].setdefault('duplicate_apps', [])
+                        # De-dupe by bundle id (verbose callback can repeat a line)
+                        if not any(x['bundle_id'] == d_bundle for x in dups):
+                            dups.append({
+                                'bundle_id': d_bundle,
+                                'app_name': d_name,
+                                'paths': d_paths,
+                            })
+
         # Look for reboot required status
             if 'Check if reboot required' in line:
                 # Look ahead for the result

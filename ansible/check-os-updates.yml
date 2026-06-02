@@ -276,6 +276,43 @@
       changed_when: false
       failed_when: false
 
+    # Duplicate app detection (macOS). Two copies of the same app bundle
+    # (same CFBundleIdentifier) in different folders make mas/softwareupdate
+    # report an app as perpetually outdated: the upgrade touches one copy while
+    # the stale duplicate keeps the old version, so the next scan re-flags it.
+    # We group every .app under /Applications by bundle id and emit one line per
+    # bundle id that resolves to 2+ paths. bash 3.2 safe (no associative arrays);
+    # find prunes inside .app bundles so nested helper apps are not scanned.
+    - name: Detect duplicate application installs (macOS)
+      shell: |
+        set +e
+        find /Applications -maxdepth 5 -name '*.app' -type d -prune 2>/dev/null | while IFS= read -r app; do
+          plist="$app/Contents/Info.plist"
+          [ -f "$plist" ] || continue
+          bid=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null)
+          [ -n "$bid" ] && printf '%s\t%s\n' "$bid" "$app"
+        done | sort | awk -F'\t' '
+        {
+          if (cnt[$1] == 0) { first[$1] = $2 }
+          paths[$1] = paths[$1] " ;; " $2
+          cnt[$1]++
+        }
+        END {
+          for (id in cnt) {
+            if (cnt[id] >= 2) {
+              p = substr(paths[id], 5)
+              n = split(first[id], a, "/")
+              nm = a[n]
+              sub(/\.app$/, "", nm)
+              print id " | " nm " | " p
+            }
+          }
+        }'
+      register: dup_apps
+      when: ansible_facts['os_family'] == "Darwin"
+      changed_when: false
+      failed_when: false
+
     # ── Windows ────────────────────────────────────────────────────────────────
     # CONHOST FLASH MITIGATION: Every Ansible module call on a Windows host
     # over SSH spawns powershell.exe which flashes a console window on Win11.
@@ -514,6 +551,16 @@
         - mas_updates is defined
         - mas_updates.stdout_lines is defined
         - mas_updates.stdout_lines | length > 0
+
+    - name: Emit duplicate app details (macOS)
+      debug:
+        msg: "DUPAPP: {{ inventory_hostname }} | {{ item }}"
+      loop: "{{ dup_apps.stdout_lines | default([]) }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - dup_apps is defined
+        - dup_apps.stdout_lines is defined
+        - dup_apps.stdout_lines | length > 0
 
     - name: Emit winget package details (Windows)
       debug:

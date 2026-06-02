@@ -123,6 +123,36 @@ class DatabaseClient:
         """Insert a package (legacy method for compatibility)"""
         return await self.upsert_package(host_id, package_name, current_version, available_version)
 
+    async def get_duplicate_apps_for_host(self, host_id: str) -> List[Dict]:
+        """Get all duplicate-app records for a specific host (macOS)."""
+        query = "SELECT * FROM duplicate_apps WHERE host_id = $1 ORDER BY app_name"
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(query, host_id)
+            return [dict(row) for row in rows]
+
+    async def delete_duplicate_apps_for_host(self, host_id: str):
+        """Delete all duplicate-app records for a host (cleared each scan)."""
+        query = "DELETE FROM duplicate_apps WHERE host_id = $1"
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, host_id)
+
+    async def upsert_duplicate_app(self, host_id: str, bundle_id: str,
+                                   app_name: str, paths: List[str]) -> Optional[Dict]:
+        """Insert or update a duplicate-app record (one row per host+bundle_id)."""
+        query = """
+            INSERT INTO duplicate_apps (host_id, bundle_id, app_name, paths)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (host_id, bundle_id)
+            DO UPDATE SET
+                app_name = EXCLUDED.app_name,
+                paths = EXCLUDED.paths,
+                detected_at = NOW()
+            RETURNING *
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(query, host_id, bundle_id, app_name, paths)
+            return dict(row) if row else None
+
     async def record_patch_execution(self, host_id: str, status: str, 
                                     packages_updated: int, execution_time: float,
                                     output: str = "") -> Optional[Dict]:

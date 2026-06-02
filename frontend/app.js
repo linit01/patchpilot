@@ -1744,6 +1744,14 @@ async function showPackagesModal() {
 // ALERTS MODAL
 // =========================================================================
 
+function escapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 async function showAlertsModal() {
     const modal = document.getElementById('alerts-modal');
     const loading = document.getElementById('alerts-modal-loading');
@@ -1779,10 +1787,14 @@ async function showAlertsModal() {
                         cursor:pointer;white-space:nowrap;" title="Mark host as rebooted / clear this alert">
                         ✓ Mark Rebooted</button>`
                 : '';
+            const detailHtml = a.detail
+                ? `<div style="font-size:11px;color:var(--text-secondary,#9ca3af);font-family:monospace;margin:4px 0 2px;white-space:pre-wrap;word-break:break-all;">${escapeHtml(a.detail)}</div>`
+                : '';
             return `<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;margin-bottom:8px;background:var(--bg-dark);border:1px solid ${border};border-left:3px solid ${color};border-radius:8px;">
                 <span style="font-size:18px">${icon}</span>
                 <div style="flex:1;">
                     <div style="font-weight:600;color:var(--text-primary);margin-bottom:2px;">${a.message}</div>
+                    ${detailHtml}
                     <div style="font-size:11px;color:var(--text-muted);font-family:monospace">Last checked: ${checked}</div>
                 </div>
                 ${dismissBtn}

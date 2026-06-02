@@ -4,6 +4,18 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.6.0] — 2026-06-02
+
+Duplicate-app detection for macOS hosts. Surfaced on a Site B Mac (`studio`) where PatchPilot reported it had updated Microsoft Word and PowerPoint, yet a rescan kept showing the same two apps as pending. The cause: two copies of each app (same `CFBundleIdentifier`) existed — the current one at `/Applications/Microsoft Word.app` and a stale `16.109.1` duplicate under `/Applications/MS Office Apps/`. `mas` upgraded one copy while the other kept the old version, so every scan re-flagged it. The "Multiple installations of … exist" warning was buried in raw Ansible output and undiagnosable from the UI.
+
+### Added
+- **Duplicate macOS app detection during every scan.** A new check task groups every `.app` under `/Applications` by `CFBundleIdentifier` and reports any bundle id that resolves to two or more paths. Results are stored per host in a new `duplicate_apps` table (cleared and repopulated each scan, like packages), so a host that no longer has duplicates drops its alerts automatically.
+- **A `duplicate_app` alert per duplicated app, per host, including the full paths.** Shown in the Alerts modal with each copy's location (`/Applications/Microsoft Word.app`, `/Applications/MS Office Apps/Microsoft Word.app`, …) so the redundant copy can be found and removed without reading Ansible logs. Counts toward the sidebar alert badge and is role/ownership-scoped like the existing unreachable / reboot / macOS-system-update alerts.
+
+Detection is read-only (world-readable `Info.plist`, no `sudo`), `bash` 3.2 safe, and prunes inside `.app` bundles so nested helper apps aren't scanned. No DB migration beyond the additive `duplicate_apps` table (created at startup). `check-os-updates.yml` `--syntax-check` clean; backend parses; `app.js` passes `node --check`; awk grouping and the `DUPAPP:` parser verified offline.
+
+---
+
 ## [1.5.3] — 2026-06-01
 
 Installer/onboarding UX + docs polish — turns four gotchas surfaced during a Site B (internal-CA, macOS deploy host) rollout into upfront guidance.

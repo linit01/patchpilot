@@ -444,6 +444,24 @@ async def ensure_core_tables(pool):
                 "CREATE INDEX IF NOT EXISTS idx_packages_host_id ON packages(host_id)"
             )
 
+            # duplicate_apps — macOS app bundles with the same CFBundleIdentifier
+            # installed in more than one location (v1.6.0). Cleared and repopulated
+            # on every scan, same lifecycle as packages.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS duplicate_apps (
+                    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    host_id      UUID REFERENCES hosts(id) ON DELETE CASCADE,
+                    bundle_id    VARCHAR(255) NOT NULL,
+                    app_name     VARCHAR(255),
+                    paths        TEXT[],
+                    detected_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    UNIQUE(host_id, bundle_id)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_duplicate_apps_host_id ON duplicate_apps(host_id)"
+            )
+
             # patch_history (includes output column from v0.9.1)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS patch_history (
@@ -466,7 +484,7 @@ async def ensure_core_tables(pool):
                 "ON patch_history(execution_time)"
             )
 
-            print("Core tables ready (hosts, packages, patch_history)")
+            print("Core tables ready (hosts, packages, duplicate_apps, patch_history)")
     except Exception as e:
         print(f"Core table creation FAILED: {e}")
         raise  # Fatal — cannot continue without schema
@@ -1018,7 +1036,7 @@ async def run_ansible_check_task(limit_hosts: list = None):
             # Always clear old packages for this host
             if host:
                 await db.delete_packages_for_host(host['id'])
-                
+
                 # Store new package details if any exist
                 if data.get("update_details"):
                     for package in data.get("update_details", []):
@@ -1030,6 +1048,17 @@ async def run_ansible_check_task(limit_hosts: list = None):
                             update_type=package.get("update_type", "apt"),
                             package_id=package.get("package_id")
                         )
+
+                # Refresh duplicate-app records (macOS): clear then repopulate so
+                # a host that no longer has duplicates drops its old alerts.
+                await db.delete_duplicate_apps_for_host(host['id'])
+                for dup in data.get("duplicate_apps", []):
+                    await db.upsert_duplicate_app(
+                        host_id=host['id'],
+                        bundle_id=dup.get("bundle_id", ""),
+                        app_name=dup.get("app_name", ""),
+                        paths=dup.get("paths", []),
+                    )
             
             print(f"Updated host: {hostname} - Status: {data.get('status')} - Updates: {data.get('total_updates')}")
         except Exception as e:
@@ -1065,6 +1094,7 @@ async def run_ansible_check_task(limit_hosts: list = None):
                             reboot_required=False,
                         )
                         await db.delete_packages_for_host(existing['id'])
+                        await db.delete_duplicate_apps_for_host(existing['id'])
                         print(f"Updated host: {hostname} - Status: unreachable - Updates: 0 (not in Ansible output)")
                 except Exception as e:
                     print(f"Error marking unchecked host {hostname}: {e}")
@@ -2194,12 +2224,16 @@ async def get_sidebar_stats(request: Request, owner: str = None,
         try:
             alert_count = await pool.fetchval("""
                 SELECT (
-                    SELECT COUNT(*) FROM hosts 
+                    SELECT COUNT(*) FROM hosts
                     WHERE (status = 'unreachable' OR reboot_required = TRUE) AND created_by = $1
                 ) + (
                     SELECT COUNT(DISTINCT h.id) FROM hosts h
                     JOIN packages p ON h.id = p.host_id
                     WHERE p.update_type = 'macos-system' AND h.created_by = $1
+                ) + (
+                    SELECT COUNT(*) FROM duplicate_apps d
+                    JOIN hosts h ON d.host_id = h.id
+                    WHERE h.created_by = $1
                 )
             """, uid) or 0
         except Exception:
@@ -2220,12 +2254,14 @@ async def get_sidebar_stats(request: Request, owner: str = None,
         try:
             alert_count = await pool.fetchval("""
                 SELECT (
-                    SELECT COUNT(*) FROM hosts 
+                    SELECT COUNT(*) FROM hosts
                     WHERE status = 'unreachable' OR reboot_required = TRUE
                 ) + (
                     SELECT COUNT(DISTINCT h.id) FROM hosts h
                     JOIN packages p ON h.id = p.host_id
                     WHERE p.update_type = 'macos-system'
+                ) + (
+                    SELECT COUNT(*) FROM duplicate_apps
                 )
             """) or 0
         except Exception:
@@ -2453,6 +2489,37 @@ async def get_alerts(request: Request, owner: str = None,
                     "type": "macos_system_update",
                     "hostname": r['hostname'],
                     "message": f"macOS system update available on {r['hostname']} — install via System Settings and reboot",
+                    "last_checked": str(r['last_checked']) if r['last_checked'] else None
+                })
+            # Duplicate app installs (macOS): one alert per duplicated app per host.
+            # These keep mas/softwareupdate reporting an app as perpetually
+            # outdated, so we surface the app name and every path it was found at.
+            if uid is not None:
+                dup_rows = await conn.fetch("""
+                    SELECT h.hostname, h.last_checked, d.app_name, d.bundle_id, d.paths
+                    FROM hosts h
+                    JOIN duplicate_apps d ON h.id = d.host_id
+                    WHERE h.created_by = $1
+                    ORDER BY h.hostname, d.app_name
+                """, uid)
+            else:
+                dup_rows = await conn.fetch("""
+                    SELECT h.hostname, h.last_checked, d.app_name, d.bundle_id, d.paths
+                    FROM hosts h
+                    JOIN duplicate_apps d ON h.id = d.host_id
+                    ORDER BY h.hostname, d.app_name
+                """)
+            for r in dup_rows:
+                paths = list(r['paths'] or [])
+                name = r['app_name'] or r['bundle_id']
+                alerts.append({
+                    "severity": "warning",
+                    "type": "duplicate_app",
+                    "hostname": r['hostname'],
+                    "message": f"Duplicate install of {name} on {r['hostname']} — updates may never clear until one copy is removed",
+                    "detail": "\n".join(paths),
+                    "paths": paths,
+                    "bundle_id": r['bundle_id'],
                     "last_checked": str(r['last_checked']) if r['last_checked'] else None
                 })
     except Exception as e:
