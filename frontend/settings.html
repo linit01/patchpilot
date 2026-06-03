@@ -595,7 +595,13 @@
                     </div>
                     <div class="help-text">Timezone used for auto-patch schedule windows. Schedule times entered in the Schedules page are interpreted in <em>this</em> timezone. The Docker container defaults to UTC — this must be set to your local timezone for schedules to fire at the expected wall-clock time.</div>
                 </div>
-                
+
+                <div class="form-group">
+                    <label>Max Patch Attempts Per Window</label>
+                    <input type="number" id="max-patch-attempts" min="1" max="50" step="1" style="width: 120px;">
+                    <div class="help-text">How many times a scheduled patch retries a single host within one window before giving up. The scheduler re-checks every 60 seconds, so without a cap a host that can't finish (a held/kept-back package, a failing update, or an unreachable host) is retried every minute for the whole window. After this many attempts the host is left alone until the next scheduled run and an error alert is raised. Default 3.</div>
+                </div>
+
                 <button class="btn btn-primary" onclick="saveGeneralSettings()">Save Settings</button>
 
                 <!-- ── Network & Security ───────────────────────────────── -->
@@ -3057,6 +3063,9 @@
                 if (settings.schedule_timezone) {
                     document.getElementById('schedule-timezone').value = settings.schedule_timezone.value;
                 }
+                if (settings.max_patch_attempts) {
+                    document.getElementById('max-patch-attempts').value = settings.max_patch_attempts.value;
+                }
                 // Network settings
                 if (settings.app_base_url) {
                     document.getElementById('app-base-url').value = settings.app_base_url.value;
@@ -3428,7 +3437,8 @@
                 refresh_interval: document.getElementById('refresh-interval').value,
                 default_ssh_user: document.getElementById('default-ssh-user').value.trim() || 'root',
                 default_ssh_port: document.getElementById('default-ssh-port').value || '22',
-                schedule_timezone: document.getElementById('schedule-timezone').value || 'UTC'
+                schedule_timezone: document.getElementById('schedule-timezone').value || 'UTC',
+                max_patch_attempts: document.getElementById('max-patch-attempts').value || '3'
             };
 
             try {

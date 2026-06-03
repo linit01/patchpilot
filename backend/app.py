@@ -610,6 +610,13 @@ async def ensure_settings_table(pool):
                 ('default_ssh_port',  '22',   'Default SSH port for new hosts'),
                 ('schedule_timezone', 'UTC',  'Timezone for auto-patch schedule windows '
                                               '(e.g. America/Chicago, America/New_York, America/Los_Angeles)'),
+                ('max_patch_attempts', os.getenv('MAX_PATCH_ATTEMPTS', '3'),
+                 'Maximum times a scheduled patch will retry a single host within one '
+                 'patch window before giving up. The scheduler re-evaluates every 60s, '
+                 'so without a cap a host whose updates cannot complete (held back, a '
+                 'failing package, or unreachable) is retried every minute for the whole '
+                 'window. After this many attempts the host is left alone until the next '
+                 'scheduled window and an error alert is raised. Default 3.'),
                 # ── Network / HTTPS settings ───────────────────────────────────
                 ('app_base_url',     os.getenv('APP_BASE_URL', ''),
                  'Public base URL of this PatchPilot instance '
@@ -731,6 +738,10 @@ async def ensure_hosts_columns(pool):
     """Add missing columns to hosts table and rename legacy column names."""
     columns_to_add = [
         ("allow_auto_reboot", "BOOLEAN DEFAULT TRUE"),
+        # Set when a scheduled patch gives up on a host after max_patch_attempts
+        # tries in a window; surfaced as an error alert, cleared on next success.
+        ("patch_fail_at", "TIMESTAMP WITH TIME ZONE"),
+        ("patch_fail_reason", "TEXT"),
     ]
     try:
         async with pool.acquire() as conn:
@@ -817,6 +828,13 @@ async def ensure_schedules_tables(pool):
                 print("Added retry_host_ids column to patch_schedules")
             else:
                 print("retry_host_ids column already present")
+
+            # Per-window attempt counter: {host_id: attempts_this_window}.
+            # Cleared when the window closes (same lifecycle as retry_host_ids).
+            await conn.execute("""
+                ALTER TABLE patch_schedules
+                ADD COLUMN IF NOT EXISTS patch_attempts JSONB DEFAULT '{}'::jsonb
+            """)
 
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS patch_schedule_hosts (
@@ -1603,6 +1621,18 @@ async def check_and_run_schedules():
     current_day = now.strftime('%A').lower()
     current_time = now.time().replace(tzinfo=None)
 
+    # Per-window retry cap: a host is given up on after this many patch attempts
+    # in one window (default 3). Prevents the 60s scheduler from re-patching a
+    # stuck host every minute for the whole window.
+    try:
+        async with pool.acquire() as _c:
+            _ma = await _c.fetchrow("SELECT value FROM settings WHERE key = 'max_patch_attempts'")
+        max_patch_attempts = int((_ma['value'].strip() if _ma and _ma['value'] else '3') or '3')
+        if max_patch_attempts < 1:
+            max_patch_attempts = 1
+    except Exception:
+        max_patch_attempts = 3
+
     # Log the scheduler heartbeat every cycle so it's easy to confirm it's running
     # and using the correct timezone.  This also makes timezone misconfiguration obvious.
     logger.info(
@@ -1643,7 +1673,8 @@ async def check_and_run_schedules():
                 f"now={current_time}  in_window={in_window}"
             )
             if not in_window:
-                # Window closed — clear any pending retry list so it doesn't carry to tomorrow
+                # Window closed — clear the pending retry list and the per-window
+                # attempt counters so neither carries into the next window.
                 # Use dict() cast so key access is safe regardless of asyncpg Record version
                 sched_dict = dict(sched)
                 if sched_dict.get('retry_host_ids'):
@@ -1653,6 +1684,12 @@ async def check_and_run_schedules():
                         )
                     except Exception:
                         pass
+                try:
+                    await conn.execute(
+                        "UPDATE patch_schedules SET patch_attempts = '{}'::jsonb WHERE id = $1", sched['id']
+                    )
+                except Exception:
+                    pass
                 continue
 
             # --- Determine which hosts need patching this cycle ---
@@ -1666,11 +1703,32 @@ async def check_and_run_schedules():
 
             # Also honour the explicit retry list from a prior 'partial' run
             # (hosts that were unreachable last attempt).
+            import json as _json
             sched_dict = dict(sched)
             retry_ids = set(sched_dict.get('retry_host_ids') or [])
 
+            # Per-window attempt counts: {host_id_str: attempts}. Written by
+            # run_scheduled_patch after each run; we only read + skip here.
+            _raw_attempts = sched_dict.get('patch_attempts')
+            if isinstance(_raw_attempts, str):
+                try:
+                    attempts = _json.loads(_raw_attempts) or {}
+                except Exception:
+                    attempts = {}
+            elif isinstance(_raw_attempts, dict):
+                attempts = dict(_raw_attempts)
+            else:
+                attempts = {}
+
             needs_patch_ids = []
+            resolved_ids = []   # hosts now at 0 updates — reset counter + clear alert
             for hid in host_ids:
+                # Give up on a host that has exhausted its attempts this window.
+                # Its failure alert was already raised by run_scheduled_patch;
+                # leave it until the next scheduled window.
+                if int(attempts.get(str(hid), 0)) >= max_patch_attempts:
+                    continue
+
                 # If host is on the retry list, always attempt it regardless
                 # of DB status — Ansible will determine reachability.
                 if hid in retry_ids:
@@ -1687,8 +1745,28 @@ async def check_and_run_schedules():
                 if host_row['status'] in ('offline', 'unreachable'):
                     continue
                 if (host_row['total_updates'] or 0) <= 0:
+                    # Updates cleared — this host is resolved for the window.
+                    if str(hid) in attempts:
+                        resolved_ids.append(hid)
                     continue
                 needs_patch_ids.append(hid)
+
+            # Reset counters and clear any standing failure alert for resolved hosts.
+            if resolved_ids:
+                for hid in resolved_ids:
+                    attempts.pop(str(hid), None)
+                try:
+                    await conn.execute(
+                        "UPDATE patch_schedules SET patch_attempts = $2::jsonb WHERE id = $1",
+                        sched['id'], _json.dumps(attempts),
+                    )
+                    await conn.execute(
+                        "UPDATE hosts SET patch_fail_at = NULL, patch_fail_reason = NULL "
+                        "WHERE id = ANY($1::uuid[])",
+                        resolved_ids,
+                    )
+                except Exception as _e:
+                    logger.debug(f"resolved-host counter reset skipped: {_e}")
 
             if not needs_patch_ids:
                 logger.debug(
@@ -1791,6 +1869,11 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
                     f"(unreachable={unreachable_names})")
 
         # ── Record patch_history for each host (mirrors manual-patch logic) ──
+        # progressed_ids: hosts that actually installed packages this run (reset
+        # their attempt counter). stuck_ids: hosts that ran but applied nothing
+        # (failed, unreachable, or held/kept-back) — increment toward the cap.
+        progressed_ids = []
+        stuck_ids = []
         try:
             elapsed = int(time.monotonic() - _ansible_patch_running_since) if _ansible_patch_running_since else 0
             actually_patched = _detect_hosts_actually_patched(output, hostnames)
@@ -1813,6 +1896,13 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
                             VALUES ($1, $2, $3, $4, $5, $6)
                         """, host_row["id"], is_success, pkgs_updated,
                             elapsed, error_msg, output)
+                        # Real progress = the apply task ran AND installed at least
+                        # one package. A no-op "0 upgraded" (held/kept-back) or a
+                        # failure counts as stuck so the attempt cap can engage.
+                        if is_success and pkgs_updated:
+                            progressed_ids.append(host_row["id"])
+                        else:
+                            stuck_ids.append(host_row["id"])
                         logger.info(
                             f"[Schedule {schedule_id}] Recorded patch_history "
                             f"for {hostname}: success={is_success}, "
@@ -1821,6 +1911,77 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
         except Exception as hist_err:
             logger.error(
                 f"[Schedule {schedule_id}] Failed to record patch_history: {hist_err}"
+            )
+
+        # ── Update per-window attempt counters and failure alerts ──
+        try:
+            import json as _json
+            max_attempts = 3
+            now_utc = datetime.now(timezone.utc)
+            async with pool.acquire() as conn:
+                _ma = await conn.fetchrow(
+                    "SELECT value FROM settings WHERE key = 'max_patch_attempts'"
+                )
+                try:
+                    max_attempts = int((_ma['value'].strip() if _ma and _ma['value'] else '3') or '3')
+                    if max_attempts < 1:
+                        max_attempts = 1
+                except Exception:
+                    max_attempts = 3
+
+                _row = await conn.fetchrow(
+                    "SELECT patch_attempts FROM patch_schedules WHERE id = $1", schedule_id
+                )
+                _raw = _row['patch_attempts'] if _row else None
+                if isinstance(_raw, str):
+                    try:
+                        attempts = _json.loads(_raw) or {}
+                    except Exception:
+                        attempts = {}
+                elif isinstance(_raw, dict):
+                    attempts = dict(_raw)
+                else:
+                    attempts = {}
+
+                # Progress clears the counter and any standing failure alert.
+                for hid in progressed_ids:
+                    attempts.pop(str(hid), None)
+                if progressed_ids:
+                    await conn.execute(
+                        "UPDATE hosts SET patch_fail_at = NULL, patch_fail_reason = NULL "
+                        "WHERE id = ANY($1::uuid[])",
+                        progressed_ids,
+                    )
+
+                # Stuck hosts climb toward the cap; on reaching it, raise the alert.
+                capped_ids = []
+                for hid in stuck_ids:
+                    n = int(attempts.get(str(hid), 0)) + 1
+                    attempts[str(hid)] = n
+                    if n >= max_attempts:
+                        capped_ids.append(hid)
+                if capped_ids:
+                    await conn.execute(
+                        """UPDATE hosts
+                           SET patch_fail_at = COALESCE(patch_fail_at, $2),
+                               patch_fail_reason = $3
+                           WHERE id = ANY($1::uuid[])""",
+                        capped_ids, now_utc,
+                        f"Patch did not complete after {max_attempts} attempts this "
+                        f"window — left until the next scheduled run",
+                    )
+                    logger.warning(
+                        f"[Schedule {schedule_id}] {len(capped_ids)} host(s) hit the "
+                        f"{max_attempts}-attempt cap; alerting and skipping until next window"
+                    )
+
+                await conn.execute(
+                    "UPDATE patch_schedules SET patch_attempts = $2::jsonb WHERE id = $1",
+                    schedule_id, _json.dumps(attempts),
+                )
+        except Exception as _att_err:
+            logger.error(
+                f"[Schedule {schedule_id}] Failed to update attempt counters: {_att_err}"
             )
 
         # Store unreachable host IDs for in-window retry
@@ -2468,6 +2629,31 @@ async def get_alerts(request: Request, owner: str = None,
                         "message": f"Host {r['hostname']} requires a reboot",
                         "last_checked": str(r['last_checked']) if r['last_checked'] else None
                     })
+            # Scheduled-patch failures: a host that exhausted its retry attempts
+            # in a window (held/kept-back package, failing update, or unreachable).
+            if uid is not None:
+                fail_rows = await conn.fetch("""
+                    SELECT hostname, patch_fail_at, patch_fail_reason
+                    FROM hosts
+                    WHERE patch_fail_at IS NOT NULL AND created_by = $1
+                    ORDER BY hostname
+                """, uid)
+            else:
+                fail_rows = await conn.fetch("""
+                    SELECT hostname, patch_fail_at, patch_fail_reason
+                    FROM hosts
+                    WHERE patch_fail_at IS NOT NULL
+                    ORDER BY hostname
+                """)
+            for r in fail_rows:
+                reason = r['patch_fail_reason'] or "patch did not complete after the maximum attempts"
+                alerts.append({
+                    "severity": "error",
+                    "type": "patch_failed",
+                    "hostname": r['hostname'],
+                    "message": f"Scheduled patch failed on {r['hostname']} — {reason}",
+                    "last_checked": str(r['patch_fail_at']) if r['patch_fail_at'] else None
+                })
             # macOS system updates: detected during check but not auto-installed
             if uid is not None:
                 macos_rows = await conn.fetch("""

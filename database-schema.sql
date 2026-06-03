@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS hosts (
     total_updates     INTEGER      DEFAULT 0,
     reboot_required   BOOLEAN      DEFAULT FALSE,
     allow_auto_reboot BOOLEAN      DEFAULT TRUE,
+    patch_fail_at     TIMESTAMP WITH TIME ZONE,  -- set when a scheduled patch gives up after max attempts
+    patch_fail_reason TEXT,                       -- cleared on the next successful patch
+
     ssh_user          VARCHAR(100) DEFAULT 'root',
     ssh_port          INTEGER      DEFAULT 22,
     ssh_key_type      VARCHAR(50)  DEFAULT 'default',
@@ -122,6 +125,7 @@ CREATE TABLE IF NOT EXISTS patch_schedules (
     auto_reboot               BOOLEAN DEFAULT FALSE,
     become_password_encrypted TEXT,
     retry_host_ids            UUID[],
+    patch_attempts            JSONB DEFAULT '{}'::jsonb,  -- {host_id: attempts} this window; cleared at window close
     created_at                TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at                TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     last_run                  TIMESTAMP WITH TIME ZONE,

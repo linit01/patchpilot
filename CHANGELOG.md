@@ -4,6 +4,20 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.7.0] — 2026-06-03
+
+Two fixes for scheduled-patch noise, both surfaced on the proxy host running a custom-built Caddy (compiled with the Cloudflare DNS plugin via `xcaddy`): the official Caddy apt repo kept advertising a newer stock build, so PatchPilot flagged Caddy as perpetually "needs update," and the schedule then re-tried that host every minute for the whole window.
+
+### Fixed
+- **apt update detection is now hold-aware.** `apt list --upgradable` *still lists* packages pinned with `apt-mark hold`, so a held package (the standard Debian way to say "I manage this manually" — e.g. a custom-compiled binary) was reported as forever-pending and never cleared. The Debian/Ubuntu check task in `check-os-updates.yml` now subtracts `apt-mark showhold` from the upgradable list, so holding a package on the host (`sudo apt-mark hold caddy`) hides it from detection *and* from patching. Per-host, native, no UI needed. `apt upgrade` already skips holds, so the patch side was already correct. (Detection-only mirrors of this already existed for macOS `softwareupdate`/`mas` and Windows `winget`; apt had none.)
+
+### Added
+- **Per-window patch-attempt cap (`max_patch_attempts`, default 3).** The scheduler re-evaluates every 60 seconds, so a host that can't finish patching — a held/kept-back package, a failing update, or an unreachable host — was retried every minute for the entire window, generating constant churn and log noise. Each host now carries a per-window attempt counter (`patch_schedules.patch_attempts`, a `{host_id: attempts}` JSONB map, cleared when the window closes alongside `retry_host_ids`). After `max_patch_attempts` runs that install nothing, the host is left alone until the next scheduled window and an **error alert** is raised ("Scheduled patch failed on *host* — patch did not complete after N attempts"). A run that actually installs packages resets the host's counter and clears the alert; a host whose updates clear (e.g. once a held package is filtered out) is reset automatically. The cap is global, set in **Settings → General → Max Patch Attempts Per Window**, and stored in `hosts.patch_fail_at` / `hosts.patch_fail_reason` for the alert.
+
+Both changes are additive: `patch_attempts` on `patch_schedules` and `patch_fail_at`/`patch_fail_reason` on `hosts` are added at startup (`ADD COLUMN IF NOT EXISTS`) and reflected in `database-schema.sql`. `check-os-updates.yml --syntax-check` clean (awk hold-filter verified against the exact remote bash script); `backend/app.py` parses; `settings.html` inline JS passes `node --check`. No change to the patch path. `settings.html` rides the frontend image rebuild.
+
+---
+
 ## [1.6.1] — 2026-06-02
 
 ### Security
