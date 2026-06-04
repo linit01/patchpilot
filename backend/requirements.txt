@@ -39,7 +39,7 @@ python-dotenv==1.2.2
 python-multipart==0.0.27
 PyYAML==6.0.3
 resolvelib==1.2.1
-starlette==0.52.1
+starlette==1.0.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzlocal==5.3.1
