@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.7.1] — 2026-06-05
+
+### Fixed
+- **Homebrew update detection is now pin-aware** — the macOS counterpart to 1.7.0's apt-hold fix. `brew outdated` reports a pinned formula whenever a newer version exists, but `brew upgrade` refuses to touch it (`Not upgrading N pinned package`), so a formula held with `brew pin` (e.g. `ollama` on Site B's `studio`) showed as forever-pending and kept the host at `updates-available` while every patch run installed nothing. The Homebrew check task in `check-os-updates.yml` now subtracts `brew list --pinned` from `brew outdated --verbose`, so pinning a formula on the host (`brew pin ollama`) hides it from detection *and* matches the patch side, which already skipped it. Per-host, native, no UI needed. Casks can't be pinned, so filtering by formula name is complete. This was the one hold/pin mechanism still missing after 1.7.0 (apt-mark hold, macOS `softwareupdate`/`mas`, and Windows `winget` were already covered).
+
+---
+
 ## [1.7.0] — 2026-06-03
 
 Two fixes for scheduled-patch noise, both surfaced on the proxy host running a custom-built Caddy (compiled with the Cloudflare DNS plugin via `xcaddy`): the official Caddy apt repo kept advertising a newer stock build, so PatchPilot flagged Caddy as perpetually "needs update," and the schedule then re-tried that host every minute for the whole window.

@@ -224,8 +224,29 @@
       tags: always
 
     # ── macOS checks ───────────────────────────────────────────────────────────
+    # Exclude pinned formulae from the pending list. `brew outdated` reports a
+    # pinned formula whenever a newer version exists, but `brew upgrade` refuses
+    # to touch it (Not upgrading N pinned package). Reporting it as pending means
+    # PatchPilot shows an update that can never be applied, so the host is stuck
+    # at updates-available forever. The pin is a deliberate hold, so we drop those
+    # rows here and the count reflects only updates that will actually apply.
+    # Casks cannot be pinned, so filtering by formula name (brew list --pinned)
+    # is complete. The first whitespace-delimited field of each outdated line is
+    # the formula name.
     - name: Check for Homebrew updates (macOS)
-      shell: "{{ brew_bin_path }} outdated --verbose"
+      shell: |
+        PINNED=$("{{ brew_bin_path }}" list --pinned 2>/dev/null)
+        "{{ brew_bin_path }}" outdated --verbose 2>/dev/null | while IFS= read -r line; do
+          name=${line%% *}
+          skip=false
+          for p in $PINNED; do
+            if [ "$name" = "$p" ]; then
+              skip=true
+              break
+            fi
+          done
+          [ "$skip" = false ] && printf '%s\n' "$line"
+        done
       register: brew_updates
       when:
         - ansible_facts['os_family'] == "Darwin"
