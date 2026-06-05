@@ -6,6 +6,7 @@ wheel>=0.46.2          # CVE-2026-24049 — path traversal / chmod exploit via m
 # pip itself is pinned in the Dockerfile RUN step (pip==26.0.1):
 #   CVE-2025-8869 — symlink escape in tar fallback extraction (fixed >=25.3)
 #   CVE-2026-1703 — wheel path traversal via os.path.commonprefix (fixed >=26.0.1)
+annotated-doc==0.0.4
 annotated-types==0.7.0
 ansible-core==2.19.6
 ansible-runner==2.4.2
@@ -16,7 +17,7 @@ bcrypt==5.0.0
 cffi==2.0.0
 click==8.3.1
 cryptography==46.0.7
-fastapi==0.129.0
+fastapi==0.136.3
 h11==0.16.0
 httptools==0.7.1
 httpx
@@ -39,7 +40,7 @@ python-dotenv==1.2.2
 python-multipart==0.0.27
 PyYAML==6.0.3
 resolvelib==1.2.1
-starlette==0.52.1
+starlette==1.2.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzlocal==5.3.1

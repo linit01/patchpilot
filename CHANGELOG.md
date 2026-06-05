@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.7.2] — 2026-06-05
+
+### Security
+- **Bumped `starlette` 0.52.1 → 1.2.1 and `fastapi` 0.129.0 → 0.136.3** to clear CVE-2026-48710 / GHSA-86qp-5c8j-p5mr (medium): starlette ≤ 1.0.0 didn't validate the HTTP `Host` header before reconstructing `request.url`, so a malformed `Host` (containing `/`, `?`, or `#`) could make `request.url.path` differ from the real routed path and bypass path-based authorization that reads `request.url`. The fix is in starlette 1.0.1, which requires lifting FastAPI's `starlette<1.0.0` cap — FastAPI 0.133.0 was the first to allow starlette 1.x, so both were bumped to current stable. **PatchPilot's exposure was effectively nil**: its only middleware is `CORSMiddleware`, and no code reads `request.url`/`request.url.path` for security decisions (auth is dependency-injected via `Depends(get_current_user)`/`require_write` on the ASGI scope), plus it runs behind Traefik/nginx. Cleared for hygiene. Also pinned the new core FastAPI dependency `annotated-doc==0.0.4`. Resolver dry-run is conflict-free (45 pkgs); backend parses. No code change.
+
+---
+
 ## [1.7.1] — 2026-06-05
 
 ### Fixed
