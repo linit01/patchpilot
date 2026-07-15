@@ -10,7 +10,7 @@ annotated-doc==0.0.4
 annotated-types==0.7.0
 ansible-core==2.19.6
 ansible-runner==2.4.2
-anyio==4.12.1
+anyio==4.14.2
 APScheduler==3.11.2
 asyncpg==0.31.0
 bcrypt==5.0.0
