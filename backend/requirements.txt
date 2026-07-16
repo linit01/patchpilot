@@ -8,7 +8,7 @@ wheel>=0.46.2          # CVE-2026-24049 — path traversal / chmod exploit via m
 #   CVE-2026-1703 — wheel path traversal via os.path.commonprefix (fixed >=26.0.1)
 annotated-doc==0.0.4
 annotated-types==0.7.0
-ansible-core==2.19.6
+ansible-core==2.19.11rc1
 ansible-runner==2.4.2
 anyio==4.14.2
 APScheduler==3.11.2
