@@ -90,13 +90,18 @@
     # still advertises a newer stock build) are filtered out of the upgradable
     # list. apt list --upgradable still SHOWS held packages, so without this they
     # would be reported as perpetually pending and never clear.
+    #
+    # The awk keys the two inputs off line SHAPE, not file position: hold lines are
+    # bare package names, apt lines always contain a slash (name/origin). The old
+    # NR==FNR idiom silently dropped the ENTIRE upgradable list whenever showhold
+    # was empty (no holds), because NR and FNR then advance in lockstep through the
+    # second file and every line matches the first-file branch. Do NOT revert to it.
     - name: Check for updates (Debian/Ubuntu)
       shell: |
-        export APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1
-        awk 'NR==FNR { if (length($0) > 0) held[$0] = 1; next }
+        awk 'index($0, "/") == 0 { if (length($0) > 0) held[$0] = 1; next }
              { name = $1; sub(/\/.*/, "", name); if (name in held) next; print }' \
           <(apt-mark showhold 2>/dev/null) \
-          <(apt list --upgradable 2>/dev/null | tail -n +2)
+          <(apt list --upgradable -o APT::Get::Always-Include-Phased-Updates=true 2>/dev/null | tail -n +2)
       args:
         executable: /bin/bash
       register: apt_updates

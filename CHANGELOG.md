@@ -4,6 +4,16 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.7.5] — 2026-07-23
+
+### Fixed
+- **Debian/Ubuntu hosts with no held packages reported "up to date" while updates were pending.** The apt hold-filter added in 1.7.0 used the classic awk `NR==FNR` two-file idiom to subtract `apt-mark showhold` from `apt list --upgradable`. That idiom only works when the first file is non-empty: when a host has **no** `apt-mark hold` entries (the common case), awk reads zero records from `showhold`, so `NR` and `FNR` then advance in lockstep through the entire upgradable list and *every* line matches the first-file (held) branch and is dropped. The result was an empty package list, which the backend parser reconciles to `total_updates = 0` / `up-to-date` — so a host with, say, 39 pending apt updates showed as fully patched. Surfaced on a k3s server (`10.0.1.101`) reporting up-to-date against a host CLI showing 39. The check task in `check-os-updates.yml` now distinguishes the two inputs by line **shape** (hold lines are bare package names; `apt list` lines always contain a `name/origin` slash) instead of file position, so an empty hold list can no longer swallow the upgradable list. Holds are still filtered correctly when present. The Homebrew pin-filter (1.7.1) was unaffected — it uses a shell `while read` loop that already handles an empty pinned list.
+- **Phased updates were undercounted on Ubuntu.** The same task exported `APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1` to force phased (percentage-rolled-out) updates into the list, but apt does not read that config key as a bare environment variable, so it was a no-op — on a host with deferred phased updates `apt list --upgradable` would hide them and PatchPilot would undercount versus the login MOTD. Replaced with the option apt actually honors, `-o APT::Get::Always-Include-Phased-Updates=true` on the `apt list` call.
+
+Both fixes are detection-only; the patch path is unchanged. `check-os-updates.yml --syntax-check` clean; the awk was verified against real `apt list --upgradable` output for the empty-holds, held-package, and phased-update cases.
+
+---
+
 ## [1.7.2] — 2026-06-05
 
 ### Security
