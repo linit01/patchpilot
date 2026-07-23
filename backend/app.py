@@ -103,6 +103,7 @@ from setup_api import router as setup_router
 from uninstall_api import router as uninstall_router
 from update_checker import router as update_router, periodic_update_check
 from license import router as license_router, license_set_pool, periodic_license_check, ensure_trial_for_existing_installs, enforce_trial_active, check_trial_active
+from retention import run_retention_once
 
 # WebSocket connection manager for patch progress
 class ConnectionManager:
@@ -352,6 +353,9 @@ async def startup_event():
 
     asyncio.create_task(periodic_license_check())
     print("[STARTUP] periodic_license_check loop launched")
+
+    asyncio.create_task(periodic_retention())
+    print("[STARTUP] periodic_retention loop launched")
 
     # Defer initial check until the DB has hosts to check.
     # After a restore + self-restart the pools need a few seconds to
@@ -1201,7 +1205,11 @@ async def run_ansible_patch_task(hostnames: List[str], become_password: Optional
                         await conn.execute("""
                             INSERT INTO patch_history (host_id, success, packages_updated, duration_seconds, error_message, output)
                             VALUES ($1, $2, $3, $4, $5, $6)
-                        """, host_row["id"], is_success, pkgs_updated, duration_secs, error_msg, ansible_output)
+                        """, host_row["id"], is_success, pkgs_updated, duration_secs, error_msg,
+                            # Store raw ansible stdout only on failure (for debugging);
+                            # successful runs are captured by packages_updated. Keeps
+                            # patch_history from bloating with full stdout per success.
+                            "" if is_success else ansible_output)
                         print(f"[INFO] Recorded patch_history for {hostname}: success={is_success}, pkgs={len(pkgs_updated)})")
         except Exception as e:
             print(f"[WARN] Failed to record patch history: {e}")
@@ -1274,6 +1282,19 @@ async def periodic_ansible_check():
         except Exception as e:
             print(f"[{datetime.now()}] ERROR in periodic_ansible_check: {type(e).__name__}: {e}")
             logger.error(f"Periodic check loop error: {e}", exc_info=True)
+
+
+# Daily retention prune — bounds patch_history / audit_log growth. Windows
+# are settings-table knobs (see retention.py). A failed pass logs and retries
+# next day; never crashes the loop.
+async def periodic_retention():
+    await asyncio.sleep(300)  # let startup + initial host check settle
+    while True:
+        try:
+            await run_retention_once(db.pool)
+        except Exception as e:
+            logger.error(f"periodic_retention error: {type(e).__name__}: {e}", exc_info=True)
+        await asyncio.sleep(24 * 3600)
 
 
 # =========================================================================
@@ -1895,7 +1916,9 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
                                  duration_seconds, error_message, output)
                             VALUES ($1, $2, $3, $4, $5, $6)
                         """, host_row["id"], is_success, pkgs_updated,
-                            elapsed, error_msg, output)
+                            elapsed, error_msg,
+                            # Raw stdout only on failure (see the manual-patch path).
+                            "" if is_success else output)
                         # Real progress = the apply task ran AND installed at least
                         # one package. A no-op "0 upgraded" (held/kept-back) or a
                         # failure counts as stuck so the attempt cap can engage.

@@ -18,6 +18,7 @@ import os
 
 from encryption_utils import encrypt_credential, decrypt_credential, validate_ssh_key
 from dependencies import get_db_pool
+from retention import run_retention_once, retention_stats
 from sync_ansible_inventory import sync_ansible_inventory
 from auth import require_auth, require_full_admin, require_write, ownership_filter
 from license import enforce_trial_active
@@ -26,6 +27,20 @@ from rbac import (owner_id, owner_id_or_param, verify_host_ownership,
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_auth)])
+
+
+# ── Retention (visibility + manual trigger) ──────────────────────────────
+# The daily periodic_retention loop (app.py) runs this automatically; these
+# expose current table sizes and an on-demand prune. Windows are the
+# patch_history_retention_days / audit_log_retention_days settings keys.
+@router.get("/retention/stats")
+async def get_retention_stats(pool: asyncpg.Pool = Depends(get_db_pool)):
+    return await retention_stats(pool)
+
+
+@router.post("/retention/run", dependencies=[Depends(require_full_admin)])
+async def post_retention_run(pool: asyncpg.Pool = Depends(get_db_pool)):
+    return await run_retention_once(pool)
 
 
 # ============================================================================
