@@ -99,6 +99,29 @@ Confirm the account / which DB the backend is on:
 kubectl -n patchpilot exec -it deploy/patchpilot-postgres -c postgres -- psql -U patchpilot -d patchpilot -c "SELECT username, role, is_active, last_login FROM users;"
 ```
 
+## RBAC role gotcha — Settings/sidebar gated on full_admin
+The sidebar is gated entirely on `currentUser.role` (from `/api/auth/me`,
+[frontend/app.js:466](frontend/app.js)). Full_admin-only nav items:
+`nav-general` (**Settings/General**), `nav-users` (**Users**), `nav-advanced`
+(**Advanced**). An `admin` sees only the write items (Hosts mgmt, SSH Keys,
+Schedules); a `viewer` sees none. The role label under the username in the
+sidebar shows the current role ("Full Admin" / "Admin" / "Viewer") — the
+quickest way to spot a demotion.
+
+**The gotcha:** `setup_admin.py` sets `role='admin'` on every run, silently
+demoting a full_admin. The startup auto-promotion
+([backend/app.py:933](backend/app.py)) only re-promotes the *earliest-created*
+user, so if `sanborn` isn't that row it stays `admin` and loses
+Settings/Users/Advanced. **Hit on Site A today** — `sanborn` was logged in but
+couldn't see Settings. This is the same demotion behind the Site B recovery
+caveat above.
+
+Fix (per site, against that site's kubeconfig context), then log out/in or
+hard-refresh so `/api/auth/me` re-reads the role live:
+```bash
+kubectl -n patchpilot exec -it deploy/patchpilot-postgres -c postgres -- psql -U patchpilot -d patchpilot -c "UPDATE users SET role='full_admin' WHERE username='sanborn';"
+```
+
 ## Open questions for next session
 - After self-update, does 10.0.1.101's count match the host's ground truth
   exactly, or is there a residual off-by-one / arch-allowlist gap
@@ -122,3 +145,12 @@ kubectl -n patchpilot exec -it deploy/patchpilot-postgres -c postgres -- psql -U
 - **v1.7.5** (`f670b37`) — apt update-detection fix: hold-filter no longer drops
   all updates on hosts with no holds; phased updates now counted via the correct
   `-o` flag. CHANGELOG entries added for both.
+- **Ops (no code change, DB-only fixes):** diagnosed the Site B admin login
+  (forgot password → reset runbook above) and the Site A RBAC demotion
+  (`sanborn` was `admin`, missing Settings → promote to `full_admin`). Both trace
+  to the same `setup_admin.py` role-demotion gotcha.
+- **Non-issue:** "scheduled task not running" on manual Run Now turned out to be
+  Lens pointed at the wrong cluster (logs read on the wrong backend). Note: the
+  "▶ Run" button is fire-and-forget — it flips the schedule to `running` and
+  returns success immediately, so real outcome lives in the `[Schedule <id>]`
+  backend logs / `patch_schedules.last_status`, not the button response.
