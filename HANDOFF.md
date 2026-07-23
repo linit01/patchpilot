@@ -71,6 +71,34 @@ Syntax-check the playbook before a release (sandbox needs a writable tmp):
 ANSIBLE_LOCAL_TMP="$TMPDIR/ansible-tmp" ANSIBLE_HOME="$TMPDIR/ansible-home" ansible-playbook --syntax-check ansible/check-os-updates.yml
 ```
 
+## Site B — admin password recovery (runbook)
+Site B is `patchpilot.apps.1445.lan` (k3s; namespace `patchpilot`, backend
+deploy `patchpilot-backend` container `backend`, postgres deploy
+`patchpilot-postgres` container `postgres`). The **full_admin username is
+`sanborn`** (not `admin`).
+
+Passwords are bcrypt-hashed (self-contained, no encryption key involved), so a
+lost password can only be **reset**, never recovered — there is no forgot-password
+flow, and in-app change-password needs the current password. Reset with the
+supported `backend/setup_admin.py` (upserts by username, reactivates, clears
+sessions). Caveat: it sets `role='admin'`, which **demotes `sanborn` from
+`full_admin`** — the startup auto-promotion ([backend/app.py:933](backend/app.py))
+only re-promotes the earliest-created user and only at restart, so restore the
+role explicitly afterward.
+
+Reset password (prompts twice, min 8 chars, keeps it out of shell history):
+```bash
+kubectl -n patchpilot exec -it deploy/patchpilot-backend -c backend -- python setup_admin.py --username sanborn
+```
+Restore the full_admin role:
+```bash
+kubectl -n patchpilot exec -it deploy/patchpilot-postgres -c postgres -- psql -U patchpilot -d patchpilot -c "UPDATE users SET role='full_admin' WHERE username='sanborn';"
+```
+Confirm the account / which DB the backend is on:
+```bash
+kubectl -n patchpilot exec -it deploy/patchpilot-postgres -c postgres -- psql -U patchpilot -d patchpilot -c "SELECT username, role, is_active, last_login FROM users;"
+```
+
 ## Open questions for next session
 - After self-update, does 10.0.1.101's count match the host's ground truth
   exactly, or is there a residual off-by-one / arch-allowlist gap
