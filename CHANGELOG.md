@@ -4,6 +4,13 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.7.6] — 2026-07-23
+
+### Security
+- **Bumped `ansible-core` 2.19.6 → 2.19.11** to clear CVE-2026-11332 / GHSA-w8p5-mx5w-cpqj (high): an argument injection in `ansible-galaxy role install` that can lead to arbitrary code execution (vulnerable range `>= 2.19.0b1, < 2.19.11`). **PatchPilot's exposure was effectively nil** — it never runs `ansible-galaxy role install`; the only galaxy invocation in the repo is `ansible-galaxy collection install ansible.windows` at Docker build time (a different subcommand, with a hardcoded trusted argument), and the runtime path is `ansible-playbook` via `ansible_runner.py` with no role installs or `requirements.yml`. Cleared for hygiene. The bump stays within the 2.19.x line (patch-level only, no API change against `ansible-runner==2.4.2`); 2.19.11 was released 2026-06-18.
+
+---
+
 ## [1.7.5] — 2026-07-23
 
 ### Fixed
