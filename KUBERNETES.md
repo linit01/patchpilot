@@ -454,8 +454,8 @@ k8s/.generated/
 ├── 04-backend.yaml
 ├── 05-frontend.yaml
 ├── 06-middlewares.yaml      ← HTTPS mode only
-├── 07-certificate.yaml      ← HTTPS mode only
-├── 08-ingress.yaml
+├── 08-ingress.yaml          ← in ACME mode its cert-manager annotation
+│                              makes ingress-shim create the Certificate
 ├── 09-clusterissuer.yaml    ← if createClusterIssuer: true
 └── 10-ansible-configmap.yaml  ← if ansible paths are set
 ```

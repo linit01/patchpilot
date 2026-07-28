@@ -374,23 +374,13 @@ spec:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TLS Certificate (cert-manager)
-# Covers both your external domain and your .lan domain.
-# cert-manager will use the ClusterIssuer defined at the bottom to obtain a
-# Let's Encrypt certificate via the Cloudflare DNS-01 challenge.
+# There is deliberately no standalone Certificate here. The Ingress below
+# carries cert-manager.io/cluster-issuer, so ingress-shim creates the
+# Certificate itself — covering every host in the Ingress tls block, and owned
+# by the Ingress. Declaring our own alongside it pointed a second Certificate
+# at the same secretName, which cert-manager parks permanently in
+# Ready=False / IncorrectCertificate.
 # ─────────────────────────────────────────────────────────────────────────────
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: patchpilot-tls
-  namespace: patchpilot
-spec:
-  secretName: patchpilot-tls-secret   # Traefik reads this Secret
-  issuerRef:
-    name: letsencrypt-prod            # ClusterIssuer name (see below)
-    kind: ClusterIssuer
-  dnsNames:
-    - patchpilot.lan                  # ← internal .lan domain (PiHole)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Ingress  (Traefik reads standard networking.k8s.io/v1 Ingress with

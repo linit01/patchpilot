@@ -887,7 +887,7 @@ generate_manifests() {
 '$PP_LE_EMAIL:$PP_CF_EMAIL:$PP_CF_API_TOKEN_SECRET:'\
 '$PP_AUTO_REFRESH_INTERVAL:$PP_DEFAULT_SSH_USER:$PP_DEFAULT_SSH_PORT:'\
 '$PP_BACKUP_RETAIN_COUNT:$PP_MAX_BACKUP_SIZE_MB:'\
-'$PP_INGRESS_RULES:$PP_TLS_HOSTS:$PP_TLS_DNS_NAMES:'\
+'$PP_INGRESS_RULES:$PP_TLS_HOSTS:'\
 '$PP_INGRESS_MIDDLEWARE_ANNOTATION:$PP_CERT_MANAGER_ANNOTATION:$PP_HOSTNAME:$PP_KUBECTL_BIN:$PP_DATA_DIR:'\
 '$PP_LICENSE_PROVIDER:$PP_FREEMIUS_PRODUCT_ID' \
       < "$1" > "$2"
@@ -914,17 +914,12 @@ generate_manifests() {
   if [[ "${PP_TLS_ENABLED}" == "true" ]]; then
     render "${tmpl}/06-middlewares-https.yaml" "${GENERATED_DIR}/06-middlewares.yaml"
     ok "06-middlewares.yaml (HTTPS)"
-    # cert-manager Certificate only in ACME mode. In byo mode the TLS secret is
-    # pre-created by the operator, so no Certificate (and no cert-manager) at all.
-    if [[ "${PP_TLS_MODE}" == "acme" ]]; then
-      local dns_names=""
-      for h in "${ALL_HOSTNAMES[@]}"; do dns_names+="    - ${h}"$'\n'; done
-      export PP_TLS_DNS_NAMES="${dns_names%$'\n'}"
-      render "${tmpl}/07-certificate.yaml" "${GENERATED_DIR}/07-certificate.yaml"
-      ok "07-certificate.yaml"
-    else
-      ok "07-certificate.yaml (skipped — bring-your-own cert)"
-    fi
+    # No standalone Certificate. In ACME mode the cert-manager.io/cluster-issuer
+    # annotation on the Ingress makes ingress-shim create the Certificate for us,
+    # owned by the Ingress. Rendering our own alongside it pointed a second
+    # Certificate at the same secretName, which cert-manager parks permanently in
+    # Ready=False / IncorrectCertificate. In byo mode the TLS secret is pre-created
+    # by the operator, so there is no Certificate (and no cert-manager) at all.
   fi
 
   local ingress_rules=""
