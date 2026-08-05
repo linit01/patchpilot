@@ -16,7 +16,7 @@ asyncpg==0.31.0
 bcrypt==5.0.0
 cffi==2.0.0
 click==8.3.1
-cryptography==48.0.1
+cryptography==50.0.0
 fastapi==0.136.3
 h11==0.16.0
 httptools==0.7.1
