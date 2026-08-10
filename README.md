@@ -248,9 +248,39 @@ kubectl -n patchpilot rollout restart deployment/patchpilot-backend deployment/p
 
 - All SSH private keys and sudo passwords encrypted at rest (Fernet / AES-256)
 - Temporary key files created with `0600` permissions and deleted after use
+- Sudo password is passed to Ansible via a `0600` file, never on the command
+  line — so it can't be read out of `ps` / `/proc/<pid>/cmdline`
 - Fernet key stored in environment variable — never in the database
+- SSH host keys are verified: PatchPilot connects with
+  `StrictHostKeyChecking=accept-new` against a persistent `known_hosts` on the
+  ansible volume. The first connection to a host records its key; a later key
+  change is **refused**, which closes the MITM window on credentialed root/sudo
+  sessions. If you legitimately rebuild a managed host, clear its stale entry:
+  `ssh-keygen -f /ansible/patchpilot_known_hosts -R <hostname>`
 - Traefik middleware enforces HSTS and security headers in k3s mode
 - Control node protected from accidental auto-reboot
+
+### Deployment risks to be aware of
+
+These are accepted tradeoffs in the default install, not defects — but you
+should know they exist before exposing PatchPilot beyond a trusted network.
+
+- **Docker socket access (Docker Compose mode).** The backend mounts
+  `/var/run/docker.sock` and the install directory (`.:/install:rw`, which
+  includes `.env`). This is what powers in-app uninstall and lets restore
+  rewrite the encryption key. Note that a `:ro` flag on a socket mount does
+  **not** make the Docker API read-only — anything that can reach that socket
+  can control the daemon, which is root-equivalent on the host. The same
+  container also runs Ansible/SSH against remote hosts, so treat any code-exec
+  bug in the backend as host compromise in this mode. To opt out, remove both
+  volume lines from `docker-compose.yml`; in-app uninstall will stop working and
+  you'll run the uninstall script directly instead. (k3s mode does not mount the
+  Docker socket — it uses a scoped ServiceAccount.)
+- **Dashboard read endpoints are unauthenticated by design.** `/api/hosts`,
+  `/api/stats`, `/api/alerts` and similar return fleet inventory (hostnames,
+  IPs, OS versions, pending updates) without a session. Mutating endpoints and
+  all of Settings require auth. PatchPilot assumes a trusted LAN — put it behind
+  your own auth layer before exposing it to the internet.
 
 ---
 

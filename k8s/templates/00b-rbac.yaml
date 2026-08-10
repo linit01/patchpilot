@@ -87,11 +87,32 @@ rules:
     resources: ["namespaces"]
     resourceNames: ["${PP_NAMESPACE}"]
     verbs: ["delete"]
+  # Uninstall reclaims only the PVs whose claimRef points into this namespace
+  # (patchpilot-postgres-data / patchpilot-ansible-data — the backups PV is
+  # deliberately excluded so Retain preserves it for restore).  Those PVs are
+  # dynamically named (pvc-<uuid>), so resourceNames can't pin them; `list` is
+  # required to resolve claimRef->name, and RBAC does not honour resourceNames
+  # on list at all.  The namespace filtering is enforced in uninstall_api.py,
+  # not by RBAC — narrowing further would need a label-selector-scoped API,
+  # which Kubernetes RBAC does not support.
+  #
+  # NOTE: `patch` is intentionally NOT granted.  uninstall_api.py has a
+  # `kubectl patch pv` call to flip Retain->Delete, but it is only reached for a
+  # dynamically-provisioned PV that is ALSO on a Retain StorageClass.  In the
+  # normal deployment the SC already reclaims with Delete, so the call is skipped
+  # and the provisioner cleans up when the namespace (and its PVC) goes away —
+  # verified in practice: only the backups volume survives an uninstall.
+  # Granting `patch` would widen this ClusterRole to enable an edge-case path
+  # that isn't needed here; if that path is ever wanted, add the verb as its own
+  # separately-tested change rather than in a permission-narrowing pass.
   - apiGroups: [""]
     resources: ["persistentvolumes"]
     verbs: ["list", "delete"]
+  # Scoped to the single issuer the uninstaller actually deletes, instead of
+  # every ClusterIssuer in the cluster.
   - apiGroups: ["cert-manager.io"]
     resources: ["clusterissuers"]
+    resourceNames: ["letsencrypt-prod"]
     verbs: ["delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

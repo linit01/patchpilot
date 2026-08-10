@@ -52,7 +52,7 @@ services:
 
   # ── Backend (FastAPI) ───────────────────────────────────────────────────────
   backend:
-    image: linit01/patchpilot:backend-1.7.7
+    image: linit01/patchpilot:backend-1.7.8
     # build: .    # uncomment when using docker-compose.developer.yml
     container_name: patchpilot-backend-1
     restart: unless-stopped
@@ -95,6 +95,13 @@ services:
     volumes:
       - ./ansible:/ansible
       - backups:/backups
+      # SECURITY: these two mounts are root-equivalent on the host. `:ro` on a
+      # socket does NOT make the Docker API read-only — anything that can reach
+      # the socket can control the daemon. This container also runs Ansible/SSH
+      # against remote hosts. Accepted tradeoff: it's what enables in-app
+      # uninstall and lets restore rewrite the .env encryption key.
+      # Remove both lines to opt out (in-app uninstall then requires the
+      # uninstall script). See README "Deployment risks to be aware of".
       - /var/run/docker.sock:/var/run/docker.sock:ro  # required — enables in-app uninstall
       - .:/install:rw  # mount install dir so restore can update .env encryption key
 
@@ -110,7 +117,7 @@ services:
 
   # ── Frontend (Nginx) ────────────────────────────────────────────────────────
   frontend:
-    image: linit01/patchpilot:frontend-1.7.7
+    image: linit01/patchpilot:frontend-1.7.8
     # frontend files are baked into the image; nginx.conf is rendered at startup
     # via envsubst so the same image works for Docker Compose and Kubernetes.
     # use docker-compose.developer.yml to override with local source mounts

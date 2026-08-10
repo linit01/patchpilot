@@ -23,6 +23,38 @@ def _patchpilot_app_version() -> str:
         pass
     return "unknown"
 
+
+def known_hosts_path() -> str:
+    """Path to the persistent known_hosts used for SSH host-key verification.
+
+    We connect with StrictHostKeyChecking=accept-new (trust-on-first-use) rather
+    than =no: the first connection to a host records its key, and any later key
+    change is REFUSED instead of silently accepted.  That is what closes the
+    MITM window on credentialed root/sudo sessions to the managed fleet.
+
+    The file lives on the ansible volume, which is persistent in both deployment
+    modes (docker: ./ansible bind mount, k8s: ansible-data PVC), so keys learned
+    on first connect survive container restarts.
+
+    Operator note: if a managed host is legitimately rebuilt/reimaged its host
+    key changes and connections to it will fail until its stale entry is removed:
+        ssh-keygen -f <this path> -R <hostname>
+    """
+    ansible_dir = os.environ.get('ANSIBLE_DIR', '/ansible')
+    for candidate_dir in (ansible_dir, tempfile.gettempdir()):
+        try:
+            os.makedirs(candidate_dir, exist_ok=True)
+            path = os.path.join(candidate_dir, 'patchpilot_known_hosts')
+            if not os.path.exists(path):
+                with open(path, 'a'):
+                    pass
+                os.chmod(path, 0o600)
+            return path
+        except Exception as e:
+            logger.warning(f"known_hosts not usable in {candidate_dir} ({e}); trying fallback")
+    # Last resort: still verify, just without persistence across restarts.
+    return os.path.join(tempfile.gettempdir(), 'patchpilot_known_hosts')
+
 class AnsibleRunner:
     def __init__(self, playbook_path: str, inventory_path: str, db_client=None):
         """
@@ -86,9 +118,13 @@ class AnsibleRunner:
                 'all': {
                     'hosts': {},
                     'vars': {
+                        # accept-new + a persistent known_hosts = trust-on-first-use.
+                        # Previously =no with UserKnownHostsFile=/dev/null, which trusted
+                        # every key and remembered nothing, leaving these credentialed
+                        # root/sudo sessions open to MITM.  See known_hosts_path().
                         'ansible_ssh_common_args': (
-                            '-o StrictHostKeyChecking=no '
-                            '-o UserKnownHostsFile=/dev/null '
+                            '-o StrictHostKeyChecking=accept-new '
+                            f'-o UserKnownHostsFile={known_hosts_path()} '
                             '-o ControlMaster=auto '
                             '-o ControlPath=/tmp/ansible-cm-%C '
                             '-o ControlPersist=60s'
@@ -608,12 +644,21 @@ class AnsibleRunner:
                 cmd.extend(["--limit", ",".join(limit_hosts)])
             
             # Add become password if specified via extra-vars.
-            # MUST use JSON format — raw key=value is parsed as YAML by Ansible,
+            # Passed as @file, NOT inline: an inline --extra-vars puts the sudo
+            # password in argv, where any other process on the host/container can
+            # read it out of `ps` or /proc/<pid>/cmdline.  The file is 0600 and is
+            # removed by _cleanup_files(patch_temp) once ansible exits.
+            # MUST stay JSON format — raw key=value is parsed as YAML by Ansible,
             # which silently corrupts passwords containing special characters
             # (!, #, :, {, }, @, etc.) causing become auth to fail.
             if become_password:
                 import json as _json
-                cmd.extend(["--extra-vars", _json.dumps({"ansible_become_password": become_password})])
+                bp_fd, bp_path = tempfile.mkstemp(prefix='ansible_become_', suffix='.json')
+                os.write(bp_fd, _json.dumps({"ansible_become_password": become_password}).encode())
+                os.close(bp_fd)
+                os.chmod(bp_path, 0o600)
+                patch_temp.append(bp_path)
+                cmd.extend(["--extra-vars", f"@{bp_path}"])
             
             # Use async subprocess for non-blocking streaming output
             env = os.environ.copy()

@@ -17,6 +17,7 @@ import uuid
 import os
 
 from encryption_utils import encrypt_credential, decrypt_credential, validate_ssh_key
+from ansible_runner import known_hosts_path
 from dependencies import get_db_pool
 from retention import run_retention_once, retention_stats
 from sync_ansible_inventory import sync_ansible_inventory
@@ -717,10 +718,13 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
     
     try:
         # Build ssh command
+        # Host-key policy matches the Ansible runs (accept-new + shared persistent
+        # known_hosts), so a key learned here is the same one trusted at patch time
+        # and a later mismatch is refused rather than silently accepted.
         ssh_cmd = [
             "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", f"UserKnownHostsFile={known_hosts_path()}",
             "-o", "ConnectTimeout=10",
             "-o", "BatchMode=yes",
             "-p", str(request.ssh_port),
