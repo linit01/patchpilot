@@ -665,13 +665,16 @@ async def test_connection(request: TestConnectionRequest, pool: asyncpg.Pool = D
             print(f"  Failed to resolve default key: {e}")
             return TestConnectionResponse(success=False, message=f"Failed to load default SSH key: {str(e)}")
 
-    # Handle saved: key types - fetch from database directly
+    # Handle saved: key types - fetch from database directly (ownership-scoped)
     if request.ssh_key_type and request.ssh_key_type.startswith('saved:'):
         key_id = request.ssh_key_type.replace('saved:', '')
         print(f"  Resolving saved key: {key_id}")
         try:
             key_uuid = uuid.UUID(key_id)
             async with pool.acquire() as conn:
+                if not await verify_ssh_key_ownership(conn, user, key_uuid):
+                    print(f"  Access denied to saved key {key_id} for user {user['id']}")
+                    return TestConnectionResponse(success=False, message="Saved SSH key not found")
                 row = await conn.fetchrow(
                     "SELECT ssh_key_encrypted FROM saved_ssh_keys WHERE id = $1", key_uuid
                 )
@@ -1385,8 +1388,8 @@ async def delete_saved_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_
 
 @router.get("/ssh-keys/{key_id}/decrypt")
 async def get_decrypted_ssh_key(key_id: str, pool: asyncpg.Pool = Depends(get_db_pool),
-                                user: dict = Depends(require_auth)):
-    """Get the decrypted SSH key content (ownership-scoped)"""
+                                user: dict = Depends(require_write)):
+    """Get the decrypted SSH key content (ownership-scoped, write-only — viewers cannot access private key material)"""
     try:
         key_uuid = uuid.UUID(key_id)
     except ValueError:
