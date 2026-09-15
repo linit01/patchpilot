@@ -14,6 +14,17 @@ struct Host: Codable, Identifiable {
     let rebootRequired: Bool?
     let ownerUsername: String?
 
+    /// Why the last check marked this host unreachable. Two very different
+    /// failures land on the same status: SSH genuinely failed, or SSH worked
+    /// and fact gathering failed (e.g. an unaccepted Xcode licence breaking
+    /// /usr/bin/python3). Nil when the last check succeeded.
+    let checkFailReason: String?
+    /// First failure in a run of consecutive failures, not the latest one.
+    let checkFailAt: String?
+    /// Server-derived fix for known recurring causes, so this app does not
+    /// re-implement the backend's pattern matching.
+    let checkFailHint: String?
+
     enum CodingKeys: String, CodingKey {
         case id, hostname, status
         case ipAddress = "ip_address"
@@ -25,6 +36,9 @@ struct Host: Codable, Identifiable {
         case lastChecked = "last_checked"
         case rebootRequired = "reboot_required"
         case ownerUsername = "owner_username"
+        case checkFailReason = "check_fail_reason"
+        case checkFailAt = "check_fail_at"
+        case checkFailHint = "check_fail_hint"
     }
 }
 

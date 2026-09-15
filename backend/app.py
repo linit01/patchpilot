@@ -1097,12 +1097,23 @@ async def run_ansible_check_task(limit_hosts: list = None):
         except Exception as e:
             print(f"Error updating host {hostname}: {e}")
 
-    # ── Mark unchecked hosts as unreachable ─────────────────────────────────
-    # If Ansible aborted early (e.g. a host was unreachable before
-    # ignore_unreachable was added, or a fatal error stopped the play),
-    # hosts that were never evaluated still carry their old stale status.
-    # Compare the set of hosts we asked Ansible to check against what it
-    # actually returned and mark the gap as unreachable.
+    # ── Record hosts the run never reported on ──────────────────────────────
+    # A host missing from Ansible's output was NOT observed to be down.  The
+    # play may have aborted early, or the whole run may have hit run_check's
+    # hard timeout (300s) — which one slow host can consume on its own, e.g.
+    # `softwareupdate -l` on a Mac mid-update cycle.
+    #
+    # This used to write status='unreachable', total_updates=0 and delete the
+    # host's package + duplicate-app rows.  All three were wrong: the status
+    # claimed knowledge we don't have, and the deletes emptied a healthy
+    # host's update list until the next good run — which, inside a patch
+    # window, also made the host look "resolved" to the retry logic below
+    # (total_updates <= 0) and skippable for being unreachable.
+    #
+    # So record the reason and nothing else.  The previous status stands until
+    # a run actually observes this host, last_checked deliberately stays stale
+    # so the staleness auto-trigger still fires, and a completed check clears
+    # the reason via upsert_host(check_fail_reason=None).
     try:
         if limit_hosts:
             expected_hosts = set(limit_hosts)
@@ -1112,29 +1123,20 @@ async def run_ansible_check_task(limit_hosts: list = None):
         checked_hosts = set(hosts_data.keys())
         unchecked = expected_hosts - checked_hosts
         if unchecked:
-            print(f"[CHECK] {len(unchecked)} host(s) not in Ansible output — marking unreachable: {unchecked}")
+            print(f"[CHECK] {len(unchecked)} host(s) not in Ansible output — "
+                  f"keeping last known status, recording reason: {unchecked}")
             for hostname in unchecked:
                 try:
-                    existing = await db.get_host_by_hostname(hostname)
-                    if existing:
-                        await db.upsert_host(
-                            hostname=hostname,
-                            ip_address=existing.get('ip_address', ''),
-                            os_type=existing.get('os_type', ''),
-                            os_family=existing.get('os_family', ''),
-                            status='unreachable',
-                            total_updates=0,
-                            reboot_required=False,
-                            check_fail_reason=(
-                                "Host did not appear in Ansible output — the play may have "
-                                "aborted before reaching it, or the run timed out"
-                            ),
-                        )
-                        await db.delete_packages_for_host(existing['id'])
-                        await db.delete_duplicate_apps_for_host(existing['id'])
-                        print(f"Updated host: {hostname} - Status: unreachable - Updates: 0 (not in Ansible output)")
+                    recorded = await db.record_check_incomplete(
+                        hostname,
+                        "Check did not complete for this host — the play may have aborted "
+                        "before reaching it, or the run exceeded its time limit. The status "
+                        "shown is from the last completed check."
+                    )
+                    if recorded:
+                        print(f"[CHECK] {hostname}: check incomplete — status and packages left intact")
                 except Exception as e:
-                    print(f"Error marking unchecked host {hostname}: {e}")
+                    print(f"Error recording incomplete check for {hostname}: {e}")
     except Exception as e:
         print(f"Warning: Failed to check for unchecked hosts: {e}")
 
@@ -2157,6 +2159,12 @@ async def get_hosts(background_tasks: BackgroundTasks, request: Request,
             )
             hosts = [dict(r) for r in rows]
 
+    # Derive the remediation hint server-side so clients (iOS, web) don't each
+    # re-implement the pattern matching and drift apart.  check_fail_reason
+    # itself comes straight from SELECT h.*.
+    for _h in hosts:
+        _h['check_fail_hint'] = _check_failure_hint(_h.get('check_fail_reason'))
+
     # Auto-trigger a check if data looks stale and nothing is running
     if hosts and not _ansible_check_lock.locked() and not _ansible_patch_running:
         try:
@@ -2200,6 +2208,7 @@ async def get_host(hostname: str, request: Request,
         async with pool.acquire() as conn:
             if not await verify_host_ownership_by_hostname(conn, user, hostname):
                 raise HTTPException(status_code=403, detail="Access denied to this host")
+    host['check_fail_hint'] = _check_failure_hint(host.get('check_fail_reason'))
     return host
 
 @app.get("/api/hosts/{hostname}/packages")
@@ -2424,7 +2433,8 @@ async def get_sidebar_stats(request: Request, owner: str = None,
             alert_count = await pool.fetchval("""
                 SELECT (
                     SELECT COUNT(*) FROM hosts
-                    WHERE (status = 'unreachable' OR reboot_required = TRUE) AND created_by = $1
+                    WHERE (status = 'unreachable' OR reboot_required = TRUE
+                           OR check_fail_reason IS NOT NULL) AND created_by = $1
                 ) + (
                     SELECT COUNT(DISTINCT h.id) FROM hosts h
                     JOIN packages p ON h.id = p.host_id
@@ -2455,6 +2465,7 @@ async def get_sidebar_stats(request: Request, owner: str = None,
                 SELECT (
                     SELECT COUNT(*) FROM hosts
                     WHERE status = 'unreachable' OR reboot_required = TRUE
+                       OR check_fail_reason IS NOT NULL
                 ) + (
                     SELECT COUNT(DISTINCT h.id) FROM hosts h
                     JOIN packages p ON h.id = p.host_id
@@ -2661,7 +2672,8 @@ async def get_alerts(request: Request, owner: str = None,
                     SELECT hostname, ip_address, status, reboot_required, last_checked,
                            check_fail_reason, check_fail_at
                     FROM hosts
-                    WHERE (status = 'unreachable' OR reboot_required = TRUE)
+                    WHERE (status = 'unreachable' OR reboot_required = TRUE
+                           OR check_fail_reason IS NOT NULL)
                       AND created_by = $1
                     ORDER BY status, hostname
                 """, uid)
@@ -2671,9 +2683,27 @@ async def get_alerts(request: Request, owner: str = None,
                            check_fail_reason, check_fail_at
                     FROM hosts
                     WHERE status = 'unreachable' OR reboot_required = TRUE
+                       OR check_fail_reason IS NOT NULL
                     ORDER BY status, hostname
                 """)
             for r in rows:
+                # Check never reported on this host: the status shown is from
+                # the last completed check, so this is a warning about the
+                # freshness of the data, not a claim that the host is down.
+                if r['status'] != 'unreachable' and r['check_fail_reason']:
+                    _hint = _check_failure_hint(r['check_fail_reason'])
+                    alerts.append({
+                        "severity": "warning",
+                        "type": "check_incomplete",
+                        "hostname": r['hostname'],
+                        "message": (f"Host {r['hostname']} — last check did not complete: "
+                                    f"{r['check_fail_reason']}"),
+                        "reason": r['check_fail_reason'],
+                        "hint": _hint,
+                        "failing_since": str(r['check_fail_at']) if r['check_fail_at'] else None,
+                        "last_checked": str(r['last_checked']) if r['last_checked'] else None
+                    })
+
                 if r['status'] == 'unreachable':
                     reason = r['check_fail_reason']
                     hint = _check_failure_hint(reason)

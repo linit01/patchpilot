@@ -202,7 +202,7 @@ function handlePatchProgress(data) {
                 hostsDiv.innerHTML = data.hosts.map(h => 
                     `<span id="patch-host-${h.replace(/[^a-zA-Z0-9]/g, '_')}" 
                            style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:600;background:var(--bg-dark);border:1px solid var(--border);color:var(--text-muted);">
-                        <span class="host-status-icon">⏳</span> ${h}
+                        <span class="host-status-icon">⏳</span> ${escapeHtml(h)}
                     </span>`
                 ).join('');
             }
@@ -356,6 +356,7 @@ function resetCountdown() {
 }
 // Initialize dashboard on load
 document.addEventListener('DOMContentLoaded', () => {
+    initDelegatedHandlers();
     checkAuthAndInit();
 });
 
@@ -562,7 +563,7 @@ async function populateOwnerFilter() {
         users.forEach(u => {
             if (u.role === 'viewer') return;  // viewers don't own resources
             const label = `${u.username} (${roleLabels[u.role] || u.role})`;
-            select.innerHTML += `<option value="${u.id}">${label}</option>`;
+            select.innerHTML += `<option value="${escapeHtml(u.id)}">${escapeHtml(label)}</option>`;
         });
         select.style.display = '';
     } catch (e) {
@@ -773,30 +774,29 @@ function renderHostsTable() {
             ? new Date(host.last_checked).toLocaleTimeString()
             : 'Never';
         const ownerCol = isFullAdmin
-            ? `<td><span style="font-size:12px;color:var(--text-secondary)">${host.owner_username || '—'}</span></td>`
+            ? `<td><span style="font-size:12px;color:var(--text-secondary)">${escapeHtml(host.owner_username || '—')}</span></td>`
             : '';
         
         return `
-            <tr class="${isSelected ? 'selected' : ''}" data-hostname="${host.hostname}">
+            <tr class="${isSelected ? 'selected' : ''}" data-hostname="${escapeHtml(host.hostname)}">
                 <td>
                     <input 
                         type="checkbox" 
                         class="host-checkbox" 
-                        data-hostname="${host.hostname}"
+                        data-hostname="${escapeHtml(host.hostname)}"
                         ${isSelected ? 'checked' : ''}
                         ${!canWrite ? 'disabled' : ''}
-                        onchange="handleHostCheckbox('${host.hostname}')"
                     />
                 </td>
                 <td>
-                    <strong style="color:var(--text-primary)">${host.hostname}</strong>
+                    <strong style="color:var(--text-primary)">${escapeHtml(host.hostname)}</strong>
                     ${host.is_control_node ? '<span class="control-node-badge">CONTROL</span>' : ''}
                 </td>
-                <td><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-muted)">${host.ip_address || 'N/A'}</span></td>
-                <td>${getOsIcon(host.os_family)}${host.os_family || 'Unknown'}</td>
+                <td><span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-muted)">${escapeHtml(host.ip_address || 'N/A')}</span></td>
+                <td>${getOsIcon(host.os_family)}${escapeHtml(host.os_family || 'Unknown')}</td>
                 <td>
                     <span class="status-badge status-${statusClass}">
-                        ${host.status === 'up-to-date' ? '✓' : host.status === 'updates-available' ? '⚠' : '✕'} ${host.status}
+                        ${host.status === 'up-to-date' ? '✓' : host.status === 'updates-available' ? '⚠' : '✕'} ${escapeHtml(host.status)}
                     </span>
                 </td>
                 <td>
@@ -808,7 +808,7 @@ function renderHostsTable() {
                 <td><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-muted)">${lastChecked}</span></td>
                 ${ownerCol}
                 <td>
-                    <button class="action-btn" onclick="showHostDetails('${host.hostname}')">
+                    <button class="action-btn" data-host-details="${escapeHtml(host.hostname)}">
                         Details
                     </button>
                 </td>
@@ -1016,7 +1016,7 @@ function handlePatchSelected() {
     
     const hostsList = document.getElementById('patch-hosts-list');
     hostsList.innerHTML = window.selectedHostsForPatch
-        .map(hostname => `<li><strong>${hostname}</strong></li>`)
+        .map(hostname => `<li><strong>${escapeHtml(hostname)}</strong></li>`)
         .join('');
     
     document.getElementById('patch-modal').style.display = 'flex';
@@ -1067,7 +1067,7 @@ async function confirmPatch() {
         hostsDiv.innerHTML = hostsToPatc.map(h => 
             `<span id="patch-host-${h.replace(/[^a-zA-Z0-9]/g, '_')}" 
                    style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:600;background:var(--bg-dark);border:1px solid var(--border);color:var(--text-muted);">
-                <span class="host-status-icon">⏳</span> ${h}
+                <span class="host-status-icon">⏳</span> ${escapeHtml(h)}
             </span>`
         ).join('');
     }
@@ -1162,7 +1162,7 @@ async function showHostDetails(hostname) {
         // Populate modal
         document.getElementById('detail-ip').textContent = host.ip_address || 'N/A';
         document.getElementById('detail-os').innerHTML = 
-            `${getOsIcon(host.os_family, 14)}${host.os_family || 'Unknown'} ${host.os_type ? `(${host.os_type})` : ''}`;
+            `${getOsIcon(host.os_family, 14)}${escapeHtml(host.os_family || 'Unknown')} ${host.os_type ? `(${escapeHtml(host.os_type)})` : ''}`;
         
         const statusBadge = document.getElementById('detail-status');
         statusBadge.textContent = host.status;
@@ -1199,20 +1199,20 @@ async function showHostDetails(hostname) {
                 const idHtml = showId ? `
                     <div class="package-exclusion-id" title="Use this ID in General Settings exclusion list">
                         <span class="package-exclusion-label">ID:</span>
-                        <code class="package-exclusion-value">${pkg.package_id}</code>
-                        <button class="copy-id-btn" onclick="navigator.clipboard.writeText('${pkg.package_id}').then(() => { this.textContent='✓'; setTimeout(()=>this.textContent='Copy',1200) })" title="Copy to clipboard">Copy</button>
+                        <code class="package-exclusion-value">${escapeHtml(pkg.package_id)}</code>
+                        <button class="copy-id-btn" data-copy-id="${escapeHtml(pkg.package_id)}" title="Copy to clipboard">Copy</button>
                     </div>` : '';
                 return `
                 <div class="package-item">
                     <div>
-                        <div class="package-name">${pkg.package_name}</div>
+                        <div class="package-name">${escapeHtml(pkg.package_name)}</div>
                         <div class="package-version">
-                            ${pkg.current_version || 'N/A'} → ${pkg.available_version || 'N/A'}
+                            ${escapeHtml(pkg.current_version || 'N/A')} → ${escapeHtml(pkg.available_version || 'N/A')}
                         </div>
                         ${idHtml}
                     </div>
                     <span class="status-badge status-updates-available">
-                        ${pkg.update_type || 'update'}
+                        ${escapeHtml(pkg.update_type || 'update')}
                     </span>
                 </div>`;
             }).join('');
@@ -1229,7 +1229,7 @@ async function showHostDetails(hostname) {
             patchBtn.style.display = 'none';
         }
     } catch (error) {
-        loading.innerHTML = '<p style="color: #ef4444;">Error loading host details: ' + error.message + '</p>';
+        loading.innerHTML = '<p style="color: #ef4444;">Error loading host details: ' + escapeHtml(error.message) + '</p>';
     }
 }
 
@@ -1339,7 +1339,7 @@ async function patchSingleHost() {
     // Open the patch confirmation modal with this host
     const patchModal = document.getElementById('patch-modal');
     const hostsList = document.getElementById('patch-hosts-list');
-    hostsList.innerHTML = `<li>${hostname}</li>`;
+    hostsList.innerHTML = `<li>${escapeHtml(hostname)}</li>`;
     
     // Store the hostname for the confirmPatch function
     window.selectedHostsForPatch = [hostname];
@@ -1464,7 +1464,7 @@ function renderPatchActivity(activity, osColorMap, osDistribution) {
                 if (count === 0) return;
                 const color = osColorMap[os] || CHART_COLORS[osOrder.indexOf(os) % CHART_COLORS.length] || '#aaaaaa';
                 const h = Math.max((count / maxVal) * BAR_MAX_H, 4);
-                segmentsHTML += `<div class="chart-bar-seg" style="height:${h}px;background:${color}" title="${count} patched (${os})"></div>`;
+                segmentsHTML += `<div class="chart-bar-seg" style="height:${h}px;background:${color}" title="${count} patched (${escapeHtml(os)})"></div>`;
             });
             // Any patched not attributed to a known OS
             const osTotal = Object.values(byOs).reduce((a, b) => a + b, 0);
@@ -1486,7 +1486,7 @@ function renderPatchActivity(activity, osColorMap, osDistribution) {
     // Legend: OS colors + failed, only show OSes that actually appear
     const legendItems = allOSes.map(os => {
         const color = osColorMap[os] || '#aaaaaa';
-        return `<span class="activity-legend-item"><span class="activity-legend-swatch" style="background:${color}"></span>${os}</span>`;
+        return `<span class="activity-legend-item"><span class="activity-legend-swatch" style="background:${color}"></span>${escapeHtml(os)}</span>`;
     });
     if (totalFailed > 0) {
         legendItems.push(`<span class="activity-legend-item"><span class="activity-legend-swatch" style="background:${FAILED_COLOR}"></span>Failed</span>`);
@@ -1537,7 +1537,7 @@ function renderDonut(elementId, items, keyField, label) {
         fallbackIdx++;
         return `<div class="donut-legend-item">
             <div class="swatch" style="background:${color}"></div>
-            ${name}
+            ${escapeHtml(name)}
             <span class="count">${item.count}</span>
         </div>`;
     }).join('');
@@ -1659,14 +1659,14 @@ async function showPatchHistoryModal() {
         }
         
         tbody.innerHTML = history.map(h => {
-            const status = h.status === 'success' ? '✅ success' : '❌ ' + h.status;
+            const status = h.status === 'success' ? '✅ success' : '❌ ' + escapeHtml(h.status);
             const statusColor = h.status === 'success' ? 'var(--green-bright)' : 'var(--red)';
             const duration = h.execution_time ? `${parseFloat(h.execution_time).toFixed(1)}s` : '—';
             const date = h.created_at ? new Date(h.created_at).toLocaleString() : '—';
             return `<tr>
-                <td><strong style="color:var(--text-primary)">${h.hostname || 'Unknown'}</strong></td>
+                <td><strong style="color:var(--text-primary)">${escapeHtml(h.hostname || 'Unknown')}</strong></td>
                 <td><span style="color:${statusColor};font-weight:600">${status}</span></td>
-                <td>${h.packages_updated || 0}</td>
+                <td>${escapeHtml(h.packages_updated || 0)}</td>
                 <td style="font-family:monospace;font-size:12px">${duration}</td>
                 <td style="font-family:monospace;font-size:11px;color:var(--text-muted)">${date}</td>
             </tr>`;
@@ -1721,15 +1721,15 @@ async function showPackagesModal() {
         tbody.innerHTML = allPackages.map(p => {
             const showId = p.package_id && (p.update_type === 'mas' || p.update_type === 'winget' || p.update_type === 'macos-system');
             const idCell = showId
-                ? `<code style="font-size:11px;color:var(--text-secondary);background:var(--bg-card-inner,#1a1a1a);padding:2px 5px;border-radius:4px;cursor:pointer" title="Click to copy exclusion ID" onclick="navigator.clipboard.writeText('${p.package_id}').then(()=>{ this.style.color='var(--green)'; setTimeout(()=>this.style.color='var(--text-secondary)',1200) })">${p.package_id}</code>`
+                ? `<code style="font-size:11px;color:var(--text-secondary);background:var(--bg-card-inner,#1a1a1a);padding:2px 5px;border-radius:4px;cursor:pointer" title="Click to copy exclusion ID" data-copy-id="${escapeHtml(p.package_id)}">${escapeHtml(p.package_id)}</code>`
                 : '<span style="color:var(--text-muted)">—</span>';
             return `
             <tr>
-                <td><span style="font-family:monospace;font-size:12px;color:var(--text-muted)">${p.hostname}</span></td>
-                <td><strong style="color:var(--text-primary)">${p.package_name}</strong></td>
-                <td style="font-family:monospace;font-size:11px;color:var(--text-muted)">${p.current_version || '—'}</td>
-                <td style="font-family:monospace;font-size:11px;color:var(--cyan)">${p.available_version || '—'}</td>
-                <td><span class="status-badge status-updates-available">${p.update_type || 'update'}</span></td>
+                <td><span style="font-family:monospace;font-size:12px;color:var(--text-muted)">${escapeHtml(p.hostname)}</span></td>
+                <td><strong style="color:var(--text-primary)">${escapeHtml(p.package_name)}</strong></td>
+                <td style="font-family:monospace;font-size:11px;color:var(--text-muted)">${escapeHtml(p.current_version || '—')}</td>
+                <td style="font-family:monospace;font-size:11px;color:var(--cyan)">${escapeHtml(p.available_version || '—')}</td>
+                <td><span class="status-badge status-updates-available">${escapeHtml(p.update_type || 'update')}</span></td>
                 <td>${idCell}</td>
             </tr>`;
         }).join('');
@@ -1749,7 +1749,48 @@ function escapeHtml(s) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// Event delegation for values that come from managed hosts.
+//
+// These used to be inline handlers like onclick="fn('${hostname}')".  That is
+// not fixable by escaping: an inline handler's attribute is HTML-decoded
+// BEFORE it is compiled as JavaScript, so &#39; decodes back to ' and still
+// closes the string.  Package names, versions and OS strings are stored
+// verbatim from managed-host output, so a compromised host could inject
+// script into the operator's session -- which can start fleet-wide patch runs.
+// Values now travel in data-* attributes and are read back via dataset, where
+// they are never parsed as code.
+function initDelegatedHandlers() {
+    document.addEventListener('change', (e) => {
+        const cb = e.target.closest && e.target.closest('.host-checkbox');
+        if (cb && cb.dataset.hostname) handleHostCheckbox(cb.dataset.hostname);
+    });
+
+    document.addEventListener('click', (e) => {
+        const copyEl = e.target.closest && e.target.closest('[data-copy-id]');
+        if (copyEl) {
+            const value = copyEl.dataset.copyId;
+            navigator.clipboard.writeText(value).then(() => {
+                if (copyEl.tagName === 'BUTTON') {
+                    copyEl.textContent = '✓';
+                    setTimeout(() => { copyEl.textContent = 'Copy'; }, 1200);
+                } else {
+                    copyEl.style.color = 'var(--green)';
+                    setTimeout(() => { copyEl.style.color = 'var(--text-secondary)'; }, 1200);
+                }
+            });
+            return;
+        }
+
+        const dismissEl = e.target.closest && e.target.closest('[data-dismiss-reboot]');
+        if (dismissEl) { dismissRebootAlert(dismissEl.dataset.dismissReboot); return; }
+
+        const detailsEl = e.target.closest && e.target.closest('[data-host-details]');
+        if (detailsEl) showHostDetails(detailsEl.dataset.hostDetails);
+    });
 }
 
 async function showAlertsModal() {
@@ -1781,7 +1822,7 @@ async function showAlertsModal() {
             const checked = a.last_checked ? new Date(a.last_checked).toLocaleString() : 'Never';
             const canWrite = isAuthenticated && currentUser && currentUser.role !== 'viewer';
             const dismissBtn = (a.type === 'reboot_required' && canWrite)
-                ? `<button onclick="dismissRebootAlert('${a.hostname}')" style="
+                ? `<button data-dismiss-reboot="${escapeHtml(a.hostname)}" style="
                         background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.3);
                         color:var(--amber);border-radius:5px;padding:4px 10px;font-size:11px;
                         cursor:pointer;white-space:nowrap;" title="Mark host as rebooted / clear this alert">
@@ -1793,7 +1834,7 @@ async function showAlertsModal() {
             return `<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;margin-bottom:8px;background:var(--bg-dark);border:1px solid ${border};border-left:3px solid ${color};border-radius:8px;">
                 <span style="font-size:18px">${icon}</span>
                 <div style="flex:1;">
-                    <div style="font-weight:600;color:var(--text-primary);margin-bottom:2px;">${a.message}</div>
+                    <div style="font-weight:600;color:var(--text-primary);margin-bottom:2px;">${escapeHtml(a.message)}</div>
                     ${detailHtml}
                     <div style="font-size:11px;color:var(--text-muted);font-family:monospace">Last checked: ${checked}</div>
                 </div>
@@ -1878,7 +1919,7 @@ function addActivityPill(key, label, variant = 'running', autoClearMs = 0) {
     const pill = document.createElement('div');
     pill.className = `activity-pill pill-${variant}`;
     pill.dataset.key = key;
-    pill.innerHTML = `<span class="pill-dot"></span>${label}`;
+    pill.innerHTML = `<span class="pill-dot"></span>${escapeHtml(label)}`;
     container.appendChild(pill);
 
     let timer = null;
@@ -1901,7 +1942,7 @@ function updateActivityPill(key, label, variant) {
     const entry = activityPills.get(key);
     if (entry) {
         entry.el.className = `activity-pill pill-${variant}`;
-        entry.el.innerHTML = `<span class="pill-dot"></span>${label}`;
+        entry.el.innerHTML = `<span class="pill-dot"></span>${escapeHtml(label)}`;
     } else {
         addActivityPill(key, label, variant);
     }

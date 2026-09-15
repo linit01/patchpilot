@@ -4,6 +4,25 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.8.1] — 2026-09-15
+
+### Security
+- **Stored XSS in the dashboard, injectable by any managed host.** `frontend/app.js` interpolated server data straight into `innerHTML` across 23 sites. Package names, versions and update types are stored verbatim from a managed host's package manager; `os_family`, `os_type` and `ip_address` come from its Ansible facts. So a compromised managed host — or a malicious package name in any repo it trusts — could execute script in the operator's authenticated dashboard session, which can start fleet-wide patch runs and reach the endpoints that handle SSH credentials. Managed host to fleet admin. Affected the host table, both package views, host detail, patch history, the activity chart and legend, activity pills (schedule names), the owner filter, the patch modals and the host-detail error path; all now pass through `escapeHtml`. **1.8.0 widened this**: it put remote `setup`-failure text into the alert message, which was the one unescaped field adjacent to an already-escaped `a.detail`.
+- **Five inline event handlers rewritten, where escaping is not a fix.** `onclick="fn('${value}')"` cannot be secured by HTML-escaping: an inline handler's attribute is HTML-decoded *before* it is compiled as JavaScript, so `&#39;` decodes back to `'` and still closes the string. The host-row checkbox, the Details button, both package-ID copy controls and the reboot-alert dismiss button now carry their values in `data-*` attributes, read back via `dataset` and dispatched by delegated listeners in `initDelegatedHandlers()`, where the value is never parsed as code.
+- **`escapeHtml` did not escape `'`.** It covered `&  <  >  "` only, so it read safer than it was. Fixed.
+
+### Fixed
+- **A slow check marked a healthy host unreachable and deleted its package rows.** `run_check` kills `ansible-playbook` at a hardcoded 300s and returns no parsed hosts; the "unchecked hosts" fallback in `app.py` then wrote `status='unreachable'`, `total_updates=0` and deleted the host's `packages` and `duplicate_apps` rows — for a single-host check, exactly one host, which is why one Mac could go red while the other seven hosts stayed green. `softwareupdate -l` on a Mac mid-update cycle can consume most of that 300s by itself. Observed on `johns-macmini.lan`, which went red on the dashboard and in the iOS app and then green again on its own. The status claim was the visible half; the deletes were worse, because inside a patch window `total_updates <= 0` made the host look *resolved* to the retry logic while `status='unreachable'` made it skippable — so a slow check could quietly cause a host to miss its patch window. A host missing from Ansible output now records only a reason via the new `record_check_incomplete()`; status, `total_updates`, `reboot_required`, `last_checked` and all package rows are left untouched, and a completed check clears the reason. Note the deliberate trade: a host the run never reported on keeps its last known status rather than being asserted down.
+
+### Added
+- **Incomplete checks are surfaced instead of silently mislabelled.** `/api/alerts` and the dashboard alert count now also match `check_fail_reason IS NOT NULL`, emitting a `warning`-severity `check_incomplete` alert ("last check did not complete") independently of the unreachable and reboot alerts, so a host that also needs a reboot keeps that alert too.
+- **`check_fail_hint` on `/api/hosts` and `/api/hosts/{hostname}`**, derived server-side from the same `_check_failure_hint()` the alerts use, so clients don't each re-implement the pattern matching and drift.
+- **iOS host detail shows why a check failed** — a "Check Failed" card with the reason, the remediation in selectable text (so `sudo xcodebuild -license accept` can be copied off the phone) and "Failing since", rendered only when a reason is present. The hosts endpoints already returned `check_fail_reason` via `SELECT *`; the app simply wasn't decoding it.
+
+`node --check` clean on `app.js`; `py_compile` clean on `app.py` and `database.py`; the iOS app builds for the simulator. All 57 remaining interpolations in markup lines were reviewed and are computed numbers, formatted dates, colour constants, literal ternaries, regex-sanitised element ids, or pre-built fragments whose leaves are now escaped. Not yet exercised in a browser: the five rewired controls need a click-through after deploy, since delegation can break behaviour in a way escaping cannot.
+
+---
+
 ## [1.8.0] — 2026-09-15
 
 ### Fixed

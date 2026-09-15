@@ -102,6 +102,37 @@ class DatabaseClient:
                                       reboot_required, check_fail_reason)
             return dict(row) if row else None
 
+    async def record_check_incomplete(self, hostname: str, reason: str) -> bool:
+        """Record that a check never reported on this host, without asserting a status.
+
+        A host missing from Ansible's output was NOT observed to be down: the
+        play may have aborted early or the whole run may have hit run_check's
+        hard timeout.  Writing status='unreachable' here claims knowledge we
+        do not have, and it used to also zero total_updates and delete the
+        host's package rows -- so one slow check emptied a healthy host's
+        update list and, inside a patch window, made it look "resolved".
+
+        So this touches only the failure reason.  status, total_updates,
+        reboot_required, packages and last_checked are all left alone;
+        last_checked in particular must stay stale so the staleness
+        auto-trigger still fires.  check_fail_at keeps the first failure of a
+        consecutive run.  A completed check clears both columns via
+        upsert_host(check_fail_reason=None).
+        """
+        query = """
+            UPDATE hosts
+            SET check_fail_reason = $2,
+                check_fail_at = COALESCE(check_fail_at, NOW())
+            WHERE hostname = $1
+        """
+        async with self.pool.acquire() as conn:
+            # asyncpg returns a status string like "UPDATE 1"
+            result = await conn.execute(query, hostname, reason)
+            try:
+                return int(result.split()[-1]) > 0
+            except (ValueError, IndexError):
+                return False
+
     async def get_packages_for_host(self, host_id: str) -> List[Dict]:
         """Get all packages for a specific host"""
         query = "SELECT * FROM packages WHERE host_id = $1 ORDER BY package_name"

@@ -20,6 +20,13 @@ struct HostDetailView: View {
                 // Host Info Card
                 hostInfoCard
 
+                // Why the last check failed. "Unreachable" covers two very
+                // different causes and this is the only place the difference
+                // is visible on device.
+                if let reason = host.checkFailReason, !reason.isEmpty {
+                    checkFailureCard(reason: reason)
+                }
+
                 // Actions (for write users)
                 if authService.currentUser?.role.canWrite == true {
                     actionsSection
@@ -72,6 +79,44 @@ struct HostDetailView: View {
         .background(Theme.bgCard)
         .cornerRadius(10)
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.border, lineWidth: 1))
+    }
+
+    private func checkFailureCard(reason: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(Theme.red)
+                Text("Check Failed")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Spacer()
+            }
+
+            Text(reason)
+                .font(.caption)
+                .foregroundColor(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Selectable so the fix command can be copied straight off the phone
+            if let hint = host.checkFailHint, !hint.isEmpty {
+                Text(hint)
+                    .font(.caption.weight(.medium))
+                    .foregroundColor(Theme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+
+            if let since = host.checkFailAt, !since.isEmpty {
+                Text("Failing since \(BackendDate.formatLocal(since, fallback: "unknown"))")
+                    .font(.caption2)
+                    .foregroundColor(Theme.textMuted)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(Theme.bgCard)
+        .cornerRadius(10)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.red.opacity(0.5), lineWidth: 1))
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {
