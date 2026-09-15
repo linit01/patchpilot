@@ -746,6 +746,12 @@ async def ensure_hosts_columns(pool):
         # tries in a window; surfaced as an error alert, cleared on next success.
         ("patch_fail_at", "TIMESTAMP WITH TIME ZONE"),
         ("patch_fail_reason", "TEXT"),
+        # Why the last check marked this host unreachable: SSH genuinely failed,
+        # or SSH worked and fact gathering failed (e.g. an unaccepted Xcode
+        # licence breaking /usr/bin/python3).  The status cannot distinguish the
+        # two; this does.  Cleared on the next successful check.
+        ("check_fail_at", "TIMESTAMP WITH TIME ZONE"),
+        ("check_fail_reason", "TEXT"),
     ]
     try:
         async with pool.acquire() as conn:
@@ -1052,7 +1058,12 @@ async def run_ansible_check_task(limit_hosts: list = None):
                 os_family=data.get("os_family", ""),
                 status=data.get("status", "unknown"),
                 total_updates=data.get("total_updates", 0),
-                reboot_required=data.get("reboot_required", False)
+                reboot_required=data.get("reboot_required", False),
+                # Only meaningful for a failed check; None on a healthy one
+                # clears any standing reason so the alert resolves itself.
+                check_fail_reason=(
+                    data.get("status_reason") or "no reason captured by the playbook"
+                ) if data.get("status") == "unreachable" else None,
             )
             
             # Always clear old packages for this host
@@ -1114,6 +1125,10 @@ async def run_ansible_check_task(limit_hosts: list = None):
                             status='unreachable',
                             total_updates=0,
                             reboot_required=False,
+                            check_fail_reason=(
+                                "Host did not appear in Ansible output — the play may have "
+                                "aborted before reaching it, or the run timed out"
+                            ),
                         )
                         await db.delete_packages_for_host(existing['id'])
                         await db.delete_duplicate_apps_for_host(existing['id'])
@@ -2610,6 +2625,27 @@ async def set_debug_mode(request: Request,
     return {"debug_mode": enabled, "message": f"Debug logging {state}"}
 
 
+def _check_failure_hint(reason: str) -> Optional[str]:
+    """Map a known check-failure reason to the command that fixes it.
+
+    These recur: every Xcode update re-arms the licence prompt, and a macOS
+    upgrade can invalidate the active developer path.  Both break
+    /usr/bin/python3, which is the interpreter Ansible's auto_silent discovery
+    picks over a non-interactive SSH session -- so fact gathering fails while
+    SSH itself, and therefore the connection test, still passes.
+    """
+    if not reason:
+        return None
+    low = reason.lower()
+    if 'xcode' in low and 'licen' in low:
+        return "Accept the Xcode licence on the host: sudo xcodebuild -license accept"
+    if 'invalid active developer path' in low or 'xcrun: error' in low:
+        return "Reinstall the command line tools on the host: xcode-select --install"
+    if 'permission denied' in low and 'publickey' in low:
+        return "The saved SSH key is not accepted by this host — re-test the connection in Settings"
+    return None
+
+
 @app.get("/api/alerts")
 async def get_alerts(request: Request, owner: str = None,
                      pool_dep: asyncpg.Pool = Depends(get_db_pool)):
@@ -2622,7 +2658,8 @@ async def get_alerts(request: Request, owner: str = None,
         async with pool.acquire() as conn:
             if uid is not None:
                 rows = await conn.fetch("""
-                    SELECT hostname, ip_address, status, reboot_required, last_checked
+                    SELECT hostname, ip_address, status, reboot_required, last_checked,
+                           check_fail_reason, check_fail_at
                     FROM hosts
                     WHERE (status = 'unreachable' OR reboot_required = TRUE)
                       AND created_by = $1
@@ -2630,18 +2667,30 @@ async def get_alerts(request: Request, owner: str = None,
                 """, uid)
             else:
                 rows = await conn.fetch("""
-                    SELECT hostname, ip_address, status, reboot_required, last_checked
+                    SELECT hostname, ip_address, status, reboot_required, last_checked,
+                           check_fail_reason, check_fail_at
                     FROM hosts
                     WHERE status = 'unreachable' OR reboot_required = TRUE
                     ORDER BY status, hostname
                 """)
             for r in rows:
                 if r['status'] == 'unreachable':
+                    reason = r['check_fail_reason']
+                    hint = _check_failure_hint(reason)
+                    if reason:
+                        message = f"Host {r['hostname']} check failed — {reason}"
+                        if hint:
+                            message += f" — {hint}"
+                    else:
+                        message = f"Host {r['hostname']} is unreachable"
                     alerts.append({
                         "severity": "error",
                         "type": "unreachable",
                         "hostname": r['hostname'],
-                        "message": f"Host {r['hostname']} is unreachable",
+                        "message": message,
+                        "reason": reason,
+                        "hint": hint,
+                        "failing_since": str(r['check_fail_at']) if r['check_fail_at'] else None,
                         "last_checked": str(r['last_checked']) if r['last_checked'] else None
                     })
                 elif r['reboot_required']:

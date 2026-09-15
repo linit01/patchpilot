@@ -60,9 +60,33 @@
       ignore_errors: true
       tags: always
 
+    # Why the host dropped out.  These are two genuinely different failures that
+    # both land here, and both are erased from the PLAY RECAP: ignore_unreachable
+    # and ignore_errors each convert their task into ok+ignored, so the recap
+    # reports unreachable=0 failed=0 either way.  Without this string the only
+    # surviving signal is the word "unreachable", which is wrong half the time --
+    # a Mac whose Xcode licence is unaccepted breaks /usr/bin/python3, so setup
+    # FAILS over a perfectly healthy SSH connection.
+    #
+    # Sanitised for the single-line HOSTSTATUS marker: pipes are its field
+    # delimiter, and quotes/newlines would break the parser reading Ansible's
+    # JSON output, so all three are collapsed to spaces.
+    - name: Build failure reason for parser
+      set_fact:
+        host_fail_reason: >-
+          {{ (
+               ('SSH unreachable: ' if setup_result is unreachable else 'Fact gathering failed: ')
+               ~ (setup_result.msg | default('no message returned by the setup module'))
+             ) | regex_replace('[|"\n\r]', ' ') | regex_replace('\\s+', ' ') | trim | truncate(400, True, '') }}
+      when: not (host_reachable | default(false))
+      ignore_errors: true
+      tags: always
+
+    # Status token stays "unreachable" so existing stats counters, badges and
+    # patch guards keep working; the reason carries the distinction.
     - name: Emit unreachable status for parser
       debug:
-        msg: "HOSTSTATUS: {{ inventory_hostname }} | unreachable"
+        msg: "HOSTSTATUS: {{ inventory_hostname }} | unreachable | {{ host_fail_reason | default('no reason captured') }}"
       when: not (host_reachable | default(false))
       tags: always
 

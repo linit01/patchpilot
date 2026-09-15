@@ -328,6 +328,14 @@ class AnsibleRunner:
             if stderr:
                 logger.warning(f"ANSIBLE STDERR:\n{stderr}")
 
+            # Echo Ansible's own failure lines to stdout.  Everything else about a
+            # failed check is either scrubbed from the PLAY RECAP by
+            # ignore_unreachable/ignore_errors or logged at debug level into the
+            # ring buffer, which never reaches container stdout.
+            for _line in stdout.splitlines():
+                if 'UNREACHABLE!' in _line or 'FAILED!' in _line or _line.startswith('fatal:'):
+                    print(f"[ANSIBLE] {_line.strip()[:500]}")
+
             hosts_data = self._parse_ansible_output(stdout)
 
             logger.debug(f"Parsed {len(hosts_data)} hosts from Ansible output")
@@ -959,17 +967,31 @@ class AnsibleRunner:
                     current_host = hostname
 
             # Look for explicit unreachable marker emitted before meta: end_host
-            # Format: "HOSTSTATUS: hostname | unreachable"
+            # Format: "HOSTSTATUS: hostname | unreachable | reason"
+            # The reason field is optional so output from an older playbook (or a
+            # seeded /ansible copy that has not been re-rendered) still parses.
+            # It stops at a quote or backslash because the marker arrives inside
+            # Ansible's JSON, where the msg value is escaped.
             if 'HOSTSTATUS:' in line:
-                match = re.search(r'HOSTSTATUS:\s*([^\s|"]+)\s*\|\s*(\w+)', line)
+                match = re.search(
+                    r'HOSTSTATUS:\s*([^\s|"]+)\s*\|\s*([\w-]+)\s*(?:\|\s*([^"\\]*))?', line
+                )
                 if match:
                     hostname = match.group(1)
                     explicit_status = match.group(2)
+                    reason = (match.group(3) or '').strip()
                     if hostname not in hosts_data:
                         hosts_data[hostname] = {}
                     hosts_data[hostname]['status'] = explicit_status
                     hosts_data[hostname]['total_updates'] = 0
-                    print(f"[PARSER] {hostname}: HOSTSTATUS={explicit_status}")
+                    if reason:
+                        hosts_data[hostname]['status_reason'] = reason
+                    # print(), not logger.debug() — the root logger's only handler
+                    # is the in-memory ring buffer, so logger calls never reach
+                    # container stdout.  This line is the one that makes a failure
+                    # diagnosable from `kubectl logs`.
+                    print(f"[PARSER] {hostname}: HOSTSTATUS={explicit_status}"
+                          + (f" reason={reason}" if reason else ""))
                     current_host = hostname
 
             # Look for "Show update status" messages with package counts

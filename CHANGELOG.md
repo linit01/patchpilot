@@ -4,6 +4,20 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.8.0] — 2026-09-15
+
+### Fixed
+- **Hosts that were reachable were reported "unreachable".** `check-os-updates.yml` derived `host_reachable` from `setup_result is not failed and setup_result is not unreachable`, collapsing two genuinely different failures into one status — and both are erased from the PLAY RECAP, because `ignore_unreachable` and `ignore_errors` each convert their task into `ok`+`ignored`, so the recap prints `unreachable=0 failed=0` either way. Surfaced on `johns-macmini.lan` (intermittently `johns-mbp.lan`): an Xcode update left the licence unaccepted, so `/usr/bin/python3` exited non-zero, `setup` FAILED over a completely healthy SSH connection, and the host showed as unreachable. Every signal that normally localises this pointed the wrong way — the Settings connection test runs `hostname`, needs no Python, and stayed green; `ssh` from the backend pod worked; and the RECAP counters read clean. Note `/usr/bin/python3` is what Ansible's `auto_silent` discovery picks over a non-interactive SSH session, *not* the Homebrew `python3` on the operator's interactive PATH, so checking the interpreter by hand in a login shell proves nothing. The status token stays `unreachable` (stats counters, badges, patch guards and retry logic all key off it); the distinction now lives in the reason.
+- **Ansible's own failure lines never reached container stdout.** They were emitted through `logger.debug`, and the root logger's only handler is the in-memory ring buffer behind `/api/backend-logs` — so `fatal: ... UNREACHABLE!` was invisible in `kubectl logs` at any log level, and only reachable through the in-app console with debug mode on. `run_check` now prints `UNREACHABLE!` / `FAILED!` / `fatal:` lines directly.
+
+### Added
+- **Check failures record why.** The playbook's `HOSTSTATUS` marker gained a third field carrying the sanitised `setup` message, prefixed `SSH unreachable:` or `Fact gathering failed:` so the two causes are distinguishable at a glance. The parser stores it, `upsert_host` persists it to `check_fail_reason` / `check_fail_at` (added by `ensure_hosts_columns`, so existing installs migrate on boot), and it clears automatically on the next successful check. `check_fail_at` holds the first failure in a run of consecutive failures, not the latest, so "failing since" is meaningful.
+- **Dashboard alerts name the fix for recurring macOS causes.** `/api/alerts` now reads `Host x check failed — <reason>` instead of `Host x is unreachable`, and appends the remediation for known patterns: an unaccepted Xcode licence (`sudo xcodebuild -license accept`), an invalid active developer path (`xcode-select --install`), and publickey rejection. Alerts also carry `reason`, `hint` and `failing_since` fields for the UI.
+
+The marker's reason field is optional in the parser, so a `/ansible` PVC still holding an older playbook keeps working. `check-os-updates.yml --syntax-check` clean; the `HOSTSTATUS` regex was tested against the new format, the old format, an escaped-newline reason, and a publickey rejection.
+
+---
+
 ## [1.7.6] — 2026-07-23
 
 ### Security

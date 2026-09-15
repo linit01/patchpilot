@@ -65,11 +65,22 @@ class DatabaseClient:
 
     async def upsert_host(self, hostname: str, ip_address: str, os_type: str,
                          os_family: str, status: str, total_updates: int,
-                         reboot_required: bool = False) -> Optional[Dict]:
-        """Insert or update a host"""
+                         reboot_required: bool = False,
+                         check_fail_reason: str = None) -> Optional[Dict]:
+        """Insert or update a host.
+
+        check_fail_reason carries why a check marked the host unreachable
+        (SSH failure vs. fact gathering failure).  Pass None on a healthy
+        check: that clears both the reason and check_fail_at, so a recovered
+        host stops alerting.  check_fail_at holds the FIRST failure in a run
+        of consecutive failures, so the alert can say how long it has been
+        failing rather than resetting every check cycle.
+        """
         query = """
-            INSERT INTO hosts (hostname, ip_address, os_type, os_family, status, total_updates, reboot_required, last_checked)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            INSERT INTO hosts (hostname, ip_address, os_type, os_family, status, total_updates, reboot_required, last_checked,
+                               check_fail_reason, check_fail_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(),
+                    $8, CASE WHEN $8::text IS NULL THEN NULL ELSE NOW() END)
             ON CONFLICT (hostname)
             DO UPDATE SET
                 ip_address = CASE WHEN EXCLUDED.ip_address != '' THEN EXCLUDED.ip_address ELSE hosts.ip_address END,
@@ -78,11 +89,17 @@ class DatabaseClient:
                 status = EXCLUDED.status,
                 total_updates = EXCLUDED.total_updates,
                 reboot_required = EXCLUDED.reboot_required,
-                last_checked = NOW()
+                last_checked = NOW(),
+                check_fail_reason = EXCLUDED.check_fail_reason,
+                check_fail_at = CASE
+                    WHEN EXCLUDED.check_fail_reason IS NULL THEN NULL
+                    ELSE COALESCE(hosts.check_fail_at, NOW())
+                END
             RETURNING *
         """
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, hostname, ip_address, os_type, os_family, status, total_updates, reboot_required)
+            row = await conn.fetchrow(query, hostname, ip_address, os_type, os_family, status, total_updates,
+                                      reboot_required, check_fail_reason)
             return dict(row) if row else None
 
     async def get_packages_for_host(self, host_id: str) -> List[Dict]:
