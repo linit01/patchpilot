@@ -1,74 +1,140 @@
-# PatchPilot — Handoff (2026-07-23)
+# PatchPilot — Handoff (2026-09-15)
 
 ## TL;DR
-Fixed a real update-detection accuracy bug and shipped it as **v1.7.5**, plus a
-security bump as **v1.7.6** — both are on `main` and tagged/pushed; CI is
-building images. **The one open item: verify host `10.0.1.101` (the k3s server)
-actually reports its pending apt updates after PatchPilot self-updates to
-v1.7.6.** Until the running deployment picks up the new image, that host still
-shows the old (wrong) "up to date". See **Deferred** for the exact check.
+Two releases shipped today. **v1.8.0** makes a failed check report *why* instead
+of labelling every failure "unreachable". **v1.8.1** fixes a stored XSS in the
+dashboard and stops a slow check from marking healthy hosts unreachable and
+deleting their package rows. v1.8.0 **is deployed and running**; v1.8.1 is
+pushed and tagged but **NOT deployed** — deploy it, because the XSS fix is inert
+until then. iOS 1.8.1 (build 2) is on TestFlight and active. Nothing is broken;
+the remaining work is visual verification of v1.8.1's frontend changes once the
+backend is up.
 
 ## Deferred / known unfinished — DO THIS NEXT
-**Verify 10.0.1.101 after self-update.** The v1.7.5 apt fix lives in the Ansible
-playbook baked into the backend image, so the fleet only gets it once the
-operator self-updates PatchPilot and the seed-ansible PVC is refreshed. Steps:
-
-1. Confirm CI published the v1.7.6 images (`linit01/patchpilot:backend-1.7.6`,
-   `frontend-1.7.6`) on Docker Hub.
-2. Self-update PatchPilot **in-app** (PP's own update flow — **not**
-   `kubectl rollout restart`; see memory `feedback_app_self_update`).
-3. In PatchPilot, run an **update check** against `10.0.1.101`.
-4. **Expected:** the host reports ~39 apt updates (was wrongly showing "up to
-   date"). Cross-check against ground truth on the host (command below).
-5. If it still shows 0/up-to-date, check the backend log for
-   `[PARSER] WARNING` lines and inspect `/tmp/ansible_last_run.txt` in the
-   backend pod for the `PACKAGE:` / `Show update status` lines for that host.
-
-Confirmed root cause (already fixed): the v1.7.0 apt hold-filter used the awk
-`NR==FNR` idiom, which drops the **entire** upgradable list when
-`apt-mark showhold` is empty (no held packages). 10.0.1.101 has no holds → 39
-became 0. Live-confirmed on the host: `apt list --upgradable` = 39, no holds,
-PatchPilot's exact pipeline = 0.
+1. **Deploy v1.8.1** via PP's in-app self-update (not `kubectl rollout restart`,
+   memory `feedback_app_self_update`). The XSS fix does nothing until it ships.
+2. **Click-test the five rewired web controls.** v1.8.1 replaced five inline
+   event handlers with delegated listeners. Escaping cannot break behavior, but
+   delegation can, and none of it has been exercised in a browser:
+   host-row checkbox → Details button → package-ID **Copy** in the host detail
+   modal → package-ID `<code>` in the Packages table → **Mark Rebooted** on a
+   reboot alert. A dead control means the delegation, not the escaping.
+3. **Verify the incomplete-check alert** with the forced-row command below.
+   Expect an amber "last check did not complete" warning while the host's status
+   badge stays unchanged.
+4. **A forced test row may still be live in the DB** on `johns-macmini.lan`:
+   `check_fail_reason = 'forced test of the iOS check-failed card'`. It clears
+   itself on the next successful check. If anyone reports a strange alert on that
+   Mac, this is it — clear it with the command below.
+5. **The 300s check timeout is still hardcoded** ([backend/ansible_runner.py:306](backend/ansible_runner.py))
+   and is what triggered today's false-unreachable. `softwareupdate -l` on a Mac
+   mid-update cycle can consume most of it alone. Consider raising it, making it
+   configurable, or bounding the macOS system-update scan separately.
+6. **Has anyone actually looked at the iOS Check Failed card?** It compiled four
+   times (Debug and Release both clean) but was never seen rendering. Check it
+   via TestFlight against the deployed backend: reason and "Failing since" will
+   render; the amber remediation line needs the 1.8.1 backend.
 
 ## What works today (don't break these)
 | Behavior | Notes |
 |---|---|
-| apt update detection ([ansible/check-os-updates.yml:101](ansible/check-os-updates.yml)) | Hold-filter now keys off line **shape** (hold lines are bare names; `apt list` lines contain a `name/origin` slash), NOT file position. **Do NOT revert to the `NR==FNR` idiom** — it silently drops all updates when there are no holds. Comment above the task warns about this. |
-| Phased updates | Included via `-o APT::Get::Always-Include-Phased-Updates=true` on the `apt list` call. The old `export APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1` env var was a no-op (apt doesn't read config keys as bare env vars) — don't reintroduce it. |
-| Homebrew pin-filter (macOS) | Uses a shell `while read` loop that already handles an empty `brew list --pinned` — safe, left unchanged. |
-| Backend parser reconciliation ([backend/ansible_runner.py:1153](backend/ansible_runner.py)) | `total_updates` = count of parsed `PACKAGE:` lines (ground truth), status-line count is discarded. A host reads "up to date" only when 0 packages parse. This is correct given correct playbook output — the bug was upstream in the playbook. |
+| Check-failure reasons | Playbook emits `HOSTSTATUS: <host> \| unreachable \| <reason>` ([ansible/check-os-updates.yml:89](ansible/check-os-updates.yml)). The reason field is **optional in the parser** so an `/ansible` PVC still holding an older playbook keeps working — don't make it mandatory. |
+| Status token stays `unreachable` | **Do NOT add a new status string** (e.g. `check-failed`). iOS `Host.status` is a strict Swift enum ([ios/PatchPilot/Models/Host.swift](ios/PatchPilot/Models/Host.swift)) — an unknown value fails JSON decode and breaks the host list with no compile-time warning. Web stats counters, status badges, the patch guard and the scheduled-patch retry skip all key off it too. The *reason* carries the distinction, not the status. |
+| A host missing from Ansible output is **not** asserted down | `record_check_incomplete()` records only a reason. **Do not restore** `status='unreachable'`, `total_updates=0`, or the `delete_packages_for_host` / `delete_duplicate_apps_for_host` calls in that branch — that emptied a healthy host's update list, and inside a patch window the zeroed count made the host look "resolved" to the retry logic while the status made it skippable, so a slow check could silently cause a host to miss its window. |
+| `last_checked` left stale for an unreported host | Deliberate — it's what keeps the staleness auto-trigger firing for a host that didn't report. |
+| No inline event handlers carrying interpolated values | frontend/app.js passes values in `data-*` attributes read via `dataset`, dispatched by `initDelegatedHandlers()`. **HTML-escaping cannot secure `onclick="fn('${x}')"`**: an inline handler's attribute is HTML-decoded *before* it is compiled as JavaScript, so `&#39;` decodes back to `'` and still closes the string. Don't reintroduce the pattern. |
+| All managed-host data escaped on render | Package names, versions and update types come verbatim from a host's package manager; `os_family`, `os_type` and `ip_address` from its Ansible facts. Every render path goes through `escapeHtml`, which **now also escapes `'`**. A new template interpolating host data must escape it. |
+| Failure diagnostics use `print()`, not `logger.debug` | The root logger's only handler is the in-memory ring buffer behind `/api/backend-logs` ([backend/app.py:57](backend/app.py)) — there is no StreamHandler, so `logger.*` calls **never reach `kubectl logs` at any level**. Keep new diagnostics on `print()`. |
+| Persistent SSH known_hosts (v1.7.8) | `/ansible/patchpilot_known_hosts` with `StrictHostKeyChecking=accept-new`. A re-imaged host needs its stale entry removed (`ssh-keygen -f <path> -R <host>`) or it will genuinely fail. |
+| apt update detection (v1.7.5) | Hold-filter keys off line **shape**, not file position. **Do NOT revert to the `NR==FNR` idiom** — it silently drops all updates on hosts with no holds. |
+| Phased updates | Via `-o APT::Get::Always-Include-Phased-Updates=true` on the `apt list` call. The `APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1` env var was a no-op — don't reintroduce it. |
+| Homebrew pin-filter (macOS) | Shell `while read` loop, already handles an empty `brew list --pinned`. |
+| Backend parser reconciliation | `total_updates` = count of parsed `PACKAGE:` lines (ground truth); the status-line count is discarded. |
+
+## Decision required / strategic crossroads
+- **Accept or revisit the "preserve last known status" trade.** A host the run
+  never reported on now keeps its previous status, so a genuinely dead host can
+  read "up-to-date" with only an amber warning beside it. The justification: a
+  truly unreachable host normally *does* appear in Ansible output with its own
+  `HOSTSTATUS` marker, because `ignore_unreachable` keeps the play running — so
+  the missing-entirely case is dominated by timeouts and aborts, not real
+  outages. Raised with the operator 2026-09-15, not yet accepted or rejected.
+- **Should PatchPilot exclude Xcode / Command Line Tools updates on macOS hosts
+  by default?** Installing one re-arms the Xcode licence prompt, which breaks
+  `/usr/bin/python3` and therefore every subsequent check on that host (see
+  memory `project-macos-xcode-license`). `mas` already excludes Xcode by default
+  via `MAS_EXCLUDED_IDS`; this would be the same idea for `softwareupdate`.
 
 ## Repo conventions worth remembering
-- **Release flow (solo dev, main is the only release branch):** commit on a
-  branch → `git merge --ff-only` into `main` → grep-verify the change is in
-  main's tree → `scripts/push_new_build.sh <version> "<msg>"`. Skipping the
-  land-on-main step has shipped stale builds before (memory
+- **Release flow (solo dev, main is the only release branch):** land work on
+  `main` → grep-verify the change is in main's tree →
+  `scripts/push_new_build.sh <version> "<msg>"` (memory
   `feedback_release_workflow`).
 - `push_new_build.sh` bumps VERSION + docker-compose + k8s tags, then
-  commits/tags/pushes. Non-interactive runs require
-  `PATCHPILOT_RELEASE_APPROVED=1` and a commit message as `$2`.
-- The main working tree (`/Users/sanborn/github/patchpilot`) is **outside the
-  agent sandbox's writable paths** — merges/releases there need the sandbox
-  disabled. `gh` also needs the sandbox off (its config dir is read-denied).
+  commits/tags/pushes. Non-interactive runs need `PATCHPILOT_RELEASE_APPROVED=1`
+  and a commit message as `$2`; without it, it updates the files, prints the git
+  commands and exits 2 without pushing — which is the useful way to bump
+  versions without releasing.
+- **`push_new_build.sh` does NOT touch the iOS project.** Bump
+  `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in
+  `ios/PatchPilot.xcodeproj/project.pbxproj` by hand (currently 1.8.1 / build 2).
+  TestFlight rejects a duplicate version+build pair.
+- **Tag AFTER any rebase, never before.** v1.8.0 was tagged, then rebased onto
+  `origin/main` to pick up a Dependabot merge — which orphaned the tag onto a
+  discarded commit. Correct sequence:
+  `git fetch origin && git rebase origin/main && git tag <v> && git push && git push origin <v>`.
+- **Agent sandbox facts (corrected 2026-09-15):** the repo working tree *is*
+  writable by the agent. `~/.config/gh` is read-denied, so `git push` and `gh`
+  fail for the agent and must be run by the operator — which also means the
+  repo-visibility pre-push check can't be performed by the agent. Writes to
+  `~/.claude/**` (including `memory/MEMORY.md`) must use the file tools, not Bash.
+  `xcrun simctl` cannot reach CoreSimulatorService from the sandbox.
+- Ansible syntax-check needs `ANSIBLE_LOCAL_TEMP` (not `ANSIBLE_LOCAL_TMP`).
 - Ansible shell-block rules (memory `feedback_ansible_shell_block_quoting`): no
   em-dashes, no quote chars in `#` comments inside `shell: |`; run
-  `ansible-playbook --syntax-check` before every push that touches one.
+  `--syntax-check` before every push that touches one.
+- `/tmp/ansible_last_run.txt` in the backend pod holds the last **completed**
+  check's full Ansible output — it is written only after `communicate()` returns,
+  so after a timeout it is a *stale snapshot of the previous successful run*. A
+  healthy-looking dump there alongside a red host is the tell.
 
 ## Quick-reference commands
-Ground-truth apt count on 10.0.1.101 (run as any user; system-wide):
+Force an incomplete-check reason to test the alert and the iOS card:
 ```bash
-sudo apt-get update -qq
+kubectl exec -n patchpilot deploy/patchpilot-postgres -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE hosts SET check_fail_reason = '"'"'forced test'"'"', check_fail_at = NOW() WHERE hostname = '"'"'johns-macmini.lan'"'"';"'
 ```
+Clear it:
+```bash
+kubectl exec -n patchpilot deploy/patchpilot-postgres -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE hosts SET check_fail_reason = NULL, check_fail_at = NULL WHERE hostname = '"'"'johns-macmini.lan'"'"';"'
+```
+See why a check failed (v1.8.0+ prints the reason and Ansible's own fatal lines):
+```bash
+kubectl logs -n patchpilot deploy/patchpilot-backend --tail=300 | grep -E "reason=|\[ANSIBLE\]|\[PARSER\]|\[CHECK\]"
+```
+Read the last completed check's full Ansible output:
+```bash
+kubectl exec -n patchpilot deploy/patchpilot-backend -- grep -i "<hostname>" /tmp/ansible_last_run.txt
+```
+Remove a stale SSH host key after re-imaging a host:
+```bash
+kubectl exec -n patchpilot deploy/patchpilot-backend -- ssh-keygen -f /ansible/patchpilot_known_hosts -R <hostname>
+```
+Check the interpreter Ansible actually uses on a macOS host (not the Homebrew
+`python3` on an interactive PATH):
+```bash
+ssh -o BatchMode=yes <user>@<host> '/usr/bin/python3 -V'
+```
+Syntax-check the playbook before a release:
+```bash
+ANSIBLE_LOCAL_TEMP="$TMPDIR/ansible-tmp" ANSIBLE_HOME="$TMPDIR/ansible-home" ansible-playbook --syntax-check ansible/check-os-updates.yml
+```
+Ground-truth apt count on a Debian host:
 ```bash
 apt list --upgradable 2>/dev/null | tail -n +2 | wc -l
 ```
-Reproduce PatchPilot's exact (now-fixed) pipeline on the host:
+Add an internal CA to an iOS simulator so the app can reach a `.lan` host:
 ```bash
-awk 'index($0, "/") == 0 { if (length($0) > 0) held[$0]=1; next } { name=$1; sub(/\/.*/,"",name); if (name in held) next; print }' <(apt-mark showhold 2>/dev/null) <(apt list --upgradable -o APT::Get::Always-Include-Phased-Updates=true 2>/dev/null | tail -n +2) | wc -l
-```
-Syntax-check the playbook before a release (sandbox needs a writable tmp):
-```bash
-ANSIBLE_LOCAL_TMP="$TMPDIR/ansible-tmp" ANSIBLE_HOME="$TMPDIR/ansible-home" ansible-playbook --syntax-check ansible/check-os-updates.yml
+xcrun simctl keychain booted add-root-cert ~/Documents/Beacon-DEV-network-info/beacon-dev-lan-root-ca.crt
 ```
 
 ## Site B — admin password recovery (runbook)
@@ -78,13 +144,13 @@ deploy `patchpilot-backend` container `backend`, postgres deploy
 `sanborn`** (not `admin`).
 
 Passwords are bcrypt-hashed (self-contained, no encryption key involved), so a
-lost password can only be **reset**, never recovered — there is no forgot-password
-flow, and in-app change-password needs the current password. Reset with the
-supported `backend/setup_admin.py` (upserts by username, reactivates, clears
-sessions). Caveat: it sets `role='admin'`, which **demotes `sanborn` from
-`full_admin`** — the startup auto-promotion ([backend/app.py:933](backend/app.py))
-only re-promotes the earliest-created user and only at restart, so restore the
-role explicitly afterward.
+lost password can only be **reset**, never recovered — there is no
+forgot-password flow, and in-app change-password needs the current password.
+Reset with the supported `backend/setup_admin.py` (upserts by username,
+reactivates, clears sessions). Caveat: it sets `role='admin'`, which **demotes
+`sanborn` from `full_admin`** — the startup auto-promotion
+([backend/app.py:935](backend/app.py)) only re-promotes the earliest-created
+user and only at restart, so restore the role explicitly afterward.
 
 Reset password (prompts twice, min 8 chars, keeps it out of shell history):
 ```bash
@@ -100,57 +166,81 @@ kubectl -n patchpilot exec -it deploy/patchpilot-postgres -c postgres -- psql -U
 ```
 
 ## RBAC role gotcha — Settings/sidebar gated on full_admin
-The sidebar is gated entirely on `currentUser.role` (from `/api/auth/me`,
-[frontend/app.js:466](frontend/app.js)). Full_admin-only nav items:
-`nav-general` (**Settings/General**), `nav-users` (**Users**), `nav-advanced`
-(**Advanced**). An `admin` sees only the write items (Hosts mgmt, SSH Keys,
-Schedules); a `viewer` sees none. The role label under the username in the
-sidebar shows the current role ("Full Admin" / "Admin" / "Viewer") — the
-quickest way to spot a demotion.
+The sidebar is gated entirely on `currentUser.role` (from `/api/auth/me`).
+Full_admin-only nav items: `nav-general` (**Settings/General**), `nav-users`
+(**Users**), `nav-advanced` (**Advanced**). An `admin` sees only the write items
+(Hosts mgmt, SSH Keys, Schedules); a `viewer` sees none. The role label under the
+username in the sidebar shows the current role — the quickest way to spot a
+demotion.
 
 **The gotcha:** `setup_admin.py` sets `role='admin'` on every run, silently
-demoting a full_admin. The startup auto-promotion
-([backend/app.py:933](backend/app.py)) only re-promotes the *earliest-created*
-user, so if `sanborn` isn't that row it stays `admin` and loses
-Settings/Users/Advanced. **Hit on Site A today** — `sanborn` was logged in but
-couldn't see Settings. This is the same demotion behind the Site B recovery
-caveat above.
-
-Fix (per site, against that site's kubeconfig context), then log out/in or
-hard-refresh so `/api/auth/me` re-reads the role live:
-```bash
-kubectl -n patchpilot exec -it deploy/patchpilot-postgres -c postgres -- psql -U patchpilot -d patchpilot -c "UPDATE users SET role='full_admin' WHERE username='sanborn';"
-```
+demoting a full_admin. The startup auto-promotion only re-promotes the
+*earliest-created* user, so if `sanborn` isn't that row it stays `admin` and
+loses Settings/Users/Advanced. Fix with the role-restore command above, then log
+out/in or hard-refresh so `/api/auth/me` re-reads the role.
 
 ## Open questions for next session
-- After self-update, does 10.0.1.101's count match the host's ground truth
-  exactly, or is there a residual off-by-one / arch-allowlist gap
-  ([backend/ansible_runner.py:982](backend/ansible_runner.py) restricts to
-  `amd64|arm64|all|i386`)?
-- Are there other Debian/Ubuntu hosts in the fleet that were also masked by the
-  no-holds bug and should be re-checked?
+- **Only `frontend/app.js` was audited for the XSS pattern.** `setup.html` and
+  any other frontend JS were not looked at. Same audit is worth running there:
+  find `innerHTML` sinks, check whether interpolated values originate from a
+  managed host, and confirm `escapeHtml` is applied.
+- `10.0.1.101` now reports `up-to-date / 0`. That's consistent with the v1.7.5
+  fix plus the deliberate NVIDIA `apt-mark hold` freeze (memory
+  `project_k3s_nvidia_holds`), but it was **not** explicitly re-verified against
+  the host's ground-truth count — the July handoff item was never closed out.
+- **Xcode / CoreSimulator skew on johns-macmini.** `xcrun simctl list devices`
+  from the operator's shell shows `iPhone 17 Pro (Booted)` while the agent's
+  simulator tooling reports it `Shutdown`; build logs show `DVTCoreDeviceCore`
+  failing with a symbol mismatch against
+  `/Library/Developer/PrivateFrameworks/CoreDevice.framework`. The device archive
+  to TestFlight succeeded, so this is simulator-discovery only. Suspected fix:
+  `sudo xcodebuild -runFirstLaunch`.
+- Should the iOS app consume `/api/alerts`? It currently doesn't — the Check
+  Failed card reads `check_fail_reason` off the host object instead, so
+  reboot-required and duplicate-app alerts are web-only.
 
 ## Memory pointers
+- `project-macos-xcode-license` — **an unaccepted Xcode licence breaks
+  `/usr/bin/python3`, so Ansible's `setup` fails over a healthy SSH connection
+  and PP reports the host unreachable.** Check this first on any macOS host that
+  is "unreachable" while its connection test passes.
+- `project-false-unreachable-timeout` — an "unreachable" that clears itself is a
+  timed-out check run, not a host problem.
 - `feedback_release_workflow` — land branch work on main before shipping
 - `feedback_app_self_update` — self-update via PP, not `kubectl rollout restart`
-- `feedback_no_touching_user_k3s` — user drives all cluster-touching commands
-- `feedback_ansible_shell_block_quoting` — shell-block quoting rules + syntax-check
+- `feedback_no_touching_user_k3s` — operator drives all cluster-touching commands
+- `feedback_ansible_shell_block_quoting` — shell-block rules + syntax-check
 - `feedback_versioning` — use `scripts/push_new_build.sh`
+- `feedback_dashboard_locked_patterns` — 5-card stats row and sidebar nav are
+  locked in; don't propose restructuring them
 
 ## Recently shipped (this session)
-- **v1.7.6** (`e0900dd`) — bump `ansible-core` 2.19.6 → 2.19.11, clears
-  CVE-2026-11332 (high). Dependabot alert #16 auto-closed as `fixed`
-  (2026-07-23 16:23 UTC). Exposure was nil (we never run
-  `ansible-galaxy role install`).
-- **v1.7.5** (`f670b37`) — apt update-detection fix: hold-filter no longer drops
-  all updates on hosts with no holds; phased updates now counted via the correct
-  `-o` flag. CHANGELOG entries added for both.
-- **Ops (no code change, DB-only fixes):** diagnosed the Site B admin login
-  (forgot password → reset runbook above) and the Site A RBAC demotion
-  (`sanborn` was `admin`, missing Settings → promote to `full_admin`). Both trace
-  to the same `setup_admin.py` role-demotion gotcha.
-- **Non-issue:** "scheduled task not running" on manual Run Now turned out to be
-  Lens pointed at the wrong cluster (logs read on the wrong backend). Note: the
-  "▶ Run" button is fire-and-forget — it flips the schedule to `running` and
-  returns success immediately, so real outcome lives in the `[Schedule <id>]`
-  backend logs / `patch_schedules.last_status`, not the button response.
+- **v1.8.1** (tag → `98f18be`) — **Security:** stored XSS in the dashboard.
+  `frontend/app.js` interpolated managed-host data into `innerHTML` unescaped
+  across 23 sites, and five of those were inline event handlers where escaping is
+  not a fix. A compromised managed host, or a hostile package name reaching one,
+  could have executed script in the operator's authenticated session — which can
+  start fleet-wide patch runs. v1.8.0 had widened this by putting remote
+  `setup`-failure text into the alert message. `escapeHtml` also didn't escape
+  `'`. **Fixed:** a check that never reported on a host no longer writes
+  `status='unreachable'`, `total_updates=0` or deletes its package rows.
+  **Added:** `check_incomplete` warning alert, `check_fail_hint` on the hosts
+  endpoints, and the iOS Check Failed card.
+- **v1.8.0** (`2d6f74c`) — a failed check now reports *why*. The playbook had
+  collapsed "SSH failed" and "fact gathering failed" into one status, and
+  `ignore_unreachable` + `ignore_errors` each convert their task into
+  `ok`+`ignored`, so the PLAY RECAP read `unreachable=0 failed=0` either way and
+  no signal survived. Reason is now persisted per host (`check_fail_reason`,
+  `check_fail_at`, auto-migrated) and surfaced in alerts with remediation for
+  known macOS causes. **Deployed and running.**
+- **iOS 1.8.1 build 2** — on TestFlight, active. Debug and Release both compile
+  clean; version strings verified in the built product.
+- **Ops:** the original "macmini unreachable" was an unaccepted Xcode licence
+  after an Xcode update — accepted on the host, which fixed it. The Beacon-dev
+  LAN root CA was added to the iOS simulator's trust store so the app can reach
+  `patchpilot.apps.lan` (the app has no custom `URLSessionDelegate`, and
+  `NSAllowsArbitraryLoads` does **not** bypass certificate validation).
+- **`PATCHPILOT-HANDOFF.md` is now tracked** (committed in `98f18be`). It carries
+  product positioning and marketing notes; it had been deliberately kept out of
+  the v1.8.1 release commit while repo visibility was unverified, and the agent
+  was never able to verify whether `linit01/patchpilot` is public or private.
