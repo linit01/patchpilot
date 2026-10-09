@@ -1,5 +1,5 @@
 # Pin to bookworm (Debian 12 stable) — avoids trixie/testing apt slowness on ARM
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # ── Version injection ─────────────────────────────────────────────────────────
 # CI passes --build-arg PATCHPILOT_VERSION=x.y.z; dev builds fall back to the

@@ -1,19 +1,20 @@
 # PatchPilot — Handoff (2026-10-09)
 
 ## TL;DR
-**v1.8.2** shipped 2026-10-09: a small patch release that puts a 💡 fix hint in
-the patch log when a broken Homebrew keg aborts `brew upgrade`. It was triggered
-by johns-mbp.lan, where a missing `Cellar/pipx/1.17.12` directory made every brew
-upgrade on that host fail. `brew reinstall pipx` on the host fixed it, and
-patching johns-mbp now succeeds. v1.8.2 is pushed and tagged; **deploying it to
-Site A then Site B via in-app update has not been confirmed.** v1.8.2 includes
-everything from v1.8.1 (stored-XSS fix, no false-unreachable on slow checks),
-so deploying it also closes out the v1.8.1 items below. The 2026-09-15
+2026-10-09 added a 💡 fix hint in the patch log when a broken Homebrew keg
+aborts `brew upgrade`. It was triggered by johns-mbp.lan, where a missing
+`Cellar/pipx/1.17.12` directory made every brew upgrade on that host fail.
+`brew reinstall pipx` on the host fixed it, and patching johns-mbp now succeeds.
+The v1.8.2 tag's **image build failed** (ansible-core 2.21.1 needs Python ≥3.12;
+the base image was 3.11). The base image is now 3.12 and the fix ships as
+**v1.8.3**. **Deploying v1.8.3 to Site A then Site B has not been confirmed.**
+It includes everything from v1.8.1 (stored-XSS fix, no false-unreachable on
+slow checks), so deploying it also closes out the v1.8.1 items below. The 2026-09-15
 follow-ups (items 2–6) were **not revisited this session**; their status is
 unknown, not done.
 
 ## Deferred / known unfinished — DO THIS NEXT
-1. **Deploy v1.8.2** (Site A first, then Site B) via PP's in-app self-update
+1. **Deploy v1.8.3** (v1.8.2 never built; Site A first, then Site B) via PP's in-app self-update
    (not `kubectl rollout restart`, memory `feedback_app_self_update`). It
    supersedes v1.8.1, whose XSS fix is inert until deployed. Whether v1.8.1
    was ever deployed between 2026-09-15 and now was not checked.
@@ -235,6 +236,13 @@ out/in or hard-refresh so `/api/auth/me` re-reads the role.
 
 ## Recently shipped
 ### 2026-10-09
+- **Backend base image → `python:3.12-slim-bookworm`.** The v1.8.2 CI image
+  build failed at `pip install -r requirements.txt`: Dependabot/Aikido's
+  ansible-core 2.21.1 bump (`e9f52e6`) needs Python ≥3.12, and v1.8.2 was the
+  first tag built since that bump. **No v1.8.2 images exist**; the fix ships
+  as the next version. Watch the first Site A deploy for 3.12 runtime issues.
+  **Don't pin ansible-core back below 2.20** to "fix" a build: that reverts a
+  security update.
 - **v1.8.2** (`46df68a` release, fix in `47ba615`): broken-Homebrew-keg hint in
   the patch log (see "What works today"). Confirmed there are no hardcoded
   `pipx` references anywhere in the repo; the failure was purely host-side.
