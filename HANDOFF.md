@@ -6,18 +6,19 @@ aborts `brew upgrade`. It was triggered by johns-mbp.lan, where a missing
 `Cellar/pipx/1.17.12` directory made every brew upgrade on that host fail.
 `brew reinstall pipx` on the host fixed it, and patching johns-mbp now succeeds.
 The v1.8.2 tag's **image build failed** (ansible-core 2.21.1 needs Python ≥3.12;
-the base image was 3.11). The base image is now 3.12 and the fix ships as
-**v1.8.3**. **Deploying v1.8.3 to Site A then Site B has not been confirmed.**
-It includes everything from v1.8.1 (stored-XSS fix, no false-unreachable on
-slow checks), so deploying it also closes out the v1.8.1 items below. The 2026-09-15
+the base image was 3.11). The base image is now 3.12 and **v1.8.3 is built and
+deployed to both Site A and Site B** (in-app update, 2026-10-09). That also
+puts v1.8.1's stored-XSS fix and false-unreachable fix live. The 2026-09-15
 follow-ups (items 2–6) were **not revisited this session**; their status is
 unknown, not done.
 
 ## Deferred / known unfinished — DO THIS NEXT
-1. **Deploy v1.8.3** (v1.8.2 never built; Site A first, then Site B) via PP's in-app self-update
-   (not `kubectl rollout restart`, memory `feedback_app_self_update`). It
-   supersedes v1.8.1, whose XSS fix is inert until deployed. Whether v1.8.1
-   was ever deployed between 2026-09-15 and now was not checked.
+1. **Confirm v1.8.3 runs a full check cleanly on Python 3.12** at both sites.
+   This is the first runtime on 3.12 and ansible-core 2.21. The operator
+   confirmed both updates, but a completed check run on the new image wasn't
+   explicitly reported. Expect normal statuses and counts, not a wave of
+   "unreachable"; if that wave appears, check `kubectl logs` for Python or
+   ansible tracebacks before anything else.
 2. **Click-test the five rewired web controls.** v1.8.1 replaced five inline
    event handlers with delegated listeners. Escaping cannot break behavior, but
    delegation can, and none of it has been exercised in a browser:
@@ -54,8 +55,9 @@ unknown, not done.
 | apt update detection (v1.7.5) | Hold-filter keys off line **shape**, not file position. **Do NOT revert to the `NR==FNR` idiom** — it silently drops all updates on hosts with no holds. |
 | Phased updates | Via `-o APT::Get::Always-Include-Phased-Updates=true` on the `apt list` call. The `APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1` env var was a no-op — don't reintroduce it. |
 | Homebrew pin-filter (macOS) | Shell `while read` loop, already handles an empty `brew list --pinned`. |
-| Broken-keg hint (v1.8.2) | `brew_broken_keg_hint()` in [backend/ansible_runner.py](backend/ansible_runner.py) matches `…/Cellar/<formula>/<ver> is not a directory` (Apple Silicon and Intel prefixes) and emits a `💡` line naming the formula and the `brew reinstall` fix. It is hooked into **all three** brew log paths: stdout loop, stderr loop, and the joined "Show Homebrew update results" debug line, which is where the real error surfaced. If you add a new brew output path, call it there too. This is a hint only: PP does not auto-repair the host. |
+| Broken-keg hint (code in v1.8.2, first shipped image v1.8.3) | `brew_broken_keg_hint()` in [backend/ansible_runner.py](backend/ansible_runner.py) matches `…/Cellar/<formula>/<ver> is not a directory` (Apple Silicon and Intel prefixes) and emits a `💡` line naming the formula and the `brew reinstall` fix. It is hooked into **all three** brew log paths: stdout loop, stderr loop, and the joined "Show Homebrew update results" debug line, which is where the real error surfaced. If you add a new brew output path, call it there too. This is a hint only: PP does not auto-repair the host. |
 | `brew upgrade` stays one call | A single broken formula aborts the whole run, so nothing else on that host upgrades. That's why the hint exists. Don't assume a quiet brew task means "nothing to upgrade"; check the log for the 💡 line. |
+| Backend base image is Python ≥3.12 (v1.8.3) | `Dockerfile` uses `python:3.12-slim-bookworm` because ansible-core ≥2.20 refuses older Python. Don't drop back to 3.11, and don't pin ansible-core below 2.20 to make a build pass: that reverts a security fix. |
 | Backend parser reconciliation | `total_updates` = count of parsed `PACKAGE:` lines (ground truth); the status-line count is discarded. |
 
 ## Decision required / strategic crossroads
@@ -81,7 +83,7 @@ unknown, not done.
   then `git stash push -- <path>` any unrelated dirty file (usually the iOS
   `UserInterfaceState.xcuserstate`) before running the script, and
   `git stash pop` afterwards. Otherwise the stray file lands in the release
-  commit. Used this way for v1.8.2.
+  commit. Used this way for v1.8.2 and v1.8.3.
 - `push_new_build.sh` bumps VERSION + docker-compose + k8s tags, then
   commits/tags/pushes. Non-interactive runs need `PATCHPILOT_RELEASE_APPROVED=1`
   and a commit message as `$2`; without it, it updates the files, prints the git
@@ -239,8 +241,9 @@ out/in or hard-refresh so `/api/auth/me` re-reads the role.
 - **Backend base image → `python:3.12-slim-bookworm`.** The v1.8.2 CI image
   build failed at `pip install -r requirements.txt`: Dependabot/Aikido's
   ansible-core 2.21.1 bump (`e9f52e6`) needs Python ≥3.12, and v1.8.2 was the
-  first tag built since that bump. **No v1.8.2 images exist**; the fix ships
-  as the next version. Watch the first Site A deploy for 3.12 runtime issues.
+  first tag built since that bump. **No v1.8.2 images exist.** The fix shipped
+  as **v1.8.3** (`302334a` release, fix in `6bb623e`): CI passed, deployed to
+  Site A then Site B.
   **Don't pin ansible-core back below 2.20** to "fix" a build: that reverts a
   security update.
 - **v1.8.2** (`46df68a` release, fix in `47ba615`): broken-Homebrew-keg hint in
