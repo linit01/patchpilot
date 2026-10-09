@@ -1,18 +1,22 @@
-# PatchPilot — Handoff (2026-09-15)
+# PatchPilot — Handoff (2026-10-09)
 
 ## TL;DR
-Two releases shipped today. **v1.8.0** makes a failed check report *why* instead
-of labelling every failure "unreachable". **v1.8.1** fixes a stored XSS in the
-dashboard and stops a slow check from marking healthy hosts unreachable and
-deleting their package rows. v1.8.0 **is deployed and running**; v1.8.1 is
-pushed and tagged but **NOT deployed** — deploy it, because the XSS fix is inert
-until then. iOS 1.8.1 (build 2) is on TestFlight and active. Nothing is broken;
-the remaining work is visual verification of v1.8.1's frontend changes once the
-backend is up.
+**v1.8.2** shipped 2026-10-09: a small patch release that puts a 💡 fix hint in
+the patch log when a broken Homebrew keg aborts `brew upgrade`. It was triggered
+by johns-mbp.lan, where a missing `Cellar/pipx/1.17.12` directory made every brew
+upgrade on that host fail. `brew reinstall pipx` on the host fixed it, and
+patching johns-mbp now succeeds. v1.8.2 is pushed and tagged; **deploying it to
+Site A then Site B via in-app update has not been confirmed.** v1.8.2 includes
+everything from v1.8.1 (stored-XSS fix, no false-unreachable on slow checks),
+so deploying it also closes out the v1.8.1 items below. The 2026-09-15
+follow-ups (items 2–6) were **not revisited this session**; their status is
+unknown, not done.
 
 ## Deferred / known unfinished — DO THIS NEXT
-1. **Deploy v1.8.1** via PP's in-app self-update (not `kubectl rollout restart`,
-   memory `feedback_app_self_update`). The XSS fix does nothing until it ships.
+1. **Deploy v1.8.2** (Site A first, then Site B) via PP's in-app self-update
+   (not `kubectl rollout restart`, memory `feedback_app_self_update`). It
+   supersedes v1.8.1, whose XSS fix is inert until deployed. Whether v1.8.1
+   was ever deployed between 2026-09-15 and now was not checked.
 2. **Click-test the five rewired web controls.** v1.8.1 replaced five inline
    event handlers with delegated listeners. Escaping cannot break behavior, but
    delegation can, and none of it has been exercised in a browser:
@@ -26,7 +30,7 @@ backend is up.
    `check_fail_reason = 'forced test of the iOS check-failed card'`. It clears
    itself on the next successful check. If anyone reports a strange alert on that
    Mac, this is it — clear it with the command below.
-5. **The 300s check timeout is still hardcoded** ([backend/ansible_runner.py:306](backend/ansible_runner.py))
+5. **The 300s check timeout is still hardcoded** ([backend/ansible_runner.py:329](backend/ansible_runner.py:329), re-confirmed 2026-10-09)
    and is what triggered today's false-unreachable. `softwareupdate -l` on a Mac
    mid-update cycle can consume most of it alone. Consider raising it, making it
    configurable, or bounding the macOS system-update scan separately.
@@ -49,6 +53,8 @@ backend is up.
 | apt update detection (v1.7.5) | Hold-filter keys off line **shape**, not file position. **Do NOT revert to the `NR==FNR` idiom** — it silently drops all updates on hosts with no holds. |
 | Phased updates | Via `-o APT::Get::Always-Include-Phased-Updates=true` on the `apt list` call. The `APT_GET_ALWAYS_INCLUDE_PHASED_UPDATES=1` env var was a no-op — don't reintroduce it. |
 | Homebrew pin-filter (macOS) | Shell `while read` loop, already handles an empty `brew list --pinned`. |
+| Broken-keg hint (v1.8.2) | `brew_broken_keg_hint()` in [backend/ansible_runner.py](backend/ansible_runner.py) matches `…/Cellar/<formula>/<ver> is not a directory` (Apple Silicon and Intel prefixes) and emits a `💡` line naming the formula and the `brew reinstall` fix. It is hooked into **all three** brew log paths: stdout loop, stderr loop, and the joined "Show Homebrew update results" debug line, which is where the real error surfaced. If you add a new brew output path, call it there too. This is a hint only: PP does not auto-repair the host. |
+| `brew upgrade` stays one call | A single broken formula aborts the whole run, so nothing else on that host upgrades. That's why the hint exists. Don't assume a quiet brew task means "nothing to upgrade"; check the log for the 💡 line. |
 | Backend parser reconciliation | `total_updates` = count of parsed `PACKAGE:` lines (ground truth); the status-line count is discarded. |
 
 ## Decision required / strategic crossroads
@@ -70,6 +76,11 @@ backend is up.
   `main` → grep-verify the change is in main's tree →
   `scripts/push_new_build.sh <version> "<msg>"` (memory
   `feedback_release_workflow`).
+- **`push_new_build.sh` runs `git add -A`.** Commit the real change first,
+  then `git stash push -- <path>` any unrelated dirty file (usually the iOS
+  `UserInterfaceState.xcuserstate`) before running the script, and
+  `git stash pop` afterwards. Otherwise the stray file lands in the release
+  commit. Used this way for v1.8.2.
 - `push_new_build.sh` bumps VERSION + docker-compose + k8s tags, then
   commits/tags/pushes. Non-interactive runs need `PATCHPILOT_RELEASE_APPROVED=1`
   and a commit message as `$2`; without it, it updates the files, prints the git
@@ -118,6 +129,14 @@ kubectl exec -n patchpilot deploy/patchpilot-backend -- grep -i "<hostname>" /tm
 Remove a stale SSH host key after re-imaging a host:
 ```bash
 kubectl exec -n patchpilot deploy/patchpilot-backend -- ssh-keygen -f /ansible/patchpilot_known_hosts -R <hostname>
+```
+Repair a broken Homebrew keg on a macOS host (the 💡 hint names the formula):
+```bash
+brew reinstall <formula>
+```
+If reinstall fails with the same error:
+```bash
+brew uninstall --force --ignore-dependencies <formula> && brew install <formula>
 ```
 Check the interpreter Ansible actually uses on a macOS host (not the Homebrew
 `python3` on an interactive PATH):
@@ -214,7 +233,22 @@ out/in or hard-refresh so `/api/auth/me` re-reads the role.
 - `feedback_dashboard_locked_patterns` — 5-card stats row and sidebar nav are
   locked in; don't propose restructuring them
 
-## Recently shipped (this session)
+## Recently shipped
+### 2026-10-09
+- **v1.8.2** (`46df68a` release, fix in `47ba615`): broken-Homebrew-keg hint in
+  the patch log (see "What works today"). Confirmed there are no hardcoded
+  `pipx` references anywhere in the repo; the failure was purely host-side.
+- **Ops:** johns-mbp.lan had a stale pipx keg (`Error:
+  /opt/homebrew/Cellar/pipx/1.17.12 is not a directory`) that aborted every brew
+  upgrade. The operator ran `brew reinstall pipx` and patching then succeeded.
+
+### Between sessions (2026-09-15 → 2026-10-09, not by the agent)
+- `857ddea` "updated limits": k8s/deployment.yaml resource bump, memory 512Mi → 1024Mi and
+  cpu 500m → 1.
+- `e9f52e6` ansible-core 2.19.11 → 2.21.1 (Dependabot security fix, #17).
+- `b38edd6` accepted Xcode's recommended iOS project settings.
+
+### 2026-09-15
 - **v1.8.1** (tag → `98f18be`) — **Security:** stored XSS in the dashboard.
   `frontend/app.js` interpolated managed-host data into `innerHTML` unescaped
   across 23 sites, and five of those were inline event handlers where escaping is
