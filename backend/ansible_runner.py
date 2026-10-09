@@ -6,7 +6,7 @@ import asyncio
 import tempfile
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,29 @@ def _patchpilot_app_version() -> str:
     except Exception:
         pass
     return "unknown"
+
+
+# Homebrew's "Error: /opt/homebrew/Cellar/<formula>/<ver> is not a directory"
+# means brew's records say a keg is installed but its Cellar dir is gone
+# (interrupted upgrade, hand-deleted folder). `brew upgrade` aborts the WHOLE
+# run on it, so every other formula/cask silently stays un-patched.
+_BROKEN_KEG_RE = re.compile(
+    r'(?:/opt/homebrew|/usr/local)/Cellar/([^/\s"|]+)/([^/\s"|]+) is not a directory'
+)
+
+
+def brew_broken_keg_hint(line: str) -> Optional[str]:
+    """Return an operator-facing fix hint if `line` contains a broken-keg error."""
+    m = _BROKEN_KEG_RE.search(line)
+    if not m:
+        return None
+    name = m.group(1)
+    return (
+        f"Broken Homebrew keg: {name} {m.group(2)} is registered but its Cellar "
+        f"directory is missing, so brew aborted the entire upgrade. On the host run "
+        f"`brew reinstall {name}` (if that fails: `brew uninstall --force "
+        f"--ignore-dependencies {name} && brew install {name}`), then re-run patching."
+    )
 
 
 def known_hosts_path() -> str:
@@ -415,8 +438,11 @@ class AnsibleRunner:
                 continue
 
             # Brew short-circuit: emit the line and move on, before apt patterns run.
-            if any(k in s for k in _brew_markers):
+            _keg_hint = brew_broken_keg_hint(s)
+            if _keg_hint or any(k in s for k in _brew_markers):
                 await progress_callback(f"🍺 [{hostname}] {s}")
+                if _keg_hint:
+                    await progress_callback(f"💡 [{hostname}] {_keg_hint}")
                 continue
 
             # Skip noise: "Reading database ... X%" progress lines
@@ -539,8 +565,11 @@ class AnsibleRunner:
                 # "a terminal is required" / "a password is required" land on
                 # stderr, and we need them visible in the UI to diagnose
                 # cask-uninstaller sudo failures.
-                if any(k in s for k in _brew_markers):
+                _keg_hint = brew_broken_keg_hint(s)
+                if _keg_hint or any(k in s for k in _brew_markers):
                     await progress_callback(f"🍺 [{hostname}] {s}")
+                    if _keg_hint:
+                        await progress_callback(f"💡 [{hostname}] {_keg_hint}")
                     continue
                 if s.startswith('Running kernel'):
                     await progress_callback(f"🐧 [{hostname}] {s}")
@@ -846,9 +875,12 @@ class AnsibleRunner:
                         'PP_DIAG_BECOME_PASS', 'PP_DIAG_ASKPASS_READY',
                         '==> Upgrading', '==> Uninstalling',
                         'sudo: a terminal', 'a password is required',
-                        'Failure while executing',
+                        'Failure while executing', 'is not a directory',
                     )):
                         await progress_callback(f"🍺 {line_clean}")
+                        _keg_hint = brew_broken_keg_hint(line_clean)
+                        if _keg_hint:
+                            await progress_callback(f"💡 {_keg_hint}")
 
             # Wait for process to complete
             logger.debug(f"Patch output: {line_count} lines read")
