@@ -90,7 +90,7 @@ class _StdoutInterceptor:
 _sys.stdout = _StdoutInterceptor(_sys.stdout)
 
 from database import DatabaseClient
-from ansible_runner import AnsibleRunner
+from ansible_runner import AnsibleRunner, brew_broken_keg_hint
 from settings_api import router as settings_router, public_router as settings_public_router
 from dependencies import get_db_pool
 from auth import (router as auth_router, require_auth, require_full_admin,
@@ -1205,7 +1205,9 @@ async def run_ansible_patch_task(hostnames: List[str], become_password: Optional
         # Determine per-host actual patch success from Ansible output.
         ansible_output = results.get("output", "") if isinstance(results, dict) else ""
         actually_patched = _detect_hosts_actually_patched(ansible_output, hostnames)
-        print(f"[INFO] actually_patched={actually_patched}, ansible_success={success}")
+        patch_failures = _detect_host_patch_failures(ansible_output, hostnames)
+        actually_patched -= patch_failures.keys()
+        print(f"[INFO] actually_patched={actually_patched}, ansible_success={success}, failures={patch_failures}")
 
         # Record patch history for each host
         try:
@@ -1216,7 +1218,10 @@ async def run_ansible_patch_task(hostnames: List[str], become_password: Optional
                     if host_row:
                         is_success = hostname in actually_patched
                         duration_secs = int(execution_seconds)
-                        error_msg = None if is_success else (results.get("error", "Unknown error") if isinstance(results, dict) else str(results))
+                        error_msg = None if is_success else (
+                            patch_failures.get(hostname)
+                            or (results.get("error", "Unknown error") if isinstance(results, dict) else str(results))
+                        )
                         pkgs_updated = _extract_packages_updated(ansible_output, hostname)
                         print(f"[INFO] packages extracted for {hostname}: {len(pkgs_updated)} pkgs")
                         await conn.execute("""
@@ -1231,7 +1236,14 @@ async def run_ansible_patch_task(hostnames: List[str], become_password: Optional
         except Exception as e:
             print(f"[WARN] Failed to record patch history: {e}")
 
-        if success or actually_patched:
+        if patch_failures:
+            print(f"[{end_time}] Ansible patch had host failures: {patch_failures}")
+            await manager.broadcast({
+                "type": "error",
+                "message": "Patch failed on " + ", ".join(sorted(patch_failures)) + ": "
+                           + "; ".join(patch_failures[h] for h in sorted(patch_failures))
+            })
+        elif success or actually_patched:
             print(f"[{end_time}] Ansible patch completed (success={success}, patched={actually_patched})")
             await manager.broadcast({
                 "type": "success",
@@ -1355,6 +1367,32 @@ def _parse_unreachable_hostnames(output: str, attempted_hostnames: list) -> list
                         unreachable.append(h)
                     break
     return unreachable
+
+
+def _detect_host_patch_failures(output: str, hostnames: list) -> dict:
+    """
+    Return {hostname: error_message} for hosts whose playbook emitted a
+    "PATCH_FAILED: <host> | <reason>" marker. The playbook emits it when an
+    apply step failed but was deliberately not fatal (failed_when: false), e.g.
+    `brew upgrade` aborting on a broken keg. Without this the Apply task's ok:
+    made such a run look like a successful no-op. If the output contains a
+    broken-keg error, its fix hint is appended to the message.
+    """
+    import re
+    failures = {}
+    keg_hint = None
+    for line in output.splitlines():
+        if keg_hint is None:
+            keg_hint = brew_broken_keg_hint(line)
+        m = re.search(r'PATCH_FAILED:\s*([^\s|"]+)\s*\|\s*([^"]*)', line)
+        if not m:
+            continue
+        marker_host, reason = m.group(1), m.group(2).strip()
+        host = next((h for h in hostnames if h == marker_host), marker_host)
+        failures[host] = reason
+    if keg_hint:
+        failures = {h: f"{r}. {keg_hint}" for h, r in failures.items()}
+    return failures
 
 
 def _detect_hosts_actually_patched(output: str, hostnames: list) -> set:
@@ -1915,6 +1953,8 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
         try:
             elapsed = int(time.monotonic() - _ansible_patch_running_since) if _ansible_patch_running_since else 0
             actually_patched = _detect_hosts_actually_patched(output, hostnames)
+            patch_failures = _detect_host_patch_failures(output, hostnames)
+            actually_patched -= patch_failures.keys()
             async with pool.acquire() as conn:
                 for hostname in hostnames:
                     host_row = await conn.fetchrow(
@@ -1923,8 +1963,9 @@ async def run_scheduled_patch(schedule_id, hostnames, become_password, pool, loc
                     if host_row:
                         is_success = hostname in actually_patched
                         error_msg = None if is_success else (
-                            results.get("error", "Unknown error")
-                            if isinstance(results, dict) else str(results)
+                            patch_failures.get(hostname)
+                            or (results.get("error", "Unknown error")
+                                if isinstance(results, dict) else str(results))
                         )
                         pkgs_updated = _extract_packages_updated(output, hostname)
                         await conn.execute("""

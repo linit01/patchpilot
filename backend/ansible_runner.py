@@ -844,6 +844,10 @@ class AnsibleRunner:
                     # Show fatal errors
                     elif 'fatal:' in line_clean or 'FAILED!' in line_clean:
                         await progress_callback(f"❌ {line_clean}")
+                    # Soft failure marker from the playbook (e.g. brew upgrade
+                    # exited non-zero but the play continued for this host).
+                    elif 'PATCH_FAILED:' in line_clean:
+                        await progress_callback(f"❌ {line_clean}")
                     # ── Async polling heartbeats (mas / winget / long-running tasks) ──
                     # Ansible emits "ASYNC POLL on host: jid=... finished=0" every
                     # poll seconds. Without forwarding these the UI appears frozen

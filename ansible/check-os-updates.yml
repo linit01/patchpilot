@@ -98,7 +98,7 @@
     # ── Host info ──────────────────────────────────────────────────────────────
     - name: Emit host info
       debug:
-        msg: "HOSTINFO: {{ inventory_hostname }} | IP: {{ ansible_default_ipv4.address | default('N/A') }} | OS: {{ ansible_distribution | default('Unknown') }} | Family: {{ ansible_os_family | default('Unknown') }}"
+        msg: "HOSTINFO: {{ inventory_hostname }} | IP: {{ ansible_facts.default_ipv4.address | default('N/A') }} | OS: {{ ansible_facts.distribution | default('Unknown') }} | Family: {{ ansible_facts.os_family | default('Unknown') }}"
 
     # ── Linux ──────────────────────────────────────────────────────────────────
     - name: Refresh apt cache (Debian/Ubuntu)
@@ -789,6 +789,21 @@
       when:
         - ansible_facts['os_family'] == "Darwin"
         - brew_upgrade_result is defined
+      tags: ['never', 'apply-updates']
+
+    # The Apply Homebrew task keeps failed_when: false so a brew error does not
+    # end the play for this host (system and App Store updates still run). But
+    # that also made a brew abort (broken keg, lock, cask error) look like a
+    # clean no-op: Ansible reported ok:, and patch history recorded SUCCESS with
+    # 0 packages and no stored output. This marker lets the backend record the
+    # host as failed and keep the output, so the error and hint stay visible.
+    - name: Flag Homebrew upgrade failure (macOS)
+      debug:
+        msg: "PATCH_FAILED: {{ inventory_hostname }} | brew upgrade exited {{ brew_upgrade_result.rc }}"
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - brew_upgrade_result is defined
+        - (brew_upgrade_result.rc | default(0) | int) != 0
       tags: ['never', 'apply-updates']
 
     - name: Apply macOS system updates (non-control nodes — per-label with exclusions)
