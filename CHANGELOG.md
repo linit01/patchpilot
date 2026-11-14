@@ -4,6 +4,20 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.9.0] — unreleased
+
+### Added
+- **In-app updates apply Kubernetes manifest changes, not just image tags.** The updater ran `kubectl set image` on the backend, frontend and `seed-ansible` containers and patched `APP_VERSION`, nothing else — so any other change to the templates never reached an install updated in-app. Surfaced by the busybox 1.36 → 1.38 bump in 1.8.5: an install updated in-app kept `wait-for-postgres` on 1.36. Updates now run a `patchpilot-update` Job from the new backend image, which carries its release's `03-postgres`, `04-backend` and `05-frontend` templates (`backend/manifest_updater.py`). It renders them with the settings the installer saves in the new `patchpilot-install-values` ConfigMap, refuses a Postgres major-version change, an unsaved setting or any kind beyond Deployment/Service/ConfigMap, never lowers a running container's CPU/memory requests or limits, dry-runs server-side, applies, and waits for all three rollouts. Settings → Updates shows which kind of update will run and, for a refused or failed update, why. See KUBERNETES.md → In-app updates.
+- **Existing installs need one `install-k3s.sh` run** on 1.9.0+ to save their settings and pick up the updater's wider Role (Deployments/Services/ConfigMaps create+patch, `pods/log` get). Until then updates stay image-only, as before, and Settings says so.
+
+### Fixed
+- **`k8s/templates/04-backend.yaml` still used `busybox:1.36`** (1.8.5 updated `deployment.yaml` and the uninstall Job in `install-k3s.sh` only); the uninstall Job in `backend/uninstall_api.py` too. Both now 1.38.
+- **`PATCHPILOT_LICENSE_PROVIDER` / `PATCHPILOT_FREEMIUS_PRODUCT_ID` were rendered as literal `${PP_LICENSE_PROVIDER:-freemius}` / `${PP_FREEMIUS_PRODUCT_ID:-28811}`.** envsubst does not expand `:-` defaults. The backend fell back to its defaults with a warning, so licensing worked; the template now uses plain `${PP_…}`, which the installer already defaults.
+- **The updater ignored a custom namespace.** It read `PP_NAMESPACE`, which the backend Deployment never sets (it sets `PATCHPILOT_NAMESPACE`), so it always targeted `patchpilot`.
+- **The update progress screen gave up after ~3 minutes and could not show a failure.** It now follows `/api/updates/progress`, stops with the reason when an update fails or is refused, and waits up to 15 minutes (the update Job's deadline).
+
+---
+
 ## [1.8.1] — 2026-09-15
 
 ### Security

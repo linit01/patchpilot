@@ -1189,6 +1189,46 @@ clean_node_data_dirs() {
 }
 
 # ── Apply manifests ────────────────────────────────────────────────────────────
+# ── Save install values for in-app updates ────────────────────────────────────
+# The in-app updater re-renders the workload templates (03-postgres, 04-backend,
+# 05-frontend) from the new release with these values, so manifest changes reach
+# existing installs without re-running this script. Non-secret values only —
+# credentials stay in patchpilot-secrets. Keep the key list in step with
+# SAVED_KEYS in backend/manifest_updater.py; bump PP_INSTALL_VALUES_SCHEMA there
+# and here together if the meaning of a key changes.
+save_install_values() {
+  local suffix=""
+  [[ "${DEVELOPER}" == "true" ]] && suffix="-${PP_TARGET_ARCH}"
+  kubectl create configmap patchpilot-install-values \
+    --namespace="${PP_NAMESPACE}" \
+    --from-literal=PP_INSTALL_VALUES_SCHEMA=1 \
+    --from-literal=PP_NAMESPACE="${PP_NAMESPACE}" \
+    --from-literal=PP_VERSION="${PP_VERSION}" \
+    --from-literal=PP_BACKEND_IMAGE="${PP_BACKEND_IMAGE}" \
+    --from-literal=PP_FRONTEND_IMAGE="${PP_FRONTEND_IMAGE}" \
+    --from-literal=PP_DH_REPO="${PP_DH_REPO}" \
+    --from-literal=PP_IMAGE_TAG="${PP_IMAGE_TAG}" \
+    --from-literal=PP_IMAGE_SUFFIX="${suffix}" \
+    --from-literal=PP_IMAGE_PULL_POLICY="${PP_IMAGE_PULL_POLICY}" \
+    --from-literal=PP_PULL_SECRET_NAME="${PP_PULL_SECRET_NAME}" \
+    --from-literal=PP_DB_USER="${PP_DB_USER}" \
+    --from-literal=PP_DB_NAME="${PP_DB_NAME}" \
+    --from-literal=PP_AUTO_REFRESH_INTERVAL="${PP_AUTO_REFRESH_INTERVAL}" \
+    --from-literal=PP_DEFAULT_SSH_USER="${PP_DEFAULT_SSH_USER}" \
+    --from-literal=PP_DEFAULT_SSH_PORT="${PP_DEFAULT_SSH_PORT}" \
+    --from-literal=PP_BACKUP_STORAGE_TYPE="${PP_BACKUP_STORAGE_TYPE}" \
+    --from-literal=PP_NFS_SERVER="${PP_NFS_SERVER}" \
+    --from-literal=PP_NFS_SHARE="${PP_NFS_SHARE}" \
+    --from-literal=PP_BACKUP_RETAIN_COUNT="${PP_BACKUP_RETAIN_COUNT}" \
+    --from-literal=PP_MAX_BACKUP_SIZE_MB="${PP_MAX_BACKUP_SIZE_MB}" \
+    --from-literal=PP_KUBECTL_BIN="${PP_KUBECTL_BIN}" \
+    --from-literal=PP_DATA_DIR="${PP_DATA_DIR}" \
+    --from-literal=PP_LICENSE_PROVIDER="${PP_LICENSE_PROVIDER}" \
+    --from-literal=PP_FREEMIUS_PRODUCT_ID="${PP_FREEMIUS_PRODUCT_ID}" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  ok "Install values saved (ConfigMap patchpilot-install-values) — in-app updates can apply manifest changes"
+}
+
 apply_manifests() {
   step "Applying manifests to cluster"
 
@@ -1346,6 +1386,8 @@ apply_manifests() {
   done
 
   ok "All manifests applied"
+
+  save_install_values
 
   # ── Dump full cluster state ───────────────────────────────────────────────
   step "Cluster state after apply"

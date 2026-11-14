@@ -39,6 +39,7 @@ from pydantic import BaseModel
 
 from auth import require_full_admin, require_auth
 from uninstall_api import _own_container_id
+import manifest_updater
 
 logger = logging.getLogger("patchpilot.updates")
 
@@ -156,6 +157,12 @@ def _detect_install_mode() -> str:
     return "docker"
 
 
+def _namespace() -> str:
+    """The install's namespace. The backend Deployment sets PATCHPILOT_NAMESPACE;
+    PP_NAMESPACE is kept as a fallback for older manifests."""
+    return (os.getenv("PATCHPILOT_NAMESPACE") or os.getenv("PP_NAMESPACE") or "patchpilot").strip()
+
+
 def _detect_update_channel() -> str:
     """
     Detect whether the user is running :latest tags or pinned version tags.
@@ -167,7 +174,7 @@ def _detect_update_channel() -> str:
     if mode == "k3s":
         try:
             kc = _kubectl()
-            namespace = os.getenv("PP_NAMESPACE", "patchpilot")
+            namespace = _namespace()
             rc, out, _ = _run(kc + [
                 "get", "deployment", "patchpilot-backend",
                 "-n", namespace,
@@ -408,17 +415,169 @@ async def periodic_update_check(get_setting_fn):
 # ─────────────────────────────────────────────────────────────────────────────
 # Update Execution — Kubernetes
 # ─────────────────────────────────────────────────────────────────────────────
+UPDATE_JOB_NAME = manifest_updater.JOB_NAME
+UPDATE_JOB_DEADLINE = manifest_updater.JOB_DEADLINE
+_READINESS_TTL = 60
+_readiness_cache: dict = {"at": 0.0, "value": None}
+
+
+def _manifest_update_readiness() -> tuple[bool, str]:
+    """Can this install take full (manifest) updates? Needs the install values
+    the installer saves, and the wider Role that comes with them. Both arrive by
+    re-running install-k3s.sh once; until then updates swap image tags only."""
+    if _detect_install_mode() != "k3s":
+        return False, "Docker installs update image tags only"
+    now = time.monotonic()
+    if _readiness_cache["value"] is not None and now - _readiness_cache["at"] < _READINESS_TTL:
+        return _readiness_cache["value"]
+
+    namespace = _namespace()
+    try:
+        kc = _kubectl()
+    except RuntimeError as e:
+        value = (False, str(e))
+    else:
+        rc, _, _ = _run(kc + ["get", "configmap", manifest_updater.VALUES_CONFIGMAP,
+                              "-n", namespace], timeout=10)
+        if rc != 0:
+            value = (False, "install values not saved yet — re-run install-k3s.sh once "
+                            "to enable full updates")
+        else:
+            rc, out, _ = _run(kc + ["auth", "can-i", "patch", "services", "-n", namespace],
+                              timeout=10)
+            if out.strip() != "yes":
+                value = (False, "updater permissions are from an older install — re-run "
+                                "install-k3s.sh once to enable full updates")
+            else:
+                value = (True, "images and Kubernetes manifests")
+    _readiness_cache.update(at=now, value=value)
+    return value
+
+
+def _job_result_line(kc: list[str], namespace: str) -> str:
+    """Last REFUSED/FAILED/DONE line the updater printed, else the log tail."""
+    _, out, err = _run(kc + ["logs", f"job/{UPDATE_JOB_NAME}", "-n", namespace,
+                             "--tail=50"], timeout=20)
+    lines = [l for l in (out or err).splitlines() if l.strip()]
+    for line in reversed(lines):
+        if line.startswith(("REFUSED:", "FAILED:", "DONE:")):
+            return line
+    return lines[-1] if lines else "no output from the update job"
+
+
+async def _apply_update_k8s_manifests(target_version: str) -> None:
+    """Full update: launch the release's manifest-update Job and follow it.
+    The Job replaces this pod partway through (it applies the backend last), so
+    a successful run usually ends with this task gone and the new version up."""
+    namespace = _namespace()
+    kc = _kubectl()
+
+    _update_status.update(step="preparing", message="Reading saved install values...")
+    rc, out, err = await asyncio.to_thread(_run, kc + [
+        "get", "configmap", manifest_updater.VALUES_CONFIGMAP, "-n", namespace, "-o", "json",
+    ], 15)
+    if rc != 0:
+        raise RuntimeError(f"Cannot read install values: {err}")
+    saved = json.loads(out).get("data") or {}
+
+    job = manifest_updater.job_manifest(namespace, saved, target_version)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as jf:
+        json.dump(job, jf)
+        job_path = jf.name
+    try:
+        await asyncio.to_thread(_run, kc + [
+            "delete", "job", UPDATE_JOB_NAME, "-n", namespace,
+            "--ignore-not-found=true", "--wait=true",
+        ], 60)
+        rc, _, err = await asyncio.to_thread(_run, kc + ["create", "-f", job_path], 30)
+        if rc != 0:
+            raise RuntimeError(f"Could not start the update job: {err}")
+    finally:
+        Path(job_path).unlink(missing_ok=True)
+
+    _update_status.update(
+        step="applying",
+        message=f"Applying v{target_version} (images and Kubernetes manifests)...",
+    )
+    logger.info("Update job %s started for v%s", UPDATE_JOB_NAME, target_version)
+
+    deadline = time.monotonic() + UPDATE_JOB_DEADLINE + 60
+    while time.monotonic() < deadline:
+        await asyncio.sleep(3)
+        rc, out, _ = await asyncio.to_thread(_run, kc + [
+            "get", "job", UPDATE_JOB_NAME, "-n", namespace,
+            "-o", "jsonpath={.status.succeeded}/{.status.failed}",
+        ], 15)
+        if rc != 0:
+            continue
+        succeeded, _, failed = out.partition("/")
+        if succeeded and succeeded != "0":
+            return
+        if failed and failed != "0":
+            line = await asyncio.to_thread(_job_result_line, kc, namespace)
+            if line.startswith("REFUSED:"):
+                raise RuntimeError(
+                    f"Update not applied — {line[len('REFUSED:'):].strip()}. "
+                    f"Nothing was changed."
+                )
+            raise RuntimeError(
+                f"Update job failed: {line.removeprefix('FAILED:').strip()} "
+                f"(details: kubectl logs job/{UPDATE_JOB_NAME} -n {namespace})"
+            )
+    raise RuntimeError(
+        f"Update job did not finish in {UPDATE_JOB_DEADLINE // 60} minutes "
+        f"(kubectl logs job/{UPDATE_JOB_NAME} -n {namespace})"
+    )
+
+
 async def _apply_update_k8s(target_version: str):
     """
     Apply an update in a Kubernetes environment.
 
-    For 'latest' channel:  rollout restart (forces image re-pull)
-    For 'pinned' channel:  kubectl set image to new version tag, then rollout
+    Full update (install values saved, current RBAC): a Job from the new image
+    applies that release's workload manifests — see manifest_updater.
+
+    Image-only fallback (older installs):
+      'latest' channel:  rollout restart (forces image re-pull)
+      'pinned' channel:  kubectl set image to new version tag, then rollout
     """
     global _update_status
 
-    namespace = os.getenv("PP_NAMESPACE", "patchpilot")
+    namespace = _namespace()
     image_repo = os.getenv("PATCHPILOT_IMAGE_REPO", "linit01/patchpilot")
+
+    _update_status.update({
+        "active": True,
+        "step": "preparing",
+        "message": f"Preparing update to v{target_version}...",
+        "error": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+    })
+
+    _readiness_cache["value"] = None
+    full, reason = await asyncio.to_thread(_manifest_update_readiness)
+    if full:
+        try:
+            await _apply_update_k8s_manifests(target_version)
+            _update_status.update({
+                "active": False,
+                "step": "complete",
+                "message": f"Update to v{target_version} complete. Page will reload.",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.error("K8s update failed: %s", e)
+            _update_status.update({
+                "active": False,
+                "step": "failed",
+                "message": str(e),
+                "error": str(e),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            })
+        return
+
+    logger.info("Image-only update (%s)", reason)
     channel = _detect_update_channel()
     kc = _kubectl()
 
@@ -749,6 +908,9 @@ class UpdateStatusResponse(BaseModel):
     check_error: Optional[str]
     channel: str
     install_mode: str
+    # "full" — images and Kubernetes manifests; "images" — image tags only.
+    update_scope: str = "images"
+    update_scope_detail: Optional[str] = None
 
 
 class UpdateApplyResponse(BaseModel):
@@ -768,7 +930,10 @@ class UpdateProgressResponse(BaseModel):
 @router.get("/status")
 async def get_update_status(user: dict = Depends(require_auth)) -> UpdateStatusResponse:
     """Return current update status (cached from last check)."""
+    full, detail = await asyncio.to_thread(_manifest_update_readiness)
     return UpdateStatusResponse(
+        update_scope="full" if full else "images",
+        update_scope_detail=detail,
         current_version=CURRENT_VERSION,
         latest_version=_update_cache.get("latest_version"),
         update_available=_update_cache.get("update_available", False),

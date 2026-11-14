@@ -1230,6 +1230,7 @@
                             <span id="update-channel-info"></span>
                             · <span id="update-mode-info"></span>
                         </div>
+                        <div id="update-scope-info" style="display:none; font-size:12px; margin-top:2px;"></div>
                     </div>
                 </div>
 
@@ -4082,6 +4083,21 @@
             if (channelInfo) channelInfo.textContent = channelLabel;
             if (modeInfo) modeInfo.textContent = modeLabel;
 
+            // What an in-app update will change (Kubernetes only)
+            const scopeInfo = document.getElementById('update-scope-info');
+            if (scopeInfo) {
+                if (data.install_mode === 'k3s') {
+                    const full = data.update_scope === 'full';
+                    scopeInfo.textContent = full
+                        ? '📦 Updates apply: images and Kubernetes manifests'
+                        : `📦 Updates apply: image tags only — ${data.update_scope_detail || 're-run install-k3s.sh once to enable full updates'}`;
+                    scopeInfo.style.color = full ? 'var(--text-muted)' : 'var(--amber)';
+                    scopeInfo.style.display = 'block';
+                } else {
+                    scopeInfo.style.display = 'none';
+                }
+            }
+
             if (data.check_error) {
                 el.innerHTML = `
                     <div style="color:var(--amber);">⚠️ ${data.check_error}</div>
@@ -4173,9 +4189,29 @@
 
                 // Simple reconnect loop: ping the API until it responds with a new version
                 let attempts = 0;
-                const maxAttempts = 90; // ~3 minutes at 2s intervals
+                let progressMsg = null;
+                const maxAttempts = 450; // ~15 minutes at 2s — the update Job's deadline
                 const poller = setInterval(async () => {
                     attempts++;
+                    // A refused or failed update leaves the current version running,
+                    // so the old backend is still here to say why.
+                    try {
+                        const p = await fetch(`${_UPDATES_API}/progress`, { credentials: 'include' });
+                        if (p.ok) {
+                            const prog = await p.json();
+                            if (prog.step === 'failed') {
+                                clearInterval(poller);
+                                barEl.style.width = '100%';
+                                barEl.style.background = 'var(--amber)';
+                                msgEl.textContent = prog.message || 'Update failed.';
+                                msgEl.style.color = 'var(--amber)';
+                                btn.disabled = false;
+                                btn.textContent = '⬆️ Update Now';
+                                return;
+                            }
+                            if (prog.active && prog.message) progressMsg = prog.message;
+                        }
+                    } catch (_) {}
                     try {
                         const r = await fetch(`${_UPDATES_API}/status`, { credentials: 'include' });
                         if (r.ok) {
@@ -4211,7 +4247,9 @@
                     if (attempts < 5) {
                         msgEl.textContent = 'Update started — application is restarting...';
                     } else {
-                        msgEl.textContent = `Waiting for backend to restart... (${attempts}s)`;
+                        msgEl.textContent = progressMsg
+                            ? `${progressMsg} (${attempts * 2}s)`
+                            : `Waiting for backend to restart... (${attempts * 2}s)`;
                     }
 
                     if (attempts >= maxAttempts) {

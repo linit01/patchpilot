@@ -270,7 +270,7 @@ def _k8s_cleanup_background(kc: list[str], namespace: str) -> None:
                     "tolerations": [{"operator": "Exists"}],
                     "containers": [{
                         "name": "cleanup",
-                        "image": "busybox:1.36",
+                        "image": "busybox:1.38",
                         "command": ["sh", "-c", cleanup_script],
                         "securityContext": {"runAsUser": 0},
                         "volumeMounts": [{"name": "data-dir", "mountPath": "/data-dir"}],

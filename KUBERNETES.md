@@ -350,6 +350,35 @@ git pull   # or update your local checkout
 # kubectl applies are idempotent — only changed resources are updated
 ```
 
+### In-app updates (Settings → Updates)
+
+Since 1.9.0, **Update Now** applies the new release's workload manifests, not
+just its image tags, so changes such as a new init-container image, probe, env
+var or resource default reach your install without re-running the installer.
+
+How it works: the backend starts a one-off Job, `patchpilot-update`, from the
+**new** backend image. That image carries its release's templates for Postgres,
+the backend and the frontend. The Job fills them in from the settings the
+installer saved in the `patchpilot-install-values` ConfigMap, then:
+
+- refuses, changing nothing, if the release would move Postgres to a new major
+  version (that needs a backup → switch → restore migration), uses a setting the
+  installer never saved, or contains anything other than Deployments, Services
+  and the nginx ConfigMap;
+- never lowers a CPU/memory request or limit you raised on a running container;
+- runs a server-side dry run, applies, waits for all three rollouts, and records
+  the new version in `patchpilot-install-values`.
+
+Namespace, RBAC, secrets, volumes, ingress and certificates are still the
+installer's job.
+
+**Existing installs:** run `install-k3s.sh` once on 1.9.0 or later. That saves
+`patchpilot-install-values` and grants the updater its wider Role (a service
+account cannot grant itself permissions). Until then, Settings → Updates says
+"image tags only" and updates work as before. If an update is refused or fails,
+the reason shows in Settings; the full log is in
+`kubectl logs job/patchpilot-update -n <namespace>` for an hour afterwards.
+
 ---
 
 ## SSH Keys for Managed Hosts

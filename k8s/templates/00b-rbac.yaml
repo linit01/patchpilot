@@ -8,6 +8,12 @@
 #   deployments        — scale down postgres/frontend/backend during uninstall & restore
 #   pods               — list/watch for kubectl wait --for=delete during uninstall
 #   jobs               — create/get/list/watch/delete the hostPath cleanup Job on uninstall
+#                        and the patchpilot-update Job on in-app updates
+#   deployments, services, configmaps (create/patch) and pods/log
+#                      — in-app updates: the update Job applies the release's
+#                        workload manifests (03/04/05 templates), patches the
+#                        saved patchpilot-install-values, and the backend reads
+#                        the Job's log to report a refusal or failure
 #
 # ClusterRole (cluster-scoped) — resources that live outside any namespace:
 #   namespaces/delete  — delete the patchpilot namespace on uninstall
@@ -40,10 +46,19 @@ rules:
     resources: ["secrets"]
     resourceNames: ["patchpilot-secrets"]
     verbs: ["get", "patch"]
-  # Scale down all deployments during uninstall and backup/restore
+  # Scale down all deployments during uninstall and backup/restore; apply the
+  # release's deployments during in-app updates
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "patch"]
+    verbs: ["get", "list", "patch", "create"]
+  # In-app updates apply the release's Services and nginx ConfigMap, and keep
+  # patchpilot-install-values current
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "patch", "create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     verbs: ["get", "patch"]

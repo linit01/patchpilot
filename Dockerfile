@@ -79,6 +79,9 @@ RUN ansible-galaxy collection install ansible.windows
 COPY backend/ .
 COPY ansible/ /ansible-src/
 COPY scripts/ /scripts/
+# This release's workload templates — the in-app updater applies them (see
+# backend/manifest_updater.py)
+COPY k8s/templates/03-postgres.yaml k8s/templates/04-backend.yaml k8s/templates/05-frontend.yaml /app/k8s-templates/
 COPY VERSION .
 
 # ── Runtime directories ───────────────────────────────────────────────────────

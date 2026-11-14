@@ -33,7 +33,7 @@ spec:
       initContainers:
       # Wait for postgres to accept connections before starting
       - name: wait-for-postgres
-        image: busybox:1.36
+        image: busybox:1.38
         command:
           - sh
           - -c
@@ -156,9 +156,9 @@ spec:
         # ── License provider — defaults to freemius (since v0.19.0-beta) ─
         # Set PP_LICENSE_PROVIDER=lemonsqueezy at install time to opt back in.
         - name: PATCHPILOT_LICENSE_PROVIDER
-          value: "${PP_LICENSE_PROVIDER:-freemius}"
+          value: "${PP_LICENSE_PROVIDER}"
         - name: PATCHPILOT_FREEMIUS_PRODUCT_ID
-          value: "${PP_FREEMIUS_PRODUCT_ID:-28811}"
+          value: "${PP_FREEMIUS_PRODUCT_ID}"
 
         volumeMounts:
         - name: ansible-data
