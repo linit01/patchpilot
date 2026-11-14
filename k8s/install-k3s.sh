@@ -242,7 +242,7 @@ do_uninstall() {
         "tolerations": [{ "operator": "Exists" }],
         "containers": [{
           "name": "cleanup",
-          "image": "busybox:1.36",
+          "image": "busybox:1.38",
           "command": ["sh", "-c",
             "find /data-dir -maxdepth 1 -name 'patchpilot-*' ! -name 'patchpilot-backups' -exec rm -rf {} + 2>/dev/null; echo done"],
           "securityContext": { "runAsUser": 0 },
