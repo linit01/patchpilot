@@ -4,7 +4,14 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
-## [1.9.0] — unreleased
+## [1.9.1] — 2026-11-14
+
+### Changed
+- **Settings → Updates shows what an update will apply inside Version Status** ("images and Kubernetes manifests", or "image tags only" with the reason) instead of at the bottom of Update Settings, where it was easy to miss. Also the first release delivered through the 1.9.0 manifest updater.
+
+---
+
+## [1.9.0] — 2026-11-14
 
 ### Added
 - **In-app updates apply Kubernetes manifest changes, not just image tags.** The updater ran `kubectl set image` on the backend, frontend and `seed-ansible` containers and patched `APP_VERSION`, nothing else — so any other change to the templates never reached an install updated in-app. Surfaced by the busybox 1.36 → 1.38 bump in 1.8.5: an install updated in-app kept `wait-for-postgres` on 1.36. Updates now run a `patchpilot-update` Job from the new backend image, which carries its release's `03-postgres`, `04-backend` and `05-frontend` templates (`backend/manifest_updater.py`). It renders them with the settings the installer saves in the new `patchpilot-install-values` ConfigMap, refuses a Postgres major-version change, an unsaved setting or any kind beyond Deployment/Service/ConfigMap, never lowers a running container's CPU/memory requests or limits, dry-runs server-side, applies, and waits for all three rollouts. Settings → Updates shows which kind of update will run and, for a refused or failed update, why. See KUBERNETES.md → In-app updates.
