@@ -1,24 +1,48 @@
-# PatchPilot — Handoff (2026-10-09)
+# PatchPilot — Handoff (2026-11-14)
 
 ## TL;DR
-2026-10-09 added a 💡 fix hint in the patch log when a broken Homebrew keg
-aborts `brew upgrade`. It was triggered by johns-mbp.lan, where a missing
-`Cellar/pipx/1.17.12` directory made every brew upgrade on that host fail.
-`brew reinstall pipx` on the host fixed it, and patching johns-mbp now succeeds.
-The v1.8.2 tag's **image build failed** (ansible-core 2.21.1 needs Python ≥3.12;
-the base image was 3.11). The base image is now 3.12 and **v1.8.3 is built and
-deployed to both Site A and Site B** (in-app update, 2026-10-09). That also
-puts v1.8.1's stored-XSS fix and false-unreachable fix live. The 2026-09-15
-follow-ups (items 2–6) were **not revisited this session**; their status is
-unknown, not done.
+2026-11-14 shipped v1.8.5 → v1.9.2, **all deployed to Site A and Site B**.
+- **In-app updates now apply Kubernetes manifest changes** (v1.9.0), not just
+  image tags: a `patchpilot-update` Job from the new image renders and applies
+  that release's workload templates. Proven on both sites for 1.9.1 and 1.9.2.
+- **The installer silently ignored its whole config file** on any machine
+  without PyYAML (incl. this Mac) — fixed in v1.9.2 (`k8s/yaml_get.py`).
+- **Per-site installer configs exist** (git-ignored):
+  `k8s/install-config.site-a.yaml`, `k8s/install-config.site-b.yaml`, built
+  from live state and verified by a write-blocked dry run + `kubectl diff`. The
+  old default `k8s/install-config.yaml` (0.12.2-alpha, TLS off) was renamed
+  `k8s/install-config.stale-2026-05-31.yaml`; a run without `--config` now stops.
+- Backend limits default to 1 CPU / 1Gi (v1.9.2); busybox 1.38 everywhere.
 
 ## Deferred / known unfinished — DO THIS NEXT
-1. **Confirm v1.8.3 runs a full check cleanly on Python 3.12** at both sites.
-   This is the first runtime on 3.12 and ansible-core 2.21. The operator
-   confirmed both updates, but a completed check run on the new image wasn't
-   explicitly reported. Expect normal statuses and counts, not a wave of
-   "unreachable"; if that wave appears, check `kubectl logs` for Python or
-   ansible tracebacks before anything else.
+1. **Postgres 15 → 18 is deliberately NOT done.** The updater refuses a major
+   change. It needs, in order: (a) `postgresql-client-18` from the PGDG apt repo
+   in the backend `Dockerfile` (Debian bookworm's client is 15, and `pg_dump` 15
+   refuses a newer server, so in-app backups would break), shipped first since
+   pg_dump 18 can dump a 15 server; (b) an upgrade path — backup → fresh 18 data
+   dir → restore — in the installer and/or updater. PG18 images also moved the
+   default data path to `/var/lib/postgresql/18/docker`; the template sets
+   `PGDATA` explicitly. Quartermaster shows the finding; it was left
+   dismissed/snoozed. PG15 support runs to ~Nov 2027.
+2. **Site B's ingress names a ClusterIssuer that doesn't exist.** It asks for
+   `lan-ca-issuer`; Site B's is `1445-lan-ca-issuer`. Its `Certificate` sits in
+   `DoesNotExist` and Traefik serves the `*.apps.1445.lan` wildcard. The operator
+   wants the cert setup unchanged, so `install-config.site-b.yaml` mirrors it and
+   the installer now warns about it on every run. Fixing it is the operator's call.
+3. **The v1.7.8 ClusterRole narrowing** (`clusterissuers` delete scoped to
+   `letsencrypt-prod`) is on neither site. It lands on the next installer run with
+   the site config. Full updates were enabled by applying only the Role doc.
+4. **Docker installs still update image tags only** — the compose file is not
+   refreshed from the release.
+5. **The installer has no keep-larger guard for resources** (the updater does).
+   A future hand-raise above the template would be reset by an installer re-run.
+6. **`k8s/build-push.sh` has its own YAML reader** (developer build tool). Not
+   checked for the nested-key fallback bug fixed in the installer.
+
+### Carried over from 2026-10-09 — not revisited, status unknown (not done)
+1. **Confirm a full check runs cleanly** on the current image at both sites
+   (first ran on Python 3.12 / ansible-core 2.21 in v1.8.3). A wave of
+   "unreachable" means look at `kubectl logs` for tracebacks first.
 2. **Click-test the five rewired web controls.** v1.8.1 replaced five inline
    event handlers with delegated listeners. Escaping cannot break behavior, but
    delegation can, and none of it has been exercised in a browser:
@@ -59,6 +83,11 @@ unknown, not done.
 | `brew upgrade` stays one call | A single broken formula aborts the whole run, so nothing else on that host upgrades. That's why the hint exists. Don't assume a quiet brew task means "nothing to upgrade"; check the log for the 💡 line. |
 | Backend base image is Python ≥3.12 (v1.8.3) | `Dockerfile` uses `python:3.12-slim-bookworm` because ansible-core ≥2.20 refuses older Python. Don't drop back to 3.11, and don't pin ansible-core below 2.20 to make a build pass: that reverts a security fix. |
 | Backend parser reconciliation | `total_updates` = count of parsed `PACKAGE:` lines (ground truth); the status-line count is discarded. |
+| In-app manifest updates (v1.9.0) | [backend/manifest_updater.py](backend/manifest_updater.py). The old backend launches Job `patchpilot-update` from the **new** image, which carries its release's `03-postgres`/`04-backend`/`05-frontend` templates at `/app/k8s-templates`. Renders them with ConfigMap `patchpilot-install-values`, refuses (changing nothing) on a Postgres major change, an unsaved `PP_*` setting, or any kind beyond Deployment/Service/ConfigMap; never lowers running CPU/memory; server-side dry run → apply → waits for rollouts. Installs without the ConfigMap or the wider Role fall back to the old image-only path, and Settings → Updates says so. |
+| `SAVED_KEYS` ⇔ installer ⇔ templates | A new `${PP_X}` in a workload template must also be saved by `save_install_values()` in `install-k3s.sh` and listed in `SAVED_KEYS` — tests enforce both. **Existing installs' ConfigMaps won't have it**, so the updater will refuse that release with "re-run install-k3s.sh"; plan for that (default it in the updater, or ship it with an installer run). |
+| Installer config reader (v1.9.2) | `k8s/yaml_get.py`, not an inline heredoc. Reads nested keys with or without PyYAML (tests compare it to PyYAML for every key the installer reads) and **exits non-zero on an unreadable config** so `set -e` stops the install. The old inline fallback returned the default for every nested key. Don't move it back inline. |
+| `--dry-run` writes nothing (v1.9.2) | It used to create the namespace and pull secret. Recipe for a live install: dry-run with the site config, then `kubectl diff -f k8s/.generated/<file>`. `k8s/.generated/01-secrets.yaml` then holds the real password and key — delete it after. |
+| Live-install invariants for a re-run | `postgres.storageClass` (A `app-data`, B `local-path`) must match: PVC classes are immutable, and a hostPath/static mode triggers `clean_node_data_dirs` (an `rm -rf` of the Postgres data dir) and `_reconcile_pv` (deletes the Postgres PV). Keep `certManager.createClusterIssuer: false` on both sites — `true` would write a ClusterIssuer named after `tls.clusterIssuer` (= the LAN CA issuer). |
 
 ## Decision required / strategic crossroads
 - **Accept or revisit the "preserve last known status" trade.** A host the run
@@ -113,6 +142,21 @@ unknown, not done.
   healthy-looking dump there alongside a red host is the tell.
 
 ## Quick-reference commands
+Re-run the installer on a site (always with its config and kubeconfig):
+```bash
+KUBECONFIG=~/.kube/k3s.config ./k8s/install-k3s.sh --config k8s/install-config.site-a.yaml
+```
+```bash
+KUBECONFIG=~/.kube/k3s-1445.config ./k8s/install-k3s.sh --config k8s/install-config.site-b.yaml
+```
+See what the last in-app update did (Job log is kept for an hour):
+```bash
+kubectl logs -n patchpilot job/patchpilot-update
+```
+Run the backend tests (needs a venv with `pyyaml` and `pytest`):
+```bash
+python -m pytest backend/tests -q
+```
 Force an incomplete-check reason to test the alert and the iOS card:
 ```bash
 kubectl exec -n patchpilot deploy/patchpilot-postgres -- sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE hosts SET check_fail_reason = '"'"'forced test'"'"', check_fail_at = NOW() WHERE hostname = '"'"'johns-macmini.lan'"'"';"'
@@ -237,6 +281,30 @@ out/in or hard-refresh so `/api/auth/me` re-reads the role.
   locked in; don't propose restructuring them
 
 ## Recently shipped
+### 2026-11-14
+- **v1.8.5** (operator): busybox 1.36 → 1.38 — but only in `deployment.yaml` and
+  the installer's uninstall Job; `templates/04-backend.yaml` and
+  `backend/uninstall_api.py` were missed and fixed in v1.9.0. Site A's
+  `wait-for-postgres` was moved to 1.38 by hand with `kubectl set image`, since
+  the image-only updater never touched it.
+- **v1.9.0** (`56eac41` + release `fcaf9b4`): manifest-applying in-app updates;
+  `patchpilot-install-values` saved by the installer; Role gains
+  deployments/services/configmaps create+patch and `pods/log` get. Also fixed:
+  literal `${PP_LICENSE_PROVIDER:-freemius}` env values (envsubst ignores `:-`),
+  updater ignoring a custom namespace (read `PP_NAMESPACE`, never set), update
+  progress screen giving up after 3 min.
+- **Ops — full updates enabled from live state, not an installer run** (the
+  installer config was stale): each site's `patchpilot-install-values` was built
+  from its live Deployments and only the Role doc of `00b-rbac.yaml` applied.
+- **v1.9.1** (`b471e96`): update-scope line moved into Version Status. First real
+  manifest update: Site B got busybox 1.38 + real license env; Postgres untouched.
+- **v1.9.2** (`f71105d`): installer config reader, email prompts only when
+  creating a ClusterIssuer (+ warning when the named one is missing), `--dry-run`
+  writes nothing, backend limits 1 CPU / 1Gi (Site B rose on update; Site A was
+  already there by hand since 2026-10-01).
+- **Postgres restart counts** (23 on A, 6 on B) are k3s service restarts —
+  last exit `Unknown/255`, same minute as every other pod; nodes never went NotReady.
+
 ### 2026-10-09
 - **Backend base image → `python:3.12-slim-bookworm`.** The v1.8.2 CI image
   build failed at `pip install -r requirements.txt`: Dependabot/Aikido's
