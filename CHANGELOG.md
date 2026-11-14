@@ -4,6 +4,22 @@ All notable changes to PatchPilot will be documented in this file.
 
 ---
 
+## [1.9.2] — unreleased
+
+### Changed
+- **Backend limits raised to 1 CPU / 1Gi** (from 500m / 512Mi; requests unchanged at 100m / 256Mi, so scheduling is unaffected). A production install had already been raised to this by hand, which the installer would have reset on a re-run. In-app updates raise existing installs still on the old default; installs raised further by hand keep their values.
+
+### Fixed
+- **`install-k3s.sh` ignored the whole config file when PyYAML was not installed** — e.g. Homebrew Python on macOS. Its fallback parser flattened the YAML, so every nested key (`patchpilot.network.hostname`, `…tls.enabled`, `…storage.type`, …) silently came back as the installer default: TLS settings, ClusterIssuer, storage type and NFS server were all replaced by defaults with no warning. The reader is now `k8s/yaml_get.py`, which parses nested keys with or without PyYAML (tests check it against PyYAML for every key the installer reads), and the installer stops if the config cannot be read instead of falling back to defaults.
+- **The installer asked for Let's Encrypt / Cloudflare emails even with `certManager.createClusterIssuer: false`.** They are only used in a ClusterIssuer the installer creates; with an existing issuer it no longer asks, and instead warns when the named ClusterIssuer does not exist (cert-manager then cannot issue, and Traefik serves its default certificate).
+
+- **`--dry-run` still wrote to the cluster.** It created the namespace and the image pull secret before generating manifests; it now applies nothing.
+
+### Added
+- **Per-site configs** — `k8s/install-config.<site>.yaml` is git-ignored, for `./k8s/install-k3s.sh --config k8s/install-config.<site>.yaml`.
+
+---
+
 ## [1.9.1] — 2026-11-14
 
 ### Changed

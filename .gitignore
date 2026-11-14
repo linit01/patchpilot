@@ -57,6 +57,8 @@ k8s/.generated/
 # User's install config (contains passwords, tokens, hostnames)
 # Copy the template to get started: cp k8s/install-config.yaml.example k8s/install-config.yaml
 k8s/install-config.yaml
+# Per-site configs: ./k8s/install-k3s.sh --config k8s/install-config.<site>.yaml
+k8s/install-config.*.yaml
 
 # Allow schema file despite *.sql rule
 !database-schema.sql

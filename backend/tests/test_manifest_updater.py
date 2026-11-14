@@ -232,22 +232,32 @@ def _backend(docs):
 
 
 def test_keeps_a_raised_running_limit():
-    """The Site A shape: limits raised by hand to 1 CPU / 1Gi over a 500m/512Mi default."""
+    """Limits raised by hand above the release default are kept."""
     docs = rendered_docs()
     notes = mu.keep_larger_resources(docs, _live({"backend": {
         "requests": {"cpu": "100m", "memory": "256Mi"},
-        "limits": {"cpu": "1", "memory": "1Gi"}}}))
+        "limits": {"cpu": "2", "memory": "2Gi"}}}))
     res = _backend(docs)["resources"]
-    assert res["limits"] == {"memory": "1Gi", "cpu": "1"}
+    assert res["limits"] == {"memory": "2Gi", "cpu": "2"}
     assert res["requests"] == {"memory": "256Mi", "cpu": "100m"}
     assert len(notes) == 2 and all("keeping running" in n for n in notes)
 
 
-def test_release_can_raise_a_value():
+def test_equal_running_limits_need_no_note():
+    """The Site A shape since the default became 1 CPU / 1Gi."""
     docs = rendered_docs()
     notes = mu.keep_larger_resources(docs, _live({"backend": {
-        "limits": {"cpu": "250m", "memory": "256Mi"}}}))
-    assert _backend(docs)["resources"]["limits"] == {"memory": "512Mi", "cpu": "500m"}
+        "limits": {"cpu": "1", "memory": "1024Mi"}}}))
+    assert _backend(docs)["resources"]["limits"] == {"memory": "1Gi", "cpu": "1"}
+    assert notes == []
+
+
+def test_release_can_raise_a_value():
+    """The Site B shape: running the old 500m/512Mi default, release raises it."""
+    docs = rendered_docs()
+    notes = mu.keep_larger_resources(docs, _live({"backend": {
+        "limits": {"cpu": "500m", "memory": "512Mi"}}}))
+    assert _backend(docs)["resources"]["limits"] == {"memory": "1Gi", "cpu": "1"}
     assert notes == []
 
 
@@ -256,7 +266,7 @@ def test_unknown_quantities_and_missing_keys_are_left_alone():
     notes = mu.keep_larger_resources(docs, _live({
         "backend": {"limits": {"memory": "weird"}},
         "not-in-release": {"limits": {"memory": "64Gi"}}}))
-    assert _backend(docs)["resources"]["limits"]["memory"] == "512Mi"
+    assert _backend(docs)["resources"]["limits"]["memory"] == "1Gi"
     assert notes == []
 
 

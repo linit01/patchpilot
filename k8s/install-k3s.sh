@@ -75,45 +75,11 @@ EOF
 }
 
 # ── YAML reader ────────────────────────────────────────────────────────────────
+# k8s/yaml_get.py reads nested keys with or without PyYAML, and exits non-zero
+# on an unreadable config so set -e stops the install instead of silently
+# falling back to defaults.
 yaml_get() {
-  local key="$1" default="${2:-}"
-  python3 - "${CONFIG_FILE}" "${key}" "${default}" << 'PYEOF'
-import sys, re
-def get_nested(d, keys):
-    for k in keys:
-        if isinstance(d, dict) and k in d:
-            d = d[k]
-        else:
-            return None
-    return d
-def parse(filepath):
-    try:
-        import yaml
-        with open(filepath) as f:
-            return yaml.safe_load(f)
-    except ImportError:
-        pass
-    result = {}
-    with open(filepath) as f:
-        for line in f:
-            m = re.match(r'^(\s*)(\w[\w-]*):\s*(.*)', line.rstrip())
-            if m:
-                result[m.group(2)] = m.group(3).strip().strip('"\'') or None
-    return result
-filepath, keypath, default = sys.argv[1], sys.argv[2].split('.'), sys.argv[3] if len(sys.argv) > 3 else ''
-try:
-    val = get_nested(parse(filepath), keypath)
-    if val is None or val == '' or val == 'null':
-        print(default)
-    elif isinstance(val, bool):
-        print('true' if val else 'false')
-    elif isinstance(val, list):
-        print('\n'.join(str(x) for x in val))
-    else:
-        print(str(val))
-except Exception:
-    print(default)
-PYEOF
+  python3 "${SCRIPT_DIR}/yaml_get.py" "${CONFIG_FILE}" "$1" "${2:-}"
 }
 
 gen_password()   { python3 -c "import secrets, string; c=string.ascii_letters+string.digits+'-_=+'; print(''.join(secrets.choice(c) for _ in range(32)))"; }
@@ -399,7 +365,9 @@ check_prerequisites() {
   kubectl cluster-info &>/dev/null || die "Cannot reach Kubernetes cluster — check KUBECONFIG"
   ok "Cluster: $(kubectl config current-context)"
   [[ -f "${CONFIG_FILE}" ]] || die "Config not found: ${CONFIG_FILE}"
-  ok "Config: ${CONFIG_FILE}"
+  python3 "${SCRIPT_DIR}/yaml_get.py" "${CONFIG_FILE}" patchpilot.namespace >/dev/null \
+    || die "Cannot read ${CONFIG_FILE} — fix the error above and retry"
+  ok "Config: ${CONFIG_FILE} (namespace: $(yaml_get patchpilot.namespace patchpilot), host: $(yaml_get patchpilot.network.hostname '<unset>'))"
 }
 
 # ── Detect target platform ─────────────────────────────────────────────────────
@@ -532,7 +500,15 @@ load_config() {
   PP_CHALLENGE_TYPE="$(yaml_get patchpilot.certManager.challengeType dns01-cloudflare)"
   PP_CF_EMAIL="$(yaml_get patchpilot.certManager.cloudflare.email)"
   PP_CF_API_TOKEN_SECRET="$(yaml_get patchpilot.certManager.cloudflare.apiTokenSecretName cloudflare-api-token-secret)"
-  if [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "acme" ]]; then
+  # The emails only go into a ClusterIssuer this installer creates; with an
+  # existing issuer (createClusterIssuer: false) they are unused, so don't ask.
+  if [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "acme" && "${PP_CREATE_CLUSTER_ISSUER}" != "true" ]]; then
+    info "TLS mode: ACME via existing ClusterIssuer '${PP_CLUSTER_ISSUER}' (not creating one)"
+    if ! kubectl get clusterissuer "${PP_CLUSTER_ISSUER}" &>/dev/null; then
+      warn "ClusterIssuer '${PP_CLUSTER_ISSUER}' does not exist — cert-manager cannot issue '${PP_TLS_SECRET_NAME}';"
+      warn "Traefik will serve its default certificate instead. Available: $(kubectl get clusterissuer -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"
+    fi
+  elif [[ "${PP_TLS_ENABLED}" == "true" && "${PP_TLS_MODE}" == "acme" ]]; then
     PP_LE_EMAIL="$(prompt_value "Let's Encrypt email" "${PP_LE_EMAIL}" true)"
     [[ "${PP_CHALLENGE_TYPE}" == "dns01-cloudflare" ]] && \
       PP_CF_EMAIL="$(prompt_value "Cloudflare account email" "${PP_CF_EMAIL}" true)"
@@ -1559,7 +1535,11 @@ main() {
   fi
 
   build_images
-  push_and_configure_registry
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    info "Dry run — not creating the namespace or pull secret"
+  else
+    push_and_configure_registry
+  fi
   generate_manifests
 
   if [[ "${DRY_RUN}" == "true" ]]; then show_dry_run; exit 0; fi

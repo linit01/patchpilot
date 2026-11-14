@@ -190,9 +190,11 @@ spec:
           requests:
             memory: "256Mi"
             cpu: "100m"
+          # 1 CPU / 1Gi: 512Mi was raised by hand on a production install; a
+          # patch run fans Ansible out across the fleet inside this container.
           limits:
-            memory: "512Mi"
-            cpu: "500m"
+            memory: "1Gi"
+            cpu: "1"
 
       volumes:
       - name: ansible-data

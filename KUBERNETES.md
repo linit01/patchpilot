@@ -350,6 +350,16 @@ git pull   # or update your local checkout
 # kubectl applies are idempotent — only changed resources are updated
 ```
 
+**Several clusters:** keep one config per cluster as
+`k8s/install-config.<site>.yaml` (git-ignored) and pass it explicitly, with the
+matching kubeconfig, e.g.
+`KUBECONFIG=~/.kube/site-a.config ./k8s/install-k3s.sh --config k8s/install-config.site-a.yaml`.
+Before re-running against a live install, `--dry-run` writes the manifests to
+`k8s/.generated/` without applying them; `kubectl diff -f k8s/.generated/<file>`
+shows what would change. Keep `postgres.storageClass`, the `storage.*` values
+and the TLS settings identical to the live install — PVC storage classes are
+immutable, and the backups PV is reused as-is.
+
 ### In-app updates (Settings → Updates)
 
 Since 1.9.0, **Update Now** applies the new release's workload manifests, not
