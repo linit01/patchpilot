@@ -1,6 +1,30 @@
-# PatchPilot — Handoff (2026-11-14)
+# PatchPilot — Handoff (2026-11-18)
 
 ## TL;DR
+2026-11-18 shipped **v1.9.3 — committed, tagged, pushed (CI building images), NOT
+yet deployed to Site A or Site B.** Deploy via PatchPilot's own in-app update,
+Site A (patchpilot.apps.lan) first to confirm check behaviour, then Site B.
+- **Fixes stale `UNREACHABLE` host status.** Symptom: hosts (e.g. rig1.lan) showed
+  `unreachable` overnight but were actually up — a single-host Test Connection
+  cleared it. Root cause: the whole-fleet Ansible check has a wall-clock timeout,
+  and one slow host (`softwareupdate -l`, or `apt` under load) pushed the run past
+  it; on timeout `run_check` discarded the **entire** run, so recovered hosts kept
+  their stale status. The periodic re-check (`periodic_ansible_check`, every
+  `refresh_interval`s, default 120s) does re-check unreachable hosts — it just
+  never got usable output when the run timed out.
+- **Three fixes (v1.9.3):** (1) bounded the slow per-host check tasks
+  (`softwareupdate -l` via the detected timeout binary; `apt-get update`/`apt list`
+  via `timeout`) plus an `ANSIBLE_TASK_TIMEOUT=240` backstop on the check run;
+  (2) `run_check` now streams output and on timeout **saves results for hosts that
+  finished** (new per-host `HOSTSTATUS … | check-complete` marker in
+  `check-os-updates.yml`), leaving mid-scan hosts at their last known status
+  instead of wiping the whole fleet; (3) new configurable `check_timeout_seconds`
+  setting (default **600**, was a hardcoded 300; DB/env only, no Settings UI field
+  yet). Files: `ansible/check-os-updates.yml`, `backend/ansible_runner.py`,
+  `backend/app.py`.
+
+---
+
 2026-11-14 shipped v1.8.5 → v1.9.2, **all deployed to Site A and Site B**.
 - **In-app updates now apply Kubernetes manifest changes** (v1.9.0), not just
   image tags: a `patchpilot-update` Job from the new image renders and applies
