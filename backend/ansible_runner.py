@@ -301,6 +301,12 @@ class AnsibleRunner:
             check_env['ANSIBLE_FORCE_COLOR'] = '0'
             check_env['ANSIBLE_STDOUT_CALLBACK'] = 'default'
             check_env['ANSIBLE_PIPELINING'] = 'true'
+            # Backstop: cap any single check task on any host. The per-task
+            # `timeout` wrappers in the playbook (softwareupdate -l, apt) are the
+            # primary bound; this catches anything they miss so one hung task on
+            # one host cannot stall the whole run. Comfortably above the in-play
+            # wrappers (120s) and below the overall check budget.
+            check_env.setdefault('ANSIBLE_TASK_TIMEOUT', '240')
             check_env['PATCHPILOT_APP_VERSION'] = _patchpilot_app_version()
             try:
                 if self.db_client and self.db_client.pool:
@@ -317,25 +323,78 @@ class AnsibleRunner:
             except Exception as _e:
                 logger.warning("Could not load settings for check run: %s", _e)
 
-            # Use async subprocess so the event loop stays responsive
+            # Overall wall-clock budget for the whole fleet check. Read from the
+            # check_timeout_seconds setting (default 600s, floor 60s). When the
+            # budget is reached we stop reading, stop the process, and parse
+            # whatever was collected — instead of discarding the entire run. A
+            # single slow host can therefore no longer freeze every other host's
+            # status at a stale value.
+            check_timeout = 600
+            try:
+                if self.db_client and self.db_client.pool:
+                    async with self.db_client.pool.acquire() as _conn:
+                        _ct = await _conn.fetchval(
+                            "SELECT value FROM settings WHERE key = 'check_timeout_seconds'"
+                        )
+                    if _ct is not None and str(_ct).strip():
+                        check_timeout = max(60, int(_ct))
+            except Exception as _cte:
+                logger.warning(
+                    "Could not read check_timeout_seconds, using %ss: %s",
+                    check_timeout, _cte,
+                )
+
+            # Merge stderr into stdout so we can stream a single pipe line by line.
+            # The 4MB buffer mirrors run_patch — apt/brew output lines can be huge.
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=check_env
+                stderr=asyncio.subprocess.STDOUT,
+                env=check_env,
+                limit=4 * 1024 * 1024,
             )
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(), timeout=300
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.communicate()
-                self._cleanup_files(run_temp)
-                return False, {"error": "Ansible playbook timed out"}
 
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
+            output_lines = []
+            timed_out = False
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + check_timeout
+            try:
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    try:
+                        line_bytes = await asyncio.wait_for(
+                            process.stdout.readline(), timeout=remaining
+                        )
+                    except asyncio.TimeoutError:
+                        timed_out = True
+                        break
+                    if not line_bytes:
+                        break  # EOF — the playbook finished on its own
+                    output_lines.append(line_bytes.decode("utf-8", errors="replace"))
+            finally:
+                if timed_out:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=10)
+                except (asyncio.TimeoutError, ProcessLookupError):
+                    pass
+
+            stdout = "".join(output_lines)
+            stderr = ""  # merged into stdout above
+
+            if timed_out:
+                logger.warning(
+                    "Ansible check hit its %ss budget — parsing %d line(s) "
+                    "collected so far; completed hosts are saved, the rest keep "
+                    "their last known status",
+                    check_timeout, len(output_lines),
+                )
 
             # Save last run output for debugging
             try:
@@ -360,6 +419,26 @@ class AnsibleRunner:
                     print(f"[ANSIBLE] {_line.strip()[:500]}")
 
             hosts_data = self._parse_ansible_output(stdout)
+
+            if timed_out:
+                # No PLAY RECAP was printed, so only trust hosts that reached a
+                # terminal marker (check-complete, or an explicit unreachable
+                # status). Hosts still mid-scan have no reliable status/update
+                # count — drop them so the backend leaves them at their last
+                # known status rather than wiping them to 'unknown'/0 updates.
+                completed = {h: d for h, d in hosts_data.items() if d.get('_terminal')}
+                dropped = [h for h in hosts_data if h not in completed]
+                if dropped:
+                    logger.warning(
+                        "Check budget reached mid-scan for %d host(s), leaving "
+                        "them at last known status: %s",
+                        len(dropped), dropped,
+                    )
+                hosts_data = completed
+
+            # Internal bookkeeping key — never persist it.
+            for _d in hosts_data.values():
+                _d.pop('_terminal', None)
 
             logger.debug(f"Parsed {len(hosts_data)} hosts from Ansible output")
             logger.debug(f"Return code: {process.returncode}")
@@ -1018,10 +1097,23 @@ class AnsibleRunner:
                     reason = (match.group(3) or '').strip()
                     if hostname not in hosts_data:
                         hosts_data[hostname] = {}
-                    hosts_data[hostname]['status'] = explicit_status
-                    hosts_data[hostname]['total_updates'] = 0
-                    if reason:
-                        hosts_data[hostname]['status_reason'] = reason
+                    if explicit_status == 'check-complete':
+                        # Terminal marker: the host finished every check task and
+                        # is reachable. Confirms completion without the final PLAY
+                        # RECAP (absent on a budget-timed-out run). Do NOT clobber
+                        # a status/total_updates already parsed from the scan
+                        # output above — this marker only fills the gap for a
+                        # clean host, whose "Up to date" line sets no status.
+                        hosts_data[hostname].setdefault('status', 'up-to-date')
+                        hosts_data[hostname].setdefault('total_updates', 0)
+                        hosts_data[hostname]['_terminal'] = True
+                    else:
+                        hosts_data[hostname]['status'] = explicit_status
+                        hosts_data[hostname]['total_updates'] = 0
+                        if reason:
+                            hosts_data[hostname]['status_reason'] = reason
+                        # An explicit unreachable/failed status is also terminal.
+                        hosts_data[hostname]['_terminal'] = True
                     # print(), not logger.debug() — the root logger's only handler
                     # is the in-memory ring buffer, so logger calls never reach
                     # container stdout.  This line is the one that makes a failure

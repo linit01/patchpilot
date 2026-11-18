@@ -621,6 +621,13 @@ async def ensure_settings_table(pool):
                  'failing package, or unreachable) is retried every minute for the whole '
                  'window. After this many attempts the host is left alone until the next '
                  'scheduled window and an error alert is raised. Default 3.'),
+                ('check_timeout_seconds', os.getenv('CHECK_TIMEOUT_SECONDS', '600'),
+                 'Hard wall-clock limit in seconds for a single fleet update-check run '
+                 '(default 600 = 10 min, minimum 60). When the limit is reached the check '
+                 'stops and saves results for every host that already finished its scan, '
+                 'instead of discarding the whole run. Hosts that had not finished keep '
+                 'their last known status and package list. Raise it for large fleets or '
+                 'slow hosts.'),
                 # ── Network / HTTPS settings ───────────────────────────────────
                 ('app_base_url',     os.getenv('APP_BASE_URL', ''),
                  'Public base URL of this PatchPilot instance '

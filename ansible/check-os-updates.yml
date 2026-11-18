@@ -102,7 +102,7 @@
 
     # ── Linux ──────────────────────────────────────────────────────────────────
     - name: Refresh apt cache (Debian/Ubuntu)
-      shell: apt-get update -qq 2>/dev/null
+      shell: timeout 60 apt-get update -qq 2>/dev/null
       become: yes
       when: ansible_facts['os_family'] == "Debian"
       changed_when: false
@@ -125,7 +125,7 @@
         awk 'index($0, "/") == 0 { if (length($0) > 0) held[$0] = 1; next }
              { name = $1; sub(/\/.*/, "", name); if (name in held) next; print }' \
           <(apt-mark showhold 2>/dev/null) \
-          <(apt list --upgradable -o APT::Get::Always-Include-Phased-Updates=true 2>/dev/null | tail -n +2)
+          <(timeout 30 apt list --upgradable -o APT::Get::Always-Include-Phased-Updates=true 2>/dev/null | tail -n +2)
       args:
         executable: /bin/bash
       register: apt_updates
@@ -287,7 +287,12 @@
     - name: Check for macOS system updates
       shell: |
         EXCLUDED="{{ macos_system_excluded_labels }}"
-        RAW=$(/usr/sbin/softwareupdate -l 2>&1)
+        TIMEOUT_BIN="{{ timeout_bin_path | default('') }}"
+        if [ -n "$TIMEOUT_BIN" ]; then
+          RAW=$("$TIMEOUT_BIN" 120 /usr/sbin/softwareupdate -l 2>&1)
+        else
+          RAW=$(/usr/sbin/softwareupdate -l 2>&1)
+        fi
 
         if [ -z "$EXCLUDED" ]; then
           printf '%s\n' "$RAW"
@@ -668,6 +673,17 @@
             Up to date
           {% endif %}
       when: apt_updates.stdout_lines is defined or brew_updates.stdout_lines is defined or macos_updates.stdout is defined or (mas_updates is defined and mas_updates.stdout_lines is defined) or (winget_updates is defined and winget_updates.stdout_lines is defined) or (winupdate_updates is defined and winupdate_updates.stdout_lines is defined)
+
+    # Terminal per-host marker for the check phase. Emitted after all update-scan
+    # tasks for this host, so the parser can confirm the host finished the check
+    # and is reachable WITHOUT waiting for the final PLAY RECAP (which a run that
+    # hits its wall-clock budget never prints). A host still mid-scan when the
+    # budget is reached never emits this, so the backend leaves it at its last
+    # known status instead of wiping it.
+    - name: Emit check-complete marker for parser
+      debug:
+        msg: "HOSTSTATUS: {{ inventory_hostname }} | check-complete"
+      when: host_reachable | default(false)
 
     # =========================================================================
     # APPLY UPDATES  (--tags apply-updates)
