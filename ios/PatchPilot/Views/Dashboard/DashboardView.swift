@@ -178,7 +178,7 @@ struct DashboardView: View {
             }
 
             let needsAttention = hostService.hosts.filter {
-                $0.status == .updatesAvailable || $0.status == .unreachable || $0.rebootRequired == true
+                $0.status == .updatesAvailable || $0.status == .unreachable || $0.status == .failed || $0.rebootRequired == true
             }.prefix(5)
 
             if needsAttention.isEmpty {

@@ -46,16 +46,29 @@ enum HostStatus: String, Codable {
     case upToDate = "up-to-date"
     case updatesAvailable = "updates-available"
     case unreachable = "unreachable"
+    case failed = "failed"
     case pending = "pending"
     case checking = "checking"
+    case unknown = "unknown"
+
+    /// Never fail on a status string this build doesn't know. The backend can
+    /// write values beyond the ones above (e.g. a new status in a later
+    /// release), and a strict decode of one host breaks the whole /api/hosts
+    /// array, which made every host vanish from the app.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = HostStatus(rawValue: raw) ?? .unknown
+    }
 
     var displayName: String {
         switch self {
         case .upToDate: return "Up to Date"
         case .updatesAvailable: return "Updates Available"
         case .unreachable: return "Unreachable"
+        case .failed: return "Check Failed"
         case .pending: return "Pending"
         case .checking: return "Checking"
+        case .unknown: return "Unknown"
         }
     }
 }

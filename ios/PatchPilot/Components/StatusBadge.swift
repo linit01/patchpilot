@@ -19,8 +19,8 @@ struct StatusBadge: View {
         switch status {
         case .upToDate: return Theme.green
         case .updatesAvailable: return Theme.amber
-        case .unreachable: return Theme.red
-        case .pending: return Theme.textMuted
+        case .unreachable, .failed: return Theme.red
+        case .pending, .unknown: return Theme.textMuted
         case .checking: return Theme.cyan
         }
     }

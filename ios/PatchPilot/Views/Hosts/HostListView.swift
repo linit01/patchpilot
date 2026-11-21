@@ -16,6 +16,10 @@ struct HostListView: View {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                         .listRowBackground(Theme.bgBlack)
+                } else if let errorMessage, hostService.hosts.isEmpty {
+                    Label("Couldn't load hosts: \(errorMessage)", systemImage: "exclamationmark.triangle")
+                        .foregroundColor(Theme.red)
+                        .listRowBackground(Theme.bgBlack)
                 } else if filteredHosts.isEmpty {
                     Text(searchText.isEmpty ? "No hosts configured" : "No matching hosts")
                         .foregroundColor(Theme.textMuted)
@@ -47,24 +51,10 @@ struct HostListView: View {
                     }
                 }
             }
-            .refreshable {
-                do {
-                    try await hostService.fetchHosts()
-                } catch {
-                    errorMessage = error.localizedDescription
-                }
-            }
-            .task {
-                do {
-                    try await hostService.fetchHosts()
-                } catch {
-                    errorMessage = error.localizedDescription
-                }
-            }
+            .refreshable { await loadHosts() }
+            .task { await loadHosts() }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-                Task {
-                    try? await hostService.fetchHosts()
-                }
+                Task { await loadHosts() }
             }
             .sheet(isPresented: $showPatchSheet) {
                 PatchConfirmSheet(
@@ -72,6 +62,15 @@ struct HostListView: View {
                     onDismiss: { showPatchSheet = false }
                 )
             }
+        }
+    }
+
+    private func loadHosts() async {
+        do {
+            try await hostService.fetchHosts()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
